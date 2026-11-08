@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "id": "worldedit",
+  "version": "1.2.1",
+  "game": "26.3",
+  "horizon": "83f15fa276c44711276b6ceb5f0fe0c9c534dc66",
+  "mixins": "cb1ad23022392d88f006cf94cbf6552a73f5df12"
+}

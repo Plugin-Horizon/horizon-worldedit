@@ -1,0 +1,176 @@
+[mod]
+id = "worldedit"
+version = "1.2.1"
+priority = 100
+
+# The editor's own module: staged into `crates/horizon-client/src/game.rs` as
+# `mod worldedit`, so it sees `Game`'s private fields and methods.
+[[module]]
+id = "runtime"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit"
+source = "runtime.rs"
+
+# Schematic files: Sponge `.schem`, Litematica `.litematic` and legacy MCEdit
+# `.schematic`, read and written beside the editor.
+[[module]]
+id = "schematic"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit_schem"
+source = "schematic.rs"
+
+# The 1.12 to 1.13 block table a `.schematic` needs, from gen_legacy.py.
+[[module]]
+id = "legacy"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit_legacy"
+source = "legacy_ids.rs"
+
+# The schematics menu: `//schem` with no argument, drawn over the pause menu's
+# screen, with its own clicks and keys.
+[[module]]
+id = "menu"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit_menu"
+source = "schem-menu.rs"
+
+# The schematics folder itself — where it is, what is in it, and the world the
+# game last opened — shared by the game (above) and the chat completions. It
+# goes in the library and is `pub`, so the game binary can reach it too.
+[[module]]
+id = "paths"
+file = "crates/horizon-client-render/src/chat.rs"
+name = "worldedit_paths"
+source = "schem-paths.rs"
+visibility = "pub"
+
+# A command typed here (single player, in frame, or the machine hosting a LAN
+# world or dedicated server). `//set` arrives as `/set`.
+[[injection]]
+id = "command"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::commands::Game<'_>::run_command"
+helper = "command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "command", ty = "&str", value = "command" },
+]
+
+# A command from a guest of a hosted world: queued unmodified, so the server
+# runs it with that player's state in place (`as_guest`).
+[[injection]]
+id = "guest-command"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::lan_actions::Game<'_>::guest_command"
+helper = "guest-command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "host", ty = "&mut crate::game::lan::LanHost", value = "&mut *host" },
+  { name = "conn", ty = "u32", value = "conn" },
+  { name = "command", ty = "&str", value = "command" },
+]
+
+# The chat screen's completions: `//set` is no command of the vanilla tree, so
+# its parse failed and the screen showed "Unknown or incomplete command". The
+# editor completes its own prefix instead, names and arguments.
+[[injection]]
+id = "chat-suggestions"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::chat::ChatScreen::update_command_info"
+helper = "chat-hook.rs"
+bindings = [
+  { name = "screen", ty = "&mut crate::chat::ChatScreen", value = "self" },
+  { name = "m", ty = "&crate::screen_draw::Measure", value = "m" },
+  { name = "c", ty = "&crate::chat::Commands<'_>", value = "c" },
+]
+
+# The completions' table, staged into chat.rs as `mod worldedit_chat`.
+[[module]]
+id = "chat"
+file = "crates/horizon-client-render/src/chat.rs"
+name = "worldedit_chat"
+source = "chat-suggestions.rs"
+
+# `//schem` typed in chat: a window over its own world opens the menu before
+# the line goes to the server.
+[[injection]]
+id = "schem-input"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::chat::Game<'_>::handle_chat_input"
+helper = "schem-input.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "message", ty = "&str", value = "message" },
+]
+
+# The menu draws itself over the pause menu's screen (Screen::Paused with
+# `pause_menu` set): its draw, its clicks and its keys hand over while a menu
+# is open, and the pause menu keeps them otherwise.
+[[injection]]
+id = "schem-draw"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::screens::Game<'_>::draw_pause_menu"
+helper = "schem-draw.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "batch", ty = "&mut horizon_client::hud::HudBatch", value = "batch" },
+]
+
+[[injection]]
+id = "schem-click"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::screens::Game<'_>::pause_click"
+helper = "schem-click.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "schem-key"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::play_keys::Game<'_>::key_pressed"
+helper = "schem-key.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "key", ty = "winit::keyboard::KeyCode", value = "key" },
+]
+
+# Entering a world makes its `schematics/` folder and notes the world, so the
+# folder is there to drag files into and the completions list it.
+[[injection]]
+id = "open-world"
+kind = "HEAD"
+target = "horizon_client::game::world_session::Game<'_>::open_world"
+helper = "open-world.rs"
+bindings = [
+  { name = "folder", ty = "&str", value = "folder" },
+]
+
+# The wand: left click sets position 1, right click position 2, while the
+# wooden axe `//wand` gave is held. The click is taken before the game starts
+# mining or using an item.
+[[injection]]
+id = "wand"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::play_input::Game<'_>::play_mouse"
+helper = "wand.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "button", ty = "winit::event::MouseButton", value = "button" },
+  { name = "pressed", ty = "bool", value = "pressed" },
+]
+
+[compatibility]
+# The Horizon source this bundle is planned and built on: Nightly 2026-10-28.
+# A launcher build uses this commit's source. Planning it against another tree
+# means changing this line to that tree's commit (or dropping the section: a
+# bundle without a pin builds on the installed version's commit).
+horizon_revision = "b13dbf0687b545431172466ab4b91d19c3976405"

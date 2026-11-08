@@ -1,0 +1,42 @@
+NOTICE
+
+This repository's server bundle (mixins/worldedit-server) is derived from WorldEdit
+(https://github.com/EngineHub/WorldEdit), licensed under the GNU General Public License v3 (see LICENSE).
+
+WorldEdit, a Minecraft world manipulation toolkit
+Copyright (C) sk89q <http://www.sk89q.com>
+Copyright (C) WorldEdit team and contributors
+
+Third-party notices carried in WorldEdit's own licence file (not copied into this repository's code):
+Copyright (c) 2010 Graham Edgecombe; Copyright (c) 2009 Mike Schrag, Sam Tingleff; Copyright (c) 2017-2020 KyoriPowered.
+
+Parts of this repository were taken from MIT-licensed projects and keep their notices; the MIT text applies to those
+parts (GPL-3.0 allows combining them):
+
+  - mixins/worldedit (the upstream bundle) and the pattern syntax, position hash, schematic readers and legacy block
+    table reused in mixins/worldedit-server/core: XnotCykoX/WorldEdit-Horizon, Copyright (c) 2026 XnotCykoX
+  - mixins/worldedit-server/core/src/nbt.rs and block.rs: keksi2k/horizonmatica, Copyright (c) 2026 keksi2k
+  - the original code of the server bundle: Copyright (c) 2026 Detimes
+
+MIT License
+
+Copyright (c) 2026 XnotCykoX
+Copyright (c) 2026 Detimes (the server bundle, mixins/worldedit-server)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

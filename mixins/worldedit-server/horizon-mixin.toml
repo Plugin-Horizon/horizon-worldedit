@@ -1,0 +1,171 @@
+[mod]
+id = "worldedit_server"
+version = "0.1.0"
+priority = 100
+
+# Written blind against this Horizon commit (2026-11-06): planned and compiled on it yet.
+# Uses only named hook points from native-hooks.json (no raw function targets).
+# `right_click_block_v2` (the hand) is on the unmerged `hooks-b-all` branch, not on main: this uses `right_click_block`.
+[compatibility]
+horizon_revision = "b13dbf0687b545431172466ab4b91d19c3976405"
+
+# The trait-mod half: `worldedit_server::selection`, which WorldGuard reads for /rg define, claim,
+# redefine and select (WorldGuard's `[dependencies] worldedit_server`).
+[api]
+path = "api"
+
+# The editor (no game types): sessions, patterns, shapes, clipboard, history, schematics.
+# horizon-client-lib depends on it so the `lib` module below can publish it to the `[api]` package.
+[[crate]]
+id = "core"
+path = "core"
+dependent = "horizon-client-lib"
+
+# `horizon_client::worldedit_server`: the core re-exported (as sentinel does for its core).
+[[module]]
+id = "lib"
+file = "crates/horizon-client/src/client_lib.rs"
+name = "worldedit_server"
+source = "lib_module.rs"
+visibility = "pub"
+
+# The game side: the level in place as the editor's World, commands, clicks, the tick queue.
+[[module]]
+id = "glue"
+file = "crates/horizon-client/src/game.rs"
+name = "worldedit_server"
+source = "glue.rs"
+
+[[injection]]
+id = "register-commands"
+hook = "register_commands"
+hook_version = 1
+kind = "HEAD"
+helper = "register.rs"
+bindings = [
+  { name = "commands", ty = "&mut Vec<crate::game::native_server::NativeCommand>", value = "&mut *commands" },
+]
+
+[[injection]]
+id = "perform-command"
+hook = "perform_command"
+hook_version = 1
+kind = "HEAD"
+helper = "perform.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "player", ty = "&crate::game::native_server::NativeServerPlayer", value = "player" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
+]
+
+# `//rotate <degrees>`: vanilla owns `/rotate`, so it can't be registered; heard here first.
+[[injection]]
+id = "player-command"
+hook = "player_command"
+hook_version = 1
+kind = "HEAD"
+helper = "player_command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "player", ty = "u128", value = "player" },
+  { name = "name", ty = "&str", value = "name" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+  { name = "replies", ty = "&mut Vec<horizon_client::text::Text>", value = "&mut *replies" },
+]
+
+# The wand: left click (the start of a dig) sets position 1 and digs nothing.
+[[injection]]
+id = "left-click"
+hook = "left_click_block"
+hook_version = 1
+kind = "HEAD"
+helper = "left_click.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+# The wand's right click (position 2) and brushes on a block; the block and the item do nothing.
+# v1 does not name the hand: it is asked once per hand tried, so the off hand's turn of a click the
+# main hand did nothing with comes again. The wand and brushes cancel the main hand's turn, which
+# ends the click. See STATUS.md (needs upstream hook right_click_block_v2 for main hand only).
+[[injection]]
+id = "right-click"
+hook = "right_click_block"
+hook_version = 1
+kind = "HEAD"
+helper = "right_click.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "canceled", ty = "&mut bool", value = "&mut *canceled" },
+]
+
+# Brushes used in the air: the block in sight, up to brush_range away.
+[[injection]]
+id = "use-item"
+hook = "use_item"
+hook_version = 1
+kind = "HEAD"
+helper = "use_item.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "stack", ty = "&horizon_client::items::ItemStack", value = "stack" },
+  { name = "claimed", ty = "&mut bool", value = "&mut *claimed" },
+]
+
+# Big edits continue here, a tick's share into the level just ticked.
+[[injection]]
+id = "level-ticked"
+hook = "level_tick_post"
+hook_version = 1
+kind = "HEAD"
+helper = "level_ticked.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "dimension", ty = "&str", value = "dimension" },
+]
+
+[[injection]]
+id = "world-phase"
+hook = "world_lifecycle"
+hook_version = 1
+kind = "HEAD"
+helper = "world_phase.rs"
+bindings = [
+  { name = "phase", ty = "horizon_client::mod_api::WorldPhase", value = "phase" },
+]
+
+# config/worldedit.toml, read when the server starts and again whenever it is saved.
+[[injection]]
+id = "register-config"
+hook = "register_configs"
+hook_version = 1
+kind = "HEAD"
+helper = "register_config.rs"
+bindings = [
+  { name = "list", ty = "&mut Vec<crate::game::native_configs::NativeConfig>", value = "&mut *configs" },
+]
+
+[[injection]]
+id = "config-loading"
+hook = "config_loading"
+hook_version = 1
+kind = "HEAD"
+helper = "config_loading.rs"
+bindings = [
+  { name = "file", ty = "&crate::game::native_configs::NativeConfigFile", value = "config" },
+]
+
+[[injection]]
+id = "config-reloading"
+hook = "config_reloading"
+hook_version = 1
+kind = "HEAD"
+helper = "config_reloading.rs"
+bindings = [
+  { name = "file", ty = "&crate::game::native_configs::NativeConfigFile", value = "config" },
+]
