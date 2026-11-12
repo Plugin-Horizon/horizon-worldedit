@@ -11,7 +11,7 @@ use crate::schem;
 use crate::session::{Brush, BrushShape, Sessions, Tool};
 use crate::shapes;
 use crate::world::{Pos, StateId, World};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 mod calc;
@@ -22,6 +22,87 @@ mod utility;
 /// The most positions one command looks at, whatever `max_blocks` says: a bigger region is a
 /// mistake that would hold the server thread for minutes.
 pub const SCAN_LIMIT: u64 = 10_000_000;
+
+/// Every `worldedit.*` node a command, a tool or a brush can need (`permission_node`, the wand, the navigation
+/// wand). The glue asks the permission system which of them a player holds (`Actor::granted`).
+pub const NODES: &[&str] = &[
+    "worldedit.analysis.count",
+    "worldedit.analysis.distr",
+    "worldedit.brush.cylinder",
+    "worldedit.brush.options.mask",
+    "worldedit.brush.options.material",
+    "worldedit.brush.smooth",
+    "worldedit.brush.sphere",
+    "worldedit.calc",
+    "worldedit.clipboard.clear",
+    "worldedit.clipboard.copy",
+    "worldedit.clipboard.cut",
+    "worldedit.clipboard.flip",
+    "worldedit.clipboard.load",
+    "worldedit.clipboard.paste",
+    "worldedit.clipboard.rotate",
+    "worldedit.clipboard.save",
+    "worldedit.drain",
+    "worldedit.extinguish",
+    "worldedit.fill",
+    "worldedit.fill.recursive",
+    "worldedit.fixlava",
+    "worldedit.fixwater",
+    "worldedit.generation.cone",
+    "worldedit.generation.cylinder",
+    "worldedit.generation.pyramid",
+    "worldedit.generation.sphere",
+    "worldedit.global-mask",
+    "worldedit.green",
+    "worldedit.help",
+    "worldedit.history.clear",
+    "worldedit.history.redo",
+    "worldedit.history.redo.other",
+    "worldedit.history.redo.self",
+    "worldedit.history.undo",
+    "worldedit.history.undo.other",
+    "worldedit.history.undo.self",
+    "worldedit.limit",
+    "worldedit.navigation.jumpto.tool",
+    "worldedit.selection.sel",
+    "worldedit.region.center",
+    "worldedit.region.faces",
+    "worldedit.region.hollow",
+    "worldedit.region.line",
+    "worldedit.region.move",
+    "worldedit.region.naturalize",
+    "worldedit.region.overlay",
+    "worldedit.region.replace",
+    "worldedit.region.set",
+    "worldedit.region.smooth",
+    "worldedit.region.stack",
+    "worldedit.region.walls",
+    "worldedit.reload",
+    "worldedit.report",
+    "worldedit.schematic.delete",
+    "worldedit.schematic.formats",
+    "worldedit.schematic.list",
+    "worldedit.schematic.load",
+    "worldedit.schematic.save",
+    "worldedit.searchitem",
+    "worldedit.selection.chunk",
+    "worldedit.selection.contract",
+    "worldedit.selection.expand",
+    "worldedit.selection.hpos",
+    "worldedit.selection.inset",
+    "worldedit.selection.outset",
+    "worldedit.selection.pos",
+    "worldedit.selection.shift",
+    "worldedit.selection.size",
+    "worldedit.setwand",
+    "worldedit.snow",
+    "worldedit.thaw",
+    "worldedit.tool.data-cycler",
+    "worldedit.tool.flood-fill",
+    "worldedit.tool.info",
+    "worldedit.tool.replacer",
+    "worldedit.wand",
+];
 
 /// The player a command, a click or a brush belongs to, as the server sees them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -40,6 +121,9 @@ pub struct Actor {
     pub game_mode: i32,
     /// The item id in the main hand, if any.
     pub held: Option<String>,
+    /// The `worldedit.*` nodes the permission system grants this player (see `NODES`). Operators pass on their
+    /// level instead; anyone else needs a node here.
+    pub granted: BTreeSet<String>,
 }
 
 impl Actor {
@@ -77,14 +161,16 @@ pub struct Reply {
     pub lines: Vec<Line>,
     /// Item ids to give the player (the wand).
     pub give: Vec<String>,
+    /// Where to teleport the player (the navigation wand), feet position.
+    pub teleport: Option<[f64; 3]>,
 }
 
 impl Reply {
     fn ok(lines: Vec<String>) -> Self {
-        Self { lines: lines.into_iter().map(|text| Line { text, error: false }).collect(), give: Vec::new() }
+        Self { lines: lines.into_iter().map(|text| Line { text, error: false }).collect(), give: Vec::new(), teleport: None }
     }
     fn err(text: String) -> Self {
-        Self { lines: vec![Line { text, error: true }], give: Vec::new() }
+        Self { lines: vec![Line { text, error: true }], give: Vec::new(), teleport: None }
     }
     pub fn text(&self) -> String {
         self.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n")
@@ -555,7 +641,8 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("floodfill" | "flood") => "worldedit.tool.flood-fill",
             _ => return None,
         },
-        "none" | "sel" | "desel" | "deselect" => return None,
+        "none" => return None,
+        "sel" | "desel" | "deselect" => "worldedit.selection.sel",
         "version" | "ver" => return None,
         "help" => "worldedit.help",
         "wand" => "worldedit.wand",
@@ -708,6 +795,10 @@ pub struct Engine {
     names: HashMap<String, u128>,
     /// Players whose selection another mod changed (`select`): their outline is drawn again.
     outline_due: Vec<u128>,
+    /// The clock of the last command or click (ms): the time an edit is remembered with.
+    now_ms: i64,
+    /// Players whose `useServerCUI` is off (their session file): no selection outline for them.
+    cui_off: BTreeSet<u128>,
 }
 
 impl Default for Engine {
@@ -720,7 +811,21 @@ type R = Result<Vec<String>, String>;
 
 impl Engine {
     pub fn new(config: Config) -> Self {
-        Self { config, sessions: Sessions::default(), queue: Queue::default(), last_click: HashMap::new(), names: HashMap::new(), outline_due: Vec::new() }
+        Self {
+            config,
+            sessions: Sessions::default(),
+            queue: Queue::default(),
+            last_click: HashMap::new(),
+            names: HashMap::new(),
+            outline_due: Vec::new(),
+            now_ms: 0,
+            cui_off: BTreeSet::new(),
+        }
+    }
+
+    /// The players whose `useServerCUI` is off, replacing the set (`configure_original` reads the session files).
+    pub fn set_cui_off(&mut self, off: BTreeSet<u128>) {
+        self.cui_off = off;
     }
     /// The world closed: sessions and unfinished edits go with it.
     pub fn closed(&mut self) {
@@ -729,29 +834,42 @@ impl Engine {
         self.last_click.clear();
     }
 
-    /// The minimum level of a `worldedit.*` node: `node_levels`, else `permission_level`.
-    /// `a|b` names alternatives (WorldEdit accepts either node, as for `//undo`): the lowest level wins.
+    /// Whether the actor may use what needs `node` (`a|b`: either one; no node: operators only). An operator at
+    /// the level the node needs (`node_levels`, else `permission_level`) may; anyone else needs the node granted
+    /// by the permission system (`Actor::granted`). No other player gets WorldEdit.
     fn permitted(&self, actor: &Actor, node: Option<&str>) -> Result<(), String> {
-        let level = match node {
-            Some(nodes) => nodes.split('|').map(|n| self.config.node_levels.get(n).copied().unwrap_or(self.config.permission_level)).min().unwrap_or(self.config.permission_level),
-            None => self.config.permission_level,
-        };
-        if actor.permission < level {
-            return Err("You are not permitted to do that. Are you in the right mode?".into());
+        let nodes: Vec<&str> = node.map(|n| n.split('|').collect()).unwrap_or_default();
+        let level = nodes.iter().map(|n| self.config.node_levels.get(*n).copied().unwrap_or(self.config.permission_level)).min().unwrap_or(self.config.permission_level);
+        if actor.permission >= level || nodes.iter().any(|n| actor.granted.contains(*n)) {
+            return Ok(());
         }
-        Ok(())
+        Err("You are not permitted to do that. Are you in the right mode?".into())
     }
 
+    /// The checks every command and click has besides its node: WorldEdit's creative-only mode.
     fn allowed(&self, actor: &Actor) -> Result<(), String> {
-        self.permitted(actor, None)?;
         if self.config.creative_only && actor.game_mode != 1 {
             return Err("WorldEdit works only in creative mode".into());
         }
         Ok(())
     }
 
+    /// `history.expiration`: edits older than that many minutes are forgotten before `//undo` or `//redo` looks
+    /// (WorldEdit's LocalSession). 0 or less keeps them.
+    fn expire_history(&mut self, owner: u128) {
+        let minutes = self.config.history_expiration_minutes;
+        if minutes <= 0 {
+            return;
+        }
+        let cutoff = self.now_ms - minutes * 60_000;
+        let s = self.sessions.get(owner);
+        s.undo.retain(|c| c.at_ms >= cutoff);
+        s.redo.retain(|c| c.at_ms >= cutoff);
+    }
+
     /// A typed command (`set stone`, `//set stone`, `rotate 90`).
     pub fn command(&mut self, world: &mut dyn World, actor: &Actor, line: &str, env: &Env) -> Reply {
+        self.now_ms = env.now_ms;
         let line = line.trim().trim_start_matches('/');
         let mut words: Vec<&str> = line.split_whitespace().collect();
         // `//load <file>` is `//schem load <file>`.
@@ -771,9 +889,6 @@ impl Engine {
             "search" | "l" => "searchitem".to_owned(),
             other => other.to_owned(),
         };
-        if let Err(e) = self.allowed(actor) {
-            return Reply::err(e);
-        }
         // `/we help ...` is `//help ...`.
         if matches!(name.as_str(), "we" | "worldedit") && words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("help")) {
             words.remove(0);
@@ -783,7 +898,7 @@ impl Engine {
             Ok(a) => a,
             Err(e) => return Reply::err(e),
         };
-        if let Err(e) = self.permitted(actor, permission_node(&name, &args, actor).as_deref()) {
+        if let Err(e) = self.permitted(actor, permission_node(&name, &args, actor).as_deref()).and(self.allowed(actor)) {
             return Reply::err(e);
         }
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
@@ -890,7 +1005,8 @@ impl Engine {
             let w: &dyn World = &*world;
             ops.retain(|&(p, _)| w.get(p).is_some_and(|s| mask.hits(w, s)));
         }
-        let change = plan(world, &actor.dimension, ops);
+        let mut change = plan(world, &actor.dimension, ops);
+        change.at_ms = self.now_ms;
         if !self.allows(actor, change.len() as u64) {
             return Err(format!("Max blocks changed in an operation reached ({}).", self.max_blocks(actor)));
         }
@@ -1698,6 +1814,7 @@ impl Engine {
             Some(name) if name.eq_ignore_ascii_case(&actor.name) => actor.uuid,
             Some(name) => *self.names.get(&name.to_ascii_lowercase()).ok_or_else(|| format!("Unable to find session for {name}"))?,
         };
+        self.expire_history(owner);
         let (mut edits, mut note) = (0, String::new());
         for _ in 0..times {
             let s = self.sessions.get(owner);
@@ -1959,7 +2076,7 @@ impl Engine {
     /// The box to outline for `player` (`server_side_cui`): their selection, or the one corner set,
     /// and its level.
     pub fn outline_of(&mut self, player: u128) -> Option<(String, Cuboid)> {
-        if !self.config.server_side_cui {
+        if !self.config.server_side_cui || self.cui_off.contains(&player) {
             return None;
         }
         let s = self.sessions.get(player);
@@ -1981,6 +2098,34 @@ impl Engine {
         last.is_some_and(|(lp, lf, t)| lp == p && lf == first && now_ms - t < 200)
     }
 
+    /// The navigation wand (`navigation-wand.item`): a right click with that item, in the air or on a block,
+    /// teleports the player to the block in sight, to a free spot on it (WorldEdit's NavigationWand). `None` when
+    /// the held item is not the navigation wand.
+    pub fn nav_use(&mut self, world: &dyn World, actor: &Actor, now_ms: i64) -> Option<Reply> {
+        self.now_ms = now_ms;
+        if actor.held.as_deref() != Some(self.config.nav_wand_item.as_str()) {
+            return None;
+        }
+        if let Err(e) = self.permitted(actor, Some("worldedit.navigation.jumpto.tool")).and(self.allowed(actor)) {
+            return Some(Reply::err(e));
+        }
+        let Some(target) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.nav_wand_max_distance) else {
+            return Some(Reply::err("No block in sight!".into()));
+        };
+        // WorldEdit's findFreePosition: the first spot above the block with two free blocks, feet and head.
+        let free = |p: Pos| world.get(p).is_some_and(|s| world.is_air(s));
+        let top = world.max_y() - 1;
+        let spot = ((target[1] + 1)..=top).find(|&y| free([target[0], y, target[2]]) && free([target[0], y + 1, target[2]]));
+        match spot {
+            Some(y) => {
+                let mut reply = Reply::default();
+                reply.teleport = Some([f64::from(target[0]) + 0.5, f64::from(y), f64::from(target[2]) + 0.5]);
+                Some(reply)
+            }
+            None => Some(Reply::err("No free spot above the block in sight!".into())),
+        }
+    }
+
     /// A left (`first`) or right click on the block at `pos`: with the wand, the corner, and the
     /// click does nothing else (`Some`). `None` leaves the click to the game.
     ///
@@ -1989,6 +2134,7 @@ impl Engine {
     /// twice) it says nothing, where `//pos1` and `//pos2` answer "Position already set.". The click
     /// is taken either way, so the block is neither dug nor used.
     pub fn wand_click(&mut self, world: &dyn World, actor: &Actor, first: bool, pos: Pos, now_ms: i64) -> Option<Reply> {
+        self.now_ms = now_ms;
         let usable = self.permitted(actor, Some("worldedit.selection.pos")).is_ok() && !(self.config.creative_only && actor.game_mode != 1);
         if actor.held.as_deref() != Some(self.config.wand_item.as_str()) || !usable {
             return None;
@@ -2007,7 +2153,13 @@ impl Engine {
     pub fn brush_use(&mut self, world: &mut dyn World, actor: &Actor, pos: Option<Pos>, now_ms: i64) -> Option<Reply> {
         let item = actor.held.clone()?;
         let brush = self.sessions.get(actor.uuid).brushes.get(&item)?.clone();
-        if let Err(e) = self.allowed(actor) {
+        self.now_ms = now_ms;
+        let node = match brush.shape {
+            BrushShape::Sphere { .. } => "worldedit.brush.sphere",
+            BrushShape::Cylinder { .. } => "worldedit.brush.cylinder",
+            BrushShape::Smooth { .. } => "worldedit.brush.smooth",
+        };
+        if let Err(e) = self.permitted(actor, Some(node)).and(self.allowed(actor)) {
             return Some(Reply::err(e));
         }
         if self.queue.busy(actor.uuid) {
@@ -2152,3 +2304,18 @@ fn encode(world: &dyn World, clip: &Clipboard, env: &Env) -> Result<Vec<u8>, Str
     let origin = clip.origin.as_ref().map_or([0; 3], |o| o.1);
     schem::write_sponge3(size, clip.bounds.min, origin, env.data_version, &palette, &cells, env.now_ms)
 }
+
+#[cfg(test)]
+mod node_tests {
+    use super::*;
+
+    #[test]
+    fn node_list_has_each_node_once_and_the_navigation_wand() {
+        let mut seen = BTreeSet::new();
+        assert!(NODES.iter().all(|n| seen.insert(*n)), "a node is listed twice");
+        assert!(NODES.contains(&"worldedit.navigation.jumpto.tool"));
+        assert!(NODES.contains(&"worldedit.selection.sel"));
+        assert!(NODES.contains(&"worldedit.wand"));
+    }
+}
+

@@ -10,6 +10,8 @@ pub struct Change {
     pub dimension: String,
     /// Position, the block before, the block after.
     pub blocks: Vec<(Pos, StateId, StateId)>,
+    /// When the edit was made (ms, the server's clock); `history.expiration` reads it.
+    pub at_ms: i64,
 }
 
 impl Change {
@@ -44,7 +46,7 @@ pub fn plan(world: &dyn World, dimension: &str, ops: impl IntoIterator<Item = (P
         blocks.push((p, old, new));
     }
     blocks.retain(|&(_, old, new)| old != new);
-    Change { dimension: dimension.to_owned(), blocks }
+    Change { dimension: dimension.to_owned(), blocks, at_ms: 0 }
 }
 
 /// A run of blocks up a column: `height` blocks from `y`, all palette entry `block`.

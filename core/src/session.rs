@@ -9,6 +9,22 @@ use crate::region::Cuboid;
 use crate::world::Pos;
 use std::collections::{HashMap, VecDeque};
 
+/// A player's UUID from a file name, as WorldEdit writes it (`8-4-4-4-12` hex digits, dashes optional).
+pub fn uuid_from_stem(stem: &str) -> Option<u128> {
+    let digits: String = stem.chars().filter(|c| *c != '-').collect();
+    if digits.len() != 32 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    u128::from_str_radix(&digits, 16).ok()
+}
+
+/// `useServerCUI` of a player's session file (`plugins/WorldEdit/sessions/<uuid>.json`). Missing means WorldEdit's
+/// default, on. A file that is not JSON is an error; the other keys (wand items) are not read.
+pub fn use_server_cui(text: &str) -> Result<bool, String> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| "not JSON".to_string())?;
+    Ok(value.get("useServerCUI").and_then(serde_json::Value::as_bool).unwrap_or(true))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum BrushShape {
     Sphere { radius: f64, hollow: bool },
@@ -133,5 +149,26 @@ impl Sessions {
     }
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uuid_names_parse_with_or_without_dashes() {
+        assert_eq!(uuid_from_stem("00000000-0000-0000-0000-000000000001"), Some(1));
+        assert_eq!(uuid_from_stem("0000000000000000000000000000000a"), Some(10));
+        assert_eq!(uuid_from_stem("not-a-uuid"), None);
+        assert_eq!(uuid_from_stem("0000000000000000000000000000000g"), None);
+    }
+
+    #[test]
+    fn cui_flag_is_read_and_defaults_on() {
+        assert_eq!(use_server_cui(r#"{"useServerCUI": false, "wandItem": "minecraft:wooden_axe"}"#), Ok(false));
+        assert_eq!(use_server_cui(r#"{"useServerCUI": true}"#), Ok(true));
+        assert_eq!(use_server_cui("{}"), Ok(true));
+        assert!(use_server_cui("{ broken").is_err());
     }
 }

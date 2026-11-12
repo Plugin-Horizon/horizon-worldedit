@@ -54,6 +54,7 @@ impl Engine {
     /// A left (`left`) or right click on the block at `pos` with an item that has a tool. `None` when
     /// it has none (or the tool does nothing on that click), which leaves the click to the game.
     pub fn tool_click(&mut self, world: &mut dyn World, actor: &Actor, left: bool, pos: Pos, now_ms: i64) -> Option<Reply> {
+        self.now_ms = now_ms;
         let item = actor.held.clone()?;
         let tool = self.sessions.get(actor.uuid).tools.get(&item)?.clone();
         let node = match tool {

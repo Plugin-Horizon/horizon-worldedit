@@ -1,0 +1,13 @@
+id = "worldedit"
+name = "WorldEdit"
+version = "0.1.0"
+description = "WorldEdit for a Horizon dedicated server: selections, clipboard, brushes, shapes and schematics per player (port of the horizon-worldedit server bundle)."
+authors = ["Plugin-Horizon contributors"]
+api = "0.2"
+capabilities = ["registries"]
+
+[native]
+# Development build of arismoko/horizon main plus mod API additions (see README).
+game = "26.3"
+horizon = "54090ee36c4e2c7b43b66db864220c577b94b7e0"
+mixins = "5a64af938ec86b00d53d16a408aabc0038fb3e57"

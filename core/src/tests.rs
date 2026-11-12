@@ -18,6 +18,7 @@ fn actor(uuid: u128) -> Actor {
         pitch: 0.0,
         game_mode: 1,
         held: None,
+        granted: Default::default(),
     }
 }
 
@@ -935,3 +936,85 @@ fn tools_bind_and_click() {
     a.held = None;
     assert_eq!(fails(&mut e, &mut w, &a, "/tool info"), "Can't bind tool to Air: Blocks can't be used.");
 }
+
+#[test]
+fn only_operators_and_granted_nodes_get_worldedit() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(7);
+    a.permission = 0;
+    // No node: refused everything, the wand and the commands without a node included.
+    assert!(fails(&mut e, &mut w, &a, "//pos1").contains("not permitted"));
+    assert!(fails(&mut e, &mut w, &a, "wand").contains("not permitted"));
+    assert!(fails(&mut e, &mut w, &a, "//version").contains("not permitted"));
+    // The selection node gives the selection, and not a change of the region.
+    a.granted.insert("worldedit.selection.pos".into());
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 1 64 1");
+    assert!(fails(&mut e, &mut w, &a, "//set stone").contains("not permitted"));
+    assert_eq!(w.count("stone"), 0);
+    a.granted.insert("worldedit.region.set".into());
+    assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (4 blocks affected)");
+    // Creative only still applies to a granted player.
+    let mut e = Engine::new(Config { creative_only: true, ..Config::default() });
+    a.game_mode = 0;
+    assert!(fails(&mut e, &mut w, &a, "//pos1 0,64,0").contains("creative"));
+}
+
+#[test]
+fn history_expires_after_its_minutes() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(8);
+    let at = |ms: i64| Env { now_ms: ms, ..env("history") };
+    let minute = 60_000;
+    e.command(&mut w, &a, "//pos1 0,64,0", &at(0));
+    e.command(&mut w, &a, "//pos2 0,64,0", &at(0));
+    // Nine minutes after the edit it can still be undone (and redone).
+    e.command(&mut w, &a, "//set stone", &at(minute));
+    let r = e.command(&mut w, &a, "//undo", &at(10 * minute));
+    assert!(r.lines.iter().all(|l| !l.error), "{}", r.text());
+    assert_eq!(w.count("stone"), 0);
+    // An edit at minute 20, undone at minute 31: forgotten (expiration 10 minutes).
+    e.command(&mut w, &a, "//set dirt", &at(20 * minute));
+    let r = e.command(&mut w, &a, "//undo", &at(31 * minute));
+    assert!(r.text().contains("Nothing left to undo"), "{}", r.text());
+    assert_eq!(w.count("dirt"), 1);
+}
+
+#[test]
+fn navigation_wand_teleports_to_the_block_in_sight() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    w.fill([-2, 63, -2], [2, 63, 2], "stone");
+    let mut a = actor(9);
+    a.position = [0.5, 64.0, 0.5];
+    a.pitch = 90.0;
+    a.held = Some("minecraft:compass".into());
+    let r = e.nav_use(&w, &a, 0).expect("the compass is the navigation wand");
+    assert_eq!(r.teleport, Some([0.5, 64.0, 0.5]));
+    // Another item is left to the game.
+    a.held = Some("minecraft:stone".into());
+    assert!(e.nav_use(&w, &a, 0).is_none());
+    // Without the node, and not an operator: refused.
+    a.held = Some("minecraft:compass".into());
+    a.permission = 0;
+    assert!(e.nav_use(&w, &a, 0).unwrap().text().contains("not permitted"));
+    a.granted.insert("worldedit.navigation.jumpto.tool".into());
+    assert_eq!(e.nav_use(&w, &a, 0).unwrap().teleport, Some([0.5, 64.0, 0.5]));
+}
+
+#[test]
+fn players_with_server_cui_off_get_no_outline() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let (a, b) = (actor(1), actor(2));
+    for p in [&a, &b] {
+        run(&mut e, &mut w, p, "//pos1 0,64,0");
+        run(&mut e, &mut w, p, "//pos2 1 64 1");
+    }
+    e.set_cui_off([1u128].into());
+    assert!(e.outline_of(1).is_none());
+    assert!(e.outline_of(2).is_some());
+}
+

@@ -1,0 +1,12 @@
+[package]
+name = "mod-worldedit"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+description = "WorldEdit for Horizon, server bundle, as an arismoko trait mod (logic crate: horizon-worldedit-core)"
+
+[dependencies]
+# The launcher (or stage.py) points this at the Horizon source the game is built from.
+horizon-mod-api = { git = "https://github.com/arismoko/horizon" }
+horizon-worldedit-core = { path = "core" }
