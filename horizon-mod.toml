@@ -2,7 +2,7 @@ id = "worldedit"
 name = "WorldEdit"
 version = "0.1.0"
 description = "WorldEdit for a Horizon dedicated server: selections, clipboard, brushes, shapes and schematics per player (port of the horizon-worldedit server bundle)."
-authors = ["CoreSMP"]
+authors = ["Plugin-Horizon contributors"]
 api = "0.2"
 capabilities = ["registries"]
 
