@@ -31,7 +31,8 @@ max_brush_radius = 5
 brush_range = 300
 
 # The largest radius of //sphere, //cyl and the like (limits.max-radius); -1 = no limit.
-max_radius = -1
+# Default 128, not WorldEdit's -1: `//sphere stone 99999` would otherwise try to plan ~10^15 blocks and kill the server.
+max_radius = 128
 
 # The largest range of /tool floodfill (limits.max-super-pickaxe-size).
 max_super_pickaxe_size = 5
@@ -166,7 +167,7 @@ impl Default for Config {
             wand_item: "minecraft:wooden_axe".into(),
             max_brush_radius: 5.0,
             brush_range: 300.0,
-            max_radius: -1.0,
+            max_radius: 128.0,
             max_super_pickaxe_size: 5,
             default_vertical_height: 256,
             schematics_dir: "worldedit/schematics".into(),

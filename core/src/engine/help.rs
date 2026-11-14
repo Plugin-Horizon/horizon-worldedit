@@ -80,6 +80,14 @@ pub(crate) const ENTRIES: &[Entry] = &[
     Entry { name: "searchitem", aliases: &["/searchitem", "/l", "/search"], desc: "Search for an item" },
     Entry { name: "/calculate", aliases: &["/calc", "/eval", "/evaluate", "/solve"], desc: "Evaluate a mathematical expression" },
     Entry { name: "/help", aliases: &[], desc: "Displays help for WorldEdit commands" },
+    Entry { name: "unstuck", aliases: &["!", "/unstuck"], desc: "Escape from being stuck inside a block" },
+    Entry { name: "ascend", aliases: &["asc", "/ascend", "/asc"], desc: "Go up a floor" },
+    Entry { name: "descend", aliases: &["desc", "/descend", "/desc"], desc: "Go down a floor" },
+    Entry { name: "ceil", aliases: &["/ceil"], desc: "Go to the ceiling" },
+    Entry { name: "thru", aliases: &["/thru"], desc: "Pass through walls" },
+    Entry { name: "jumpto", aliases: &["j", "/jumpto", "/j"], desc: "Teleport to a location" },
+    Entry { name: "/up", aliases: &[], desc: "Go upwards some distance" },
+    Entry { name: "placement", aliases: &["/placement"], desc: "Select your placement type" },
     Entry { name: "worldedit", aliases: &["we"], desc: "WorldEdit commands" },
 ];
 
@@ -259,7 +267,7 @@ impl Engine {
                 "* Horizon (dedicated server)".into(),
                 titled("Capabilities"),
                 "CONFIGURATION: Horizon".into(),
-                "WORLDEDIT_CUI: none".into(),
+                "WORLDEDIT_CUI: Horizon".into(),
                 "GAME_HOOKS: Horizon".into(),
                 "PERMISSIONS: Horizon".into(),
                 "USER_COMMANDS: Horizon".into(),
