@@ -14,20 +14,49 @@
 //! `TODO(arismoko-api: <name>)` marks behaviour the engine does not offer yet. See PORT_NOTES.md.
 use horizon_worldedit_core as we;
 use mod_api::{
-    BlockEdit, BlockMetadata, BlockRun, BlockState as HostState, BlockUpdateFlags, Command, Config,
+    BlockEdit, BlockMetadata, BlockRun, BlockState as HostState, BlockUpdateFlags, Command, CommandArgumentError,
+    CommandArgumentKind, CommandArgumentType, CommandSuggestion, Config,
     ConfigKind, ConfigLoadingEvent, ConfigReloadingEvent, Flow, GameMode, Hand,
     HostBlockStates, HostSide, Hooks, Identifier, InteractionResult, ItemStack, LeftClickBlockEvent, LevelRef,
-    LevelTickPostEvent, PlayerCommandEvent, PlayerRef, RegisterCommandsEvent,
+    LevelTickPostEvent, PlayerCommandEvent, PlayerCommandsSentEvent, PlayerRef, RegisterCommandsEvent,
     RegisterConfigsEvent, RightClickBlockEvent, ServerHost, ServerStoppedEvent, StateConstraint,
-    Text, RightClickItemEvent,
+    Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext,
 };
+use mod_api::{IPayloadContext, IPayloadHandler, PayloadBytes, PayloadId};
+use std::sync::Arc;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 const ID: &str = "worldedit";
 const CONFIG_FILE: &str = "worldedit.toml";
 const ORIGINAL_DIR: &str = "plugins/WorldEdit";
+
+/// Public interface for other mods (WorldGuard's `/rg define`, `redefine`, `claim`, `select`, `-s`):
+/// `worldedit::api::{selection, select_cuboid}`. Each call takes the editor's lock for its own
+/// duration only and calls nothing else while holding it.
+pub mod api {
+    use super::we;
+
+    /// The player's cuboid selection: (level id, corner 1, corner 2) in click order. `None` while
+    /// a corner is missing. This port has no polygon selections.
+    pub fn selection(player: u128) -> Option<(String, [i32; 3], [i32; 3])> {
+        we::with(|e| e.selection_of(player))
+    }
+
+    /// Replaces the player's selection with the cuboid between `a` and `b` in `dimension`.
+    pub fn select_cuboid(player: u128, dimension: &str, a: [i32; 3], b: [i32; 3]) {
+        we::with(|e| e.select(player, dimension, a, b));
+    }
+
+    /// Whether the engine hands the player-command hook the slash count (`//set x` arrives as `/set x`,
+    /// `/set x` as `set x`). WorldGuard asks this before it refuses a double-slash form of its commands.
+    pub fn slash_aware() -> bool {
+        super::slash_strict()
+    }
+}
 
 #[derive(Default)]
 struct Mod;
@@ -68,6 +97,293 @@ fn intern(state: HostState) -> u32 {
 
 fn host_state(id: u32) -> Option<HostState> {
     STATES.with(|s| s.borrow().by_id.get(id as usize).copied())
+}
+
+// --- tab completion ------------------------------------------------------------------------------
+//
+// The tree the game sends a player holds this mod's own argument kinds (`worldedit:pattern`...), whose
+// words come from here. A block's id list is read once from the game and kept: a completion has no host.
+
+static BLOCK_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Reads the game's block ids when they are not known yet.
+fn ensure_block_ids(host: &dyn ServerHost) {
+    let mut ids = BLOCK_IDS.lock().unwrap_or_else(|e| e.into_inner());
+    if !ids.is_empty() {
+        return;
+    }
+    let meta = host.block_states();
+    let names: Vec<String> = host.block_keys().into_iter().filter_map(|key| meta.name(key).ok().map(str::to_owned)).collect();
+    *ids = we::complete::sorted_ids(names);
+}
+
+#[derive(Clone, Copy)]
+enum ArgKind {
+    Pattern,
+    Mask,
+    Schematic,
+    Command,
+}
+
+/// One of this mod's command argument kinds: a word, or the rest of the line.
+struct WeArgument {
+    kind: ArgKind,
+    greedy: bool,
+}
+
+impl CommandArgumentType for WeArgument {
+    fn kind(&self) -> CommandArgumentKind {
+        if self.greedy {
+            CommandArgumentKind::Greedy
+        } else {
+            CommandArgumentKind::Word
+        }
+    }
+
+    // Never refuses: the editor reads the typed line itself (`player_command`) and words its own errors.
+    fn parse(&self, input: &str) -> Result<String, CommandArgumentError> {
+        Ok(input.to_owned())
+    }
+
+    fn suggest(&self, prefix: &str) -> Vec<CommandSuggestion> {
+        let words = match self.kind {
+            ArgKind::Pattern => {
+                let ids = BLOCK_IDS.lock().unwrap_or_else(|e| e.into_inner());
+                we::complete::pattern_words(prefix, &ids)
+            }
+            ArgKind::Mask => {
+                let ids = BLOCK_IDS.lock().unwrap_or_else(|e| e.into_inner());
+                we::complete::mask_words(prefix, &ids)
+            }
+            ArgKind::Schematic => we::complete::schematic_words(&schematics_dir(), prefix),
+            ArgKind::Command => we::complete::command_words(prefix),
+        };
+        words.into_iter().map(CommandSuggestion::new).collect()
+    }
+}
+
+// --- selection outline (WorldEditCUI) ---------------------------------------------------------------
+//
+// A client with the WorldEditCUI mod says hello on `worldedit:cui` (`v|<version>`); from then on the server sends
+// it `s|cuboid` and `p|<0|1>|x|y|z|volume` whenever the player's corners change (checked every level tick).
+
+const CUI_CHANNEL: &str = "worldedit:cui";
+
+type Corners = (Option<[i32; 3]>, Option<[i32; 3]>);
+
+/// Players who said hello, with the corners last sent to them (`None`: nothing yet).
+static CUI_PLAYERS: Mutex<Option<HashMap<u128, Option<Corners>>>> = Mutex::new(None);
+
+fn cui_players<R>(f: impl FnOnce(&mut HashMap<u128, Option<Corners>>) -> R) -> R {
+    let mut guard = CUI_PLAYERS.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Receives the CUI's hello: that player is sent their selection from now on (again, if they say hello again).
+struct CuiInbox;
+
+impl IPayloadHandler for CuiInbox {
+    fn handle(&self, _payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), String> {
+        let player = context.player().map_err(|e| format!("{e:?}"))?;
+        let uuid = player.uuid();
+        cui_players(|m| m.insert(uuid, None));
+        Ok(())
+    }
+}
+
+/// Sends each CUI player the corners that changed since the last send.
+fn send_outlines(host: &mut dyn ServerHost) {
+    let uuids: Vec<u128> = cui_players(|m| m.keys().copied().collect());
+    for uuid in uuids {
+        let (a, b) = we::with(|e| e.corners_of(uuid));
+        let now: Corners = (a, b);
+        if cui_players(|m| m.get(&uuid).cloned().flatten()) == Some(now) {
+            continue;
+        }
+        let Some(player) = player_by_uuid(&*host, uuid) else {
+            cui_players(|m| m.remove(&uuid));
+            continue;
+        };
+        let volume: i64 = match (a, b) {
+            (Some(a), Some(b)) => (0..3).map(|i| i64::from((a[i] - b[i]).abs()) + 1).product(),
+            _ => -1,
+        };
+        let mut lines = vec!["s|cuboid".to_owned()];
+        for (index, corner) in [a, b].into_iter().enumerate() {
+            if let Some(p) = corner {
+                lines.push(format!("p|{index}|{}|{}|{}|{volume}", p[0], p[1], p[2]));
+            }
+        }
+        let id = PayloadId(CUI_CHANNEL.to_string());
+        for text in lines {
+            let _ = player.send_payload(&mut *host, &id, PayloadBytes(text.into_bytes()));
+        }
+        cui_players(|m| m.insert(uuid, Some(now)));
+    }
+}
+
+/// Whether the engine accepts command words that start with `/` (the `//set` forms). It does not yet
+/// (`usage_nodes` in the engine's native_server.rs allows only `a-z 0-9 _ -`): flip this when it does, and every
+/// `//command` completes through the same argument kinds as the single-slash ones.
+const SLASH_ROOTS: bool = true;
+
+// --- slash forms ----------------------------------------------------------------------------------
+//
+// WorldEdit's `//set` exists only with two slashes, `/we` only with one (`we::form_allows`). The player-command hook
+// hears the line without its slashes, and the engine builds so far trimmed ALL of them (`trim_start_matches('/')` in
+// lan_actions/commands.rs), so `/set` and `//set` look alike. An engine that trims only one slash delivers `/set x`
+// for a typed `//set x` and `set x` for `/set x`: the first line that begins with `/` switches the strict check on
+// (`SLASH_AWARE`), and so does the file `config/worldedit_strict_slash` (for a server that must refuse from the first
+// command on). Until then every typed form runs, as before.
+
+static SLASH_AWARE: AtomicBool = AtomicBool::new(false);
+
+fn slash_strict() -> bool {
+    SLASH_AWARE.load(Ordering::Relaxed) || Path::new("config/worldedit_strict_slash").exists()
+}
+
+// --- completions of whole lines ---------------------------------------------------------------------
+//
+// The engine's own completion walks the registered usages like Brigadier: the catch-all `<args:text>` usage that every
+// command has swallows the rest of the line and wins whenever a space follows a typed word (`//expand 5 `), and the
+// words of an argument kind are asked only for the word under the cursor. So this mod also answers the `tab_complete`
+// hook: it matches the typed words against every usage itself and adds what the engine missed.
+
+/// The usages split into words, built once.
+fn usage_words() -> &'static Vec<Vec<String>> {
+    static WORDS: OnceLock<Vec<Vec<String>>> = OnceLock::new();
+    WORDS.get_or_init(|| we::usages().iter().map(|u| u.split_whitespace().map(str::to_owned).collect()).collect())
+}
+
+/// Roots another mod or the game also answers to: never hidden, never completed here.
+const SHARED_ROOTS: &[&str] = &["j", "info", "none", "ex", "ext", "l"];
+
+/// The command roots this mod registers (with their leading `/` when typed with two slashes).
+fn we_roots() -> &'static BTreeSet<String> {
+    static ROOTS: OnceLock<BTreeSet<String>> = OnceLock::new();
+    ROOTS.get_or_init(|| {
+        usage_words()
+            .iter()
+            .filter_map(|w| w.first())
+            .filter(|r| !SHARED_ROOTS.contains(&r.as_str()))
+            .map(|r| r.to_ascii_lowercase())
+            .collect()
+    })
+}
+
+/// A usage word `<name:kind>` or `[name:kind]`: its kind.
+fn word_kind(word: &str) -> Option<&str> {
+    let inner = word
+        .strip_prefix('<')
+        .and_then(|w| w.strip_suffix('>'))
+        .or_else(|| word.strip_prefix('[').and_then(|w| w.strip_suffix(']')))?;
+    inner.split_once(':').map(|(_, kind)| kind)
+}
+
+/// Kinds that take the rest of the line.
+fn kind_is_greedy(kind: &str) -> bool {
+    matches!(kind, "text" | "worldedit:pattern_text" | "worldedit:mask_text" | "worldedit:schematic" | "worldedit:command")
+}
+
+/// This mod's own kinds, as the argument that completes them.
+fn own_kind(kind: &str) -> Option<ArgKind> {
+    match kind {
+        "worldedit:pattern" | "worldedit:pattern_text" => Some(ArgKind::Pattern),
+        "worldedit:mask" | "worldedit:mask_text" => Some(ArgKind::Mask),
+        "worldedit:schematic" => Some(ArgKind::Schematic),
+        "worldedit:command" => Some(ArgKind::Command),
+        _ => None,
+    }
+}
+
+/// Whether the player may use any WorldEdit command (holds one of the nodes, or is an operator).
+fn may_use(host: &dyn ServerHost, uuid: u128) -> bool {
+    host.player(uuid).is_some_and(|p| we::NODES.iter().any(|&n| p.has_permission(host, n)))
+}
+
+/// The completions for the word being typed at the end of `command` (the line without its first slash): pairs of
+/// the byte offset the replacement starts at and the replacement. `None` when the line is not one of ours.
+fn complete_line(host: &dyn ServerHost, command: &str) -> Option<Vec<(usize, String)>> {
+    let first_space = command.find(' ')?;
+    let root = command[..first_space].to_ascii_lowercase();
+    if !we_roots().contains(&root) {
+        return None;
+    }
+    let tokens: Vec<&str> = command.split(' ').collect();
+    let mut starts = Vec::with_capacity(tokens.len());
+    let mut at = 0;
+    for t in &tokens {
+        starts.push(at);
+        at += t.len() + 1;
+    }
+    let n = tokens.len() - 1;
+    ensure_block_ids(host);
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let push = |out: &mut Vec<(usize, String)>, start: usize, word: String| {
+        if !out.iter().any(|(s, w)| *s == start && *w == word) {
+            out.push((start, word));
+        }
+    };
+    for usage in usage_words() {
+        if !usage[0].eq_ignore_ascii_case(&root) {
+            continue;
+        }
+        for i in 1..=n {
+            let Some(word) = usage.get(i) else { break };
+            let kind = word_kind(word);
+            if let Some(kind) = kind {
+                if kind_is_greedy(kind) {
+                    // The rest of the line is this argument (a pattern, a mask, a schematic name, a command).
+                    if let Some(own) = own_kind(kind) {
+                        let argument = WeArgument { kind: own, greedy: true };
+                        for s in argument.suggest(&command[starts[i]..]) {
+                            push(&mut out, starts[i], s.text);
+                        }
+                    }
+                    break;
+                }
+            }
+            if i == n {
+                let prefix = tokens[n];
+                match kind {
+                    None => {
+                        if word.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+                            push(&mut out, starts[n], word.clone());
+                        }
+                    }
+                    Some("player") | Some("player_name") => {
+                        for p in host.players().server_players() {
+                            if let Some(name) = p.name(host) {
+                                if name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
+                                    push(&mut out, starts[n], name);
+                                }
+                            }
+                        }
+                    }
+                    Some(k) => {
+                        if let Some(own) = own_kind(k) {
+                            for s in (WeArgument { kind: own, greedy: false }).suggest(prefix) {
+                                push(&mut out, starts[n], s.text);
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            // A word typed before the cursor has to fit the usage's word at that place.
+            let typed = tokens[i];
+            let fits = match kind {
+                None => typed.eq_ignore_ascii_case(word),
+                Some("integer") => typed.parse::<i64>().is_ok(),
+                Some("number") => typed.parse::<f64>().is_ok(),
+                Some(_) => true,
+            };
+            if !fits {
+                break;
+            }
+        }
+    }
+    Some(out)
 }
 
 // --- the level in place ------------------------------------------------------------------------
@@ -259,10 +575,18 @@ fn now_ms() -> i64 {
 }
 
 /// Where `//schem` keeps its files: `schematics_dir` from the config, inside `config/` when relative.
-fn env(data_version: i32) -> we::Env {
+fn schematics_dir() -> PathBuf {
     let configured = PathBuf::from(we::with(|e| e.config.schematics_dir.clone()));
+    if configured.is_absolute() {
+        configured
+    } else {
+        PathBuf::from("config").join(configured)
+    }
+}
+
+fn env(data_version: i32) -> we::Env {
     let config_dir = PathBuf::from("config");
-    let schematics_dir = if configured.is_absolute() { configured } else { config_dir.join(configured) };
+    let schematics_dir = schematics_dir();
     we::Env {
         schematics_dir,
         config_file: config_dir.join(CONFIG_FILE),
@@ -303,8 +627,32 @@ fn original_present() -> bool {
     Path::new(ORIGINAL_DIR).join("config.yml").is_file()
 }
 
+thread_local! {
+    /// Teleports a typed command asked for (`//up`, `/jumpto`...): the command hook cannot move a player, the next
+    /// level tick does. UUID, feet position, yaw and pitch.
+    static TELEPORTS: RefCell<Vec<(u128, [f64; 3], [f32; 2])>> = RefCell::new(Vec::new());
+}
+
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
+    fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+        for (name, kind, greedy) in [
+            ("pattern", ArgKind::Pattern, false),
+            ("pattern_text", ArgKind::Pattern, true),
+            ("mask", ArgKind::Mask, false),
+            ("mask_text", ArgKind::Mask, true),
+            ("schematic", ArgKind::Schematic, true),
+            ("command", ArgKind::Command, true),
+        ] {
+            r.register_command_argument(name, WeArgument { kind, greedy });
+        }
+        // The selection outline for clients with the WorldEditCUI mod: its handshake arrives on this channel.
+        let mut handlers = r.payload_handlers();
+        let mut registrar = handlers.registrar("1");
+        let inbox: Arc<dyn IPayloadHandler> = Arc::new(CuiInbox);
+        registrar.play_raw(PayloadId(CUI_CHANNEL.to_string()), Some(inbox));
+    }
+
     fn register_configs(&self, _: HostSide, event: &mut RegisterConfigsEvent<'_>) {
         if original_present() {
             for problem in we::configure_original(Path::new(ORIGINAL_DIR)) {
@@ -333,15 +681,33 @@ impl Hooks for Mod {
         }
     }
 
-    fn register_commands(&self, _: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
+    fn register_commands(&self, host: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
+        ensure_block_ids(&*host);
         // For completion only: execution happens in `player_command`, before vanilla looks at the name.
+        // The engine accepts only [a-z0-9_-] command words and has no `player_name` kind: the `//name` forms
+        // (root starting with `/`) are left out (they logged thousands of warnings), `player_name` is a `word`.
         for usage in we::usages() {
+            if usage.starts_with('/') && !SLASH_ROOTS {
+                continue;
+            }
             event.commands.push(Command::new(&usage));
         }
     }
 
     fn player_command(&self, host: &mut dyn ServerHost, event: &mut PlayerCommandEvent<'_>) -> Flow {
-        if event.cancelled || !we::is_command(event.command) {
+        if event.cancelled {
+            return Flow::Continue;
+        }
+        // `//set x` arrives as `/set x` once the engine keeps the second slash (see `slash_strict`).
+        let double = event.command.starts_with('/');
+        if double {
+            SLASH_AWARE.store(true, Ordering::Relaxed);
+        }
+        if !we::is_command(event.command) {
+            return Flow::Continue;
+        }
+        // A form this command does not exist in (`/set`, `//we`) is not ours: the engine answers it as unknown.
+        if slash_strict() && !we::form_allows(event.command, double) {
             return Flow::Continue;
         }
         event.cancelled = true;
@@ -349,14 +715,57 @@ impl Hooks for Mod {
             event.replies.push(Text::literal("WorldEdit cannot see you right now."));
             return Flow::Cancel;
         };
+        ensure_block_ids(&*host);
         let actor = actor_of(&*host, player);
         let reply = execute(&mut *host, &actor, event.command);
         event.replies.extend(reply.lines.iter().map(line));
+        if let Some(to) = reply.teleport {
+            TELEPORTS.with(|t| t.borrow_mut().push((actor.uuid, to, [actor.yaw, actor.pitch])));
+        }
         // The lines are answered through `replies` above (no player is swapped in here); the items are given now.
         for item in &reply.give {
             host.commands().run_command(&format!("give {} {} 1", actor.name, item));
         }
         Flow::Cancel
+    }
+
+    fn player_commands_sent(&self, host: &mut dyn ServerHost, event: &mut PlayerCommandsSentEvent<'_>) {
+        // Players who may use no WorldEdit command do not get its roots in their tab list. A player the host cannot
+        // resolve yet (still joining) keeps the full list rather than losing it for an operator.
+        if host.player(event.player).is_none() || may_use(&*host, event.player) {
+            return;
+        }
+        let roots = we_roots();
+        event.names.retain(|n| !roots.contains(&n.to_ascii_lowercase()));
+    }
+
+    fn tab_complete(&self, host: &mut dyn ServerHost, event: &mut TabCompleteEvent<'_>) {
+        let command: &str = event.command;
+        let Some(first_space) = command.find(' ') else {
+            // A root word alone (`/s`): WorldEdit's roots leave the list of a player who may use none of it.
+            if !may_use(&*host, event.player) {
+                let roots = we_roots();
+                event.suggestions.retain(|s| !roots.contains(&s.text.trim_start_matches('/').to_ascii_lowercase()));
+            }
+            return;
+        };
+        if !we_roots().contains(&command[..first_space].to_ascii_lowercase()) {
+            return;
+        }
+        // Nothing of WorldEdit (not even a schematic name) for a player who may not use it.
+        if !may_use(&*host, event.player) {
+            event.suggestions.clear();
+            return;
+        }
+        let Some(words) = complete_line(&*host, command) else { return };
+        let (from, to) = (event.range[0], event.range[1]);
+        for (start, word) in words {
+            // The engine's range may begin before the word (it took the rest of the line for one argument).
+            let text = if start >= from { format!("{}{}", &command[from..start], word) } else { word };
+            if !event.suggestions.iter().any(|s| s.text == text) {
+                event.suggestions.push(Suggestion::new((from, to), text));
+            }
+        }
     }
 
     fn left_click_block(&self, host: &mut dyn ServerHost, event: &mut LeftClickBlockEvent) -> Flow {
@@ -434,6 +843,14 @@ impl Hooks for Mod {
 
     fn level_tick_post(&self, host: HostSide, event: &mut LevelTickPostEvent) {
         let HostSide::Server(host) = host else { return };
+        ensure_block_ids(&*host);
+        send_outlines(&mut *host);
+        let moves: Vec<_> = TELEPORTS.with(|t| t.borrow_mut().drain(..).collect());
+        for (uuid, to, [yaw, pitch]) in moves {
+            if let Some(player) = player_by_uuid(&*host, uuid) {
+                let _ = player.entity().teleport_to(&mut *host, to, Some([yaw, pitch]));
+            }
+        }
         let dimension = event.level.dimension_id().to_string();
         let done = {
             let Some(mut world) = GameWorld::new(&mut *host, &dimension) else { return };

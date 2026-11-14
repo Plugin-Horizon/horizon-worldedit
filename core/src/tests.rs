@@ -1018,3 +1018,53 @@ fn players_with_server_cui_off_get_no_outline() {
     assert!(e.outline_of(2).is_some());
 }
 
+
+// ---- navigation ----
+
+#[test]
+fn up_floats_on_glass_and_unstuck_frees() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    w.fill([-2, 63, -2], [2, 63, 2], "stone");
+    let a = actor(5);
+    let r = e.command(&mut w, &a, "//up 10", &env("none"));
+    assert_eq!(r.text(), "Whoosh!");
+    assert_eq!(r.teleport, Some([0.5, 74.0, 0.5]));
+    assert_eq!(w.name_at([0, 73, 0]), "minecraft:glass");
+    // Stuck in stone: the first free spot above.
+    w.fill([0, 64, 0], [0, 65, 0], "stone");
+    let r = e.command(&mut w, &a, "/unstuck", &env("none"));
+    assert_eq!(r.text(), "There you go!");
+    assert_eq!(r.teleport, Some([0.5, 66.0, 0.5]));
+    assert_eq!(e.command(&mut w, &a, "!", &env("none")).text(), "There you go!");
+}
+
+#[test]
+fn ascend_and_ceil_find_the_floor_and_the_ceiling() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    w.fill([-2, 63, -2], [2, 63, 2], "stone");
+    w.fill([-2, 70, -2], [2, 70, 2], "stone");
+    let a = actor(6);
+    let r = e.command(&mut w, &a, "ceil", &env("none"));
+    assert_eq!(r.text(), "Whoosh!");
+    assert_eq!(r.teleport, Some([0.5, 68.0, 0.5]));
+    assert_eq!(fails(&mut e, &mut w, &a, "/descend"), "No free spot below you found.");
+}
+
+#[test]
+fn a_command_runs_only_in_the_slash_form_it_is_defined_with() {
+    use crate::form_allows;
+    // `//set`-style commands: two slashes only.
+    assert!(form_allows("set stone", true) && !form_allows("set stone", false));
+    assert!(form_allows("pos1", true) && !form_allows("pos1", false));
+    assert!(form_allows("up 5", true) && !form_allows("up 5", false));
+    assert!(form_allows("rotate 90", true) && !form_allows("rotate 90", false));
+    // `/we`-style commands: one slash only.
+    assert!(form_allows("we ver", false) && !form_allows("we ver", true));
+    assert!(form_allows("tool none", false) && !form_allows("tool none", true));
+    assert!(form_allows("!", false) && !form_allows("!", true));
+    // Both forms.
+    assert!(form_allows("brush none", false) && form_allows("brush none", true));
+    assert!(form_allows("undo", false) && form_allows("undo", true));
+}

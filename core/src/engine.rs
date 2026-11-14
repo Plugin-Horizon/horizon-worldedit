@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 mod calc;
 mod help;
+mod nav;
 mod tools;
 mod utility;
 
@@ -63,7 +64,14 @@ pub const NODES: &[&str] = &[
     "worldedit.history.undo.other",
     "worldedit.history.undo.self",
     "worldedit.limit",
+    "worldedit.navigation.ascend",
+    "worldedit.navigation.ceiling",
+    "worldedit.navigation.descend",
+    "worldedit.navigation.jumpto.command",
     "worldedit.navigation.jumpto.tool",
+    "worldedit.navigation.thru.command",
+    "worldedit.navigation.unstuck",
+    "worldedit.navigation.up",
     "worldedit.selection.sel",
     "worldedit.region.center",
     "worldedit.region.faces",
@@ -274,6 +282,23 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("eval", "<expression:text>"),
     ("evaluate", "<expression:text>"),
     ("solve", "<expression:text>"),
+    ("up", "<args:text>"),
+    ("ascend", "[levels:integer]"),
+    ("asc", "[levels:integer]"),
+    ("descend", "[levels:integer]"),
+    ("desc", "[levels:integer]"),
+    ("thru", ""),
+    ("jumpto", ""),
+    ("j", ""),
+    ("unstuck", ""),
+    ("ceil", "[args:text]"),
+    ("selwand", ""),
+    ("info", ""),
+    ("cycler", ""),
+    ("repl", "<patternarg:text>"),
+    ("floodfill", "<args:text>"),
+    ("flood", "<args:text>"),
+    ("placement", "<args:text>"),
 ];
 
 /// The typed usages, one per sub-command path: the names a command answers to (aliases too), the flags
@@ -299,66 +324,75 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["contract"], "", &["<amount:integer>", "<amount:integer> {dir}", "<amount:integer> <reverse:integer>", "<amount:integer> <reverse:integer> {dir}"]),
     (&["shift"], "", &["<amount:integer>", "<amount:integer> {dir}"]),
     (&["outset", "inset"], "hv", &["{flags} <amount:integer>"]),
-    (&["count"], "", &["<filter:word>"]),
-    (&["set", "walls", "faces", "outline", "center", "middle", "overlay"], "", &["<block:word>"]),
-    (&["replace", "re", "rep"], "", &["<to:word>", "<from:word> <to:word>"]),
-    (&["hollow"], "", &["", "<thickness:integer>", "<thickness:integer> <block:word>"]),
-    (&["smooth"], "", &["", "<iterations:integer>", "<iterations:integer> <filter:word>"]),
-    (&["line"], "h", &["{flags} <block:word>", "{flags} <block:word> <thickness:number>"]),
+    (&["count"], "", &["<filter:mask>"]),
+    (&["set", "walls", "faces", "outline", "center", "middle", "overlay"], "", &["<block:pattern>"]),
+    (&["replace", "re", "rep"], "", &["<to:pattern>", "<from:mask> <to:pattern>"]),
+    (&["hollow"], "", &["", "<thickness:integer>", "<thickness:integer> <block:pattern>"]),
+    (&["smooth"], "", &["", "<iterations:integer>", "<iterations:integer> <filter:mask>"]),
+    (&["line"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
     (&["stack"], "asr", &["{flags}", "<count:integer> {flags}", "<count:integer> {dir} {flags}"]),
     (
         &["move"],
         "as",
-        &["{flags}", "<distance:integer> {flags}", "<distance:integer> {dir} {flags}", "<distance:integer> {dir} <leave:word> {flags}"],
+        &["{flags}", "<distance:integer> {flags}", "<distance:integer> {dir} {flags}", "<distance:integer> {dir} <leave:pattern> {flags}"],
     ),
-    (&["sphere", "hsphere"], "hr", &["{flags} <block:word> <radii:word> {flags}"]),
-    (&["cyl", "hcyl"], "h", &["{flags} <block:word> <radii:word> {flags}", "{flags} <block:word> <radii:word> <height:integer> {flags}"]),
+    (&["sphere", "hsphere"], "hr", &["{flags} <block:pattern> <radii:word> {flags}"]),
+    (&["cyl", "hcyl"], "h", &["{flags} <block:pattern> <radii:word> {flags}", "{flags} <block:pattern> <radii:word> <height:integer> {flags}"]),
     (&["removeabove", "removebelow"], "", &["", "<size:integer>", "<size:integer> <height:integer>"]),
-    (&["removenear"], "", &["<mask:word>", "<mask:word> <radius:integer>"]),
-    (&["replacenear"], "", &["<radius:integer> <to:word>", "<radius:integer> <from:word> <to:word>"]),
+    (&["removenear"], "", &["<mask:mask>", "<mask:mask> <radius:integer>"]),
+    (&["replacenear"], "", &["<radius:integer> <to:pattern>", "<radius:integer> <from:mask> <to:pattern>"]),
     (
         &["cone"],
         "h",
-        &["{flags} <block:word> <radii:word> {flags}", "{flags} <block:word> <radii:word> <height:integer> {flags}", "{flags} <block:word> <radii:word> <height:integer> <thickness:number>"],
+        &["{flags} <block:pattern> <radii:word> {flags}", "{flags} <block:pattern> <radii:word> <height:integer> {flags}", "{flags} <block:pattern> <radii:word> <height:integer> <thickness:number>"],
     ),
-    (&["pyramid", "hpyramid"], "h", &["{flags} <block:word> <size:integer> {flags}"]),
+    (&["pyramid", "hpyramid"], "h", &["{flags} <block:pattern> <size:integer> {flags}"]),
     (&["copy"], "m", &["{flags}"]),
-    (&["cut"], "m", &["{flags}", "<leave:word> {flags}"]),
+    (&["cut"], "m", &["{flags}", "<leave:pattern> {flags}"]),
     (&["paste"], "aonsm", &["{flags}"]),
     (&["rot"], "", &["90", "180", "270", "<degrees:number>"]),
     (&["flip", "mirror"], "", &["", "{dir}"]),
-    (&["undo", "redo"], "", &["", "<times:integer>", "<times:integer> <player:player_name>"]),
-    (&["schem", "schematic"], "f", &["list", "list -p <page:integer>", "list -d", "list -n", "formats", "load <name:text>", "delete <name:text>", "save {flags} <name:text>"]),
-    (&["load"], "", &["<name:text>"]),
+    (&["undo", "redo"], "", &["", "<times:integer>", "<times:integer> <player:player>"]),
+    (&["schem", "schematic"], "f", &["list", "list -p <page:integer>", "list -d", "list -n", "formats", "load <name:schematic>", "delete <name:schematic>", "save {flags} <name:text>"]),
+    (&["load"], "", &["<name:schematic>"]),
     (
         &["brush", "br"],
         "h",
         &[
             "none",
             "unbind",
-            "sphere {flags} <block:word>",
-            "sphere {flags} <block:word> <radius:number>",
-            "cylinder {flags} <block:word>",
-            "cylinder {flags} <block:word> <radius:number>",
-            "cylinder {flags} <block:word> <radius:number> <height:integer>",
+            "sphere {flags} <block:pattern>",
+            "sphere {flags} <block:pattern> <radius:number>",
+            "cylinder {flags} <block:pattern>",
+            "cylinder {flags} <block:pattern> <radius:number>",
+            "cylinder {flags} <block:pattern> <radius:number> <height:integer>",
             "smooth",
             "smooth <radius:number>",
             "smooth <radius:number> <iterations:integer>",
-            "smooth <radius:number> <iterations:integer> <filter:word>",
+            "smooth <radius:number> <iterations:integer> <filter:mask>",
         ],
     ),
-    (&["mask"], "", &["", "<filter:text>"]),
-    (&["material"], "", &["<block:word>"]),
-    (&["tool"], "", &["none", "unbind", "selwand", "info", "cycler", "repl <pattern:word>", "floodfill <pattern:word> <range:integer>", "flood <pattern:word> <range:integer>"]),
-    (&["we", "worldedit"], "", &["reload", "report", "trace", "cui", "tz <timezone:word>", "help", "help <command:text>"]),
+    (&["mask"], "", &["", "<filter:mask>"]),
+    (&["gmask"], "", &["", "<filter:mask>"]),
+    (&["material"], "", &["<block:pattern>"]),
+    (&["tool"], "", &["none", "unbind", "selwand", "info", "cycler", "repl <pattern:pattern>", "floodfill <pattern:pattern> <range:integer>", "flood <pattern:pattern> <range:integer>"]),
+    (&["we", "worldedit"], "", &["reload", "report", "trace", "cui", "ver", "version", "tz <timezone:word>", "help", "help <command:command>"]),
     (&["fixwater", "fixlava"], "", &["<radius:number>"]),
     (&["drain"], "w", &["{flags} <radius:number>"]),
-    (&["fillr"], "", &["<pattern:word> <radius:number>", "<pattern:word> <radius:number> <depth:integer>"]),
+    (&["fillr"], "", &["<pattern:pattern> <radius:number>", "<pattern:pattern> <radius:number> <depth:integer>"]),
     (&["snow"], "s", &["{flags}", "{flags} <size:number>", "{flags} <size:number> <height:integer>"]),
     (&["thaw"], "", &["", "<size:number>", "<size:number> <height:integer>"]),
     (&["green"], "f", &["{flags}", "{flags} <size:number>", "{flags} <size:number> <height:integer>"]),
     (&["extinguish", "ex", "ext"], "", &["", "<radius:integer>"]),
     (&["limit"], "", &["", "<limit:integer>"]),
+    (&["unstuck", "thru", "jumpto", "j"], "", &[""]),
+    (&["ascend", "asc", "descend", "desc"], "", &["", "<levels:integer>"]),
+    (&["ceil"], "fg", &["{flags}", "{flags} <clearance:integer>"]),
+    (&["up"], "fg", &["{flags} <distance:integer>"]),
+    (&["selwand", "info", "cycler"], "", &[""]),
+    (&["repl"], "", &["<pattern:pattern>"]),
+    (&["floodfill", "flood"], "", &["<pattern:pattern> <range:integer>"]),
+    (&["placement"], "", &["pos1", "player"]),
     (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
 ];
 
@@ -372,11 +406,12 @@ const DIRECTION_WORDS: [&str; 10] = ["north", "south", "east", "west", "up", "do
 pub fn usages() -> Vec<String> {
     let mut out = Vec::new();
     for (names, flags, paths) in TYPED {
+        let mid = mid_args(paths);
         for name in names.iter() {
             for path in paths.iter() {
                 for rest in expand(path, flags) {
                     for root in roots(name) {
-                        push_unique(&mut out, tidy(&format!("{root} {rest}")));
+                        push_unique(&mut out, tidy(&format!("{root} {}", qualify(&rest, &mid))));
                     }
                 }
             }
@@ -390,14 +425,68 @@ pub fn usages() -> Vec<String> {
     out
 }
 
+/// The names of the `pattern` and `mask` arguments that have a word after them in some path of a row (or a
+/// `{flags}`/`{dir}` placeholder): one argument name is one kind in the whole row.
+fn mid_args(paths: &[&str]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for path in paths {
+        let tokens: Vec<&str> = path.split_whitespace().collect();
+        for (i, t) in tokens.iter().enumerate() {
+            if i + 1 < tokens.len() {
+                if let Some(name) = custom_arg(t).map(|(n, _, _)| n) {
+                    out.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `<name:kind>` / `[name:kind]` of a kind this mod completes itself: its name, kind and brackets.
+fn custom_arg(token: &str) -> Option<(&str, &str, (char, char))> {
+    for (open, close) in [('<', '>'), ('[', ']')] {
+        if let Some(inner) = token.strip_prefix(open).and_then(|t| t.strip_suffix(close)) {
+            if let Some((name, kind)) = inner.split_once(':') {
+                if matches!(kind, "pattern" | "mask" | "schematic" | "command") {
+                    return Some((name, kind, (open, close)));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A usage with this mod's own argument kinds named in full: `worldedit:pattern` (one word) or
+/// `worldedit:pattern_text` (the rest of the line, when the argument is last in every usage of its row),
+/// `worldedit:mask[_text]`, `worldedit:schematic` and `worldedit:command` (the rest of the line).
+fn qualify(rest: &str, mid: &BTreeSet<String>) -> String {
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let last = tokens.len().saturating_sub(1);
+    tokens
+        .iter()
+        .enumerate()
+        .map(|(i, t)| match custom_arg(t) {
+            Some((name, kind, (open, close))) => {
+                // `maskarg` (the `-m` flag's value) is always one word: the flag may come with more flags after it, and one
+                // argument name must be one kind in the tree.
+                let greedy = matches!(kind, "schematic" | "command") || (i == last && !mid.contains(name) && name != "maskarg");
+                let suffix = if greedy && matches!(kind, "pattern" | "mask") { "_text" } else { "" };
+                format!("{open}{name}:worldedit:{kind}{suffix}{close}")
+            }
+            None => (*t).to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The commands WorldEdit registers with a single slash only (`/we`, `/mask`, `/tool`...); the
 /// names in `BOTH_FORMS` it registers both ways (`/brush` and `//brush`); every other command is
 /// registered with a leading `/` in its name (`@Command(name = "/set")`), which the player types as
 /// `//set`.
-pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard"];
+pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard", "selwand", "info", "cycler", "repl", "floodfill", "flood", "placement"];
 pub const BOTH_FORMS: &[&str] = &[
     "brush", "br", "schem", "schematic", "undo", "redo", "clearhistory", "material", "removeabove", "removebelow", "removenear", "replacenear", "fixwater", "fixlava", "snow", "thaw", "green", "extinguish", "ex", "ext", "gmask",
-    "toggleplace", "searchitem",
+    "toggleplace", "searchitem", "ascend", "asc", "descend", "desc", "thru", "jumpto", "j", "unstuck", "ceil",
 ];
 
 /// The root words a command is registered under: `set` is `/set` (typed `//set`), `brush` both
@@ -409,6 +498,21 @@ fn roots(name: &str) -> Vec<String> {
         vec![name.to_owned(), format!("/{name}")]
     } else {
         vec![format!("/{name}")]
+    }
+}
+
+/// Whether `line` may run as the form it was typed in: `double` is true when it began with `//`. A command registered
+/// as `/set` (typed `//set`) exists only with two slashes, `brush`-like single-form ones only with one, the names in
+/// `BOTH_FORMS` either way. `//rotate`, `//fill`, `//help` (the shadowed ones) are double-slash only: the single-slash
+/// forms are vanilla's. `/!` is single only.
+pub fn form_allows(line: &str, double: bool) -> bool {
+    let name = line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    if name == "!" {
+        return !double;
+    }
+    match COMMANDS.iter().find(|(n, _)| *n == name) {
+        Some((n, _)) => roots(n).iter().any(|r| r.starts_with('/') == double),
+        None => double,
     }
 }
 
@@ -445,7 +549,7 @@ fn flag_sets(letters: &str) -> Vec<String> {
                 .enumerate()
                 .filter(|&(i, _)| set & (1 << i) != 0)
                 .map(|(_, &c)| match c {
-                    'm' => "-m <mask:word>".to_owned(),
+                    'm' => "-m <maskarg:mask>".to_owned(),
                     'p' => "-p <page:integer>".to_owned(),
                     _ => format!("-{c}"),
                 })
@@ -458,7 +562,8 @@ fn flag_sets(letters: &str) -> Vec<String> {
 /// Whether `line` (slashes stripped or not) is one of these commands.
 pub fn is_command(line: &str) -> bool {
     let name = line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-    COMMANDS.iter().any(|(n, _)| *n == name) || is_shadowed(line)
+    // `/!` is `/unstuck`; it cannot be a registered word.
+    name == "!" || COMMANDS.iter().any(|(n, _)| *n == name) || is_shadowed(line)
 }
 
 /// `rotate <number> ...`: WorldEdit's `//rotate`, not vanilla's `/rotate <target> <rotation>`
@@ -509,6 +614,7 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "chunk" => ("sc", "sc"),
         "size" => ("c", "c"),
         "wand" => ("n", ""),
+        "up" | "ceil" => ("fg", "fg"),
         "drain" => ("w", "w"),
         "snow" => ("s", "s"),
         "green" => ("f", "f"),
@@ -555,6 +661,10 @@ fn usage(name: &str) -> String {
         "snow" | "thaw" | "green" => "[size] [height]".into(),
         "extinguish" => "[radius]".into(),
         "limit" => "[limit]".into(),
+        "up" => "<distance>".into(),
+        "ceil" => "[clearance]".into(),
+        "ascend" | "descend" => "[levels]".into(),
+        "placement" => "<pos1|player>".into(),
         "gmask" => "[mask]".into(),
         "searchitem" => "<query>".into(),
         "calc" => "<expression>".into(),
@@ -564,7 +674,7 @@ fn usage(name: &str) -> String {
         "tool floodfill" => "<pattern> <range>".into(),
         "schem load" | "schem save" | "schem delete" => "<filename>".into(),
         "schem" | "schematic" => "<load|save|delete|list|formats>".into(),
-        _ => COMMANDS.iter().find(|(n, _)| *n == name).map(|(_, a)| a.replace(":text", "").replace(":word", "").replace(":integer", "")).unwrap_or_default(),
+        _ => COMMANDS.iter().find(|(n, _)| *n == name).map(|(_, a)| a.replace(":text", "").replace(":word", "").replace(":integer", "").replace("patternarg", "pattern")).unwrap_or_default(),
     };
     let base = name.split(' ').next().unwrap_or(name);
     let sub = name.strip_prefix(base).unwrap_or("");
@@ -707,7 +817,14 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "extinguish" => "worldedit.extinguish",
         "limit" => "worldedit.limit",
         "gmask" => "worldedit.global-mask",
-        "toggleplace" => return None,
+        "toggleplace" | "placement" => return None,
+        "up" => "worldedit.navigation.up",
+        "ascend" => "worldedit.navigation.ascend",
+        "descend" => "worldedit.navigation.descend",
+        "thru" => "worldedit.navigation.thru.command",
+        "jumpto" => "worldedit.navigation.jumpto.command",
+        "unstuck" => "worldedit.navigation.unstuck",
+        "ceil" => "worldedit.navigation.ceiling",
         "searchitem" => "worldedit.searchitem",
         "calc" => "worldedit.calc",
         "mask" => "worldedit.brush.options.mask",
@@ -876,6 +993,10 @@ impl Engine {
         if words.first().is_some_and(|w| w.eq_ignore_ascii_case("load")) {
             words.insert(0, "schem");
         }
+        // The deprecated tool commands are `/tool <type>`.
+        if words.first().is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "selwand" | "info" | "cycler" | "repl" | "floodfill" | "flood")) {
+            words.insert(0, "tool");
+        }
         let Some(first) = words.first() else { return Reply::err("No command".into()) };
         let mut name = first.to_ascii_lowercase();
         // WorldEdit's aliases that are not registered names of their own.
@@ -887,6 +1008,10 @@ impl Engine {
             "ex" | "ext" => "extinguish".to_owned(),
             "calculate" | "eval" | "evaluate" | "solve" => "calc".to_owned(),
             "search" | "l" => "searchitem".to_owned(),
+            "asc" => "ascend".to_owned(),
+            "desc" => "descend".to_owned(),
+            "j" => "jumpto".to_owned(),
+            "!" => "unstuck".to_owned(),
             other => other.to_owned(),
         };
         // `/we help ...` is `//help ...`.
@@ -904,13 +1029,19 @@ impl Engine {
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
         let writes = !matches!(
             name.as_str(),
-            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "searchitem" | "calc"
+            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc"
         );
         if writes && self.queue.busy(actor.uuid) {
             return Reply::err("Your last edit is still being written; wait a moment".into());
         }
         if name == "wand" {
             return self.wand(actor);
+        }
+        if matches!(name.as_str(), "up" | "ascend" | "descend" | "thru" | "jumpto" | "unstuck" | "ceil") {
+            return match self.navigate(world, actor, &name, &args) {
+                Ok(reply) => reply,
+                Err(e) => Reply::err(e),
+            };
         }
         let result = match name.as_str() {
             "we" | "worldedit" => self.worldedit(world, actor, &args, env),
@@ -925,6 +1056,7 @@ impl Engine {
             "limit" => self.limit(actor, &args),
             "gmask" => self.gmask(world, actor, &args),
             "toggleplace" => self.toggle_place(actor),
+            "placement" => self.placement_type(actor, &args),
             "searchitem" => self.search_item(world, &args),
             "calc" => self.calc(&args),
             "pos1" | "pos2" => self.pos(world, actor, name == "pos1", &args),
@@ -2054,6 +2186,12 @@ impl Engine {
     pub fn selection_of(&mut self, player: u128) -> Option<(String, Pos, Pos)> {
         let s = self.sessions.get(player);
         Some((s.dimension.clone(), s.pos1?, s.pos2?))
+    }
+
+    /// A player's corners as set so far (either may be missing), for the selection outline.
+    pub fn corners_of(&mut self, player: u128) -> (Option<Pos>, Option<Pos>) {
+        let s = self.sessions.get(player);
+        (s.pos1, s.pos2)
     }
 
     /// Replaces a player's selection with the cuboid between `a` and `b` (WorldGuard's `/rg select`);

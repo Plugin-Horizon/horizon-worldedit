@@ -360,6 +360,17 @@ impl Engine {
         Ok(vec![if s.place_at_pos1 { "Now placing at pos #1." } else { "Now placing at the block you stand in." }.into()])
     }
 
+    /// `//placement <pos1|player>`: what `//toggleplace` flips, set directly.
+    pub(super) fn placement_type(&mut self, actor: &Actor, args: &Args) -> R {
+        let s = self.sessions.get(actor.uuid);
+        match args.get(0).map(str::to_ascii_lowercase).as_deref() {
+            Some("pos1") => s.place_at_pos1 = true,
+            Some("player") => s.place_at_pos1 = false,
+            _ => return Err(usage("placement")),
+        }
+        Ok(vec![if s.place_at_pos1 { "Now placing at pos #1." } else { "Now placing at the block you stand in." }.into()])
+    }
+
     /// `//searchitem [-b] [-i] [-p page] <query>`. Only blocks can be searched: the game's item list
     /// is not part of what the editor sees.
     pub(super) fn search_item(&mut self, world: &mut dyn World, args: &Args) -> R {
