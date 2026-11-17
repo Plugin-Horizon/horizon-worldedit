@@ -16,12 +16,12 @@ parts (GPL-3.0 allows combining them):
   - mixins/worldedit (the upstream bundle) and the pattern syntax, position hash, schematic readers and legacy block
     table reused in mixins/worldedit-server/core: XnotCykoX/WorldEdit-Horizon, Copyright (c) 2026 XnotCykoX
   - mixins/worldedit-server/core/src/nbt.rs and block.rs: keksi2k/horizonmatica, Copyright (c) 2026 keksi2k
-  - the original code of the server bundle: Copyright (c) 2026 Detimes
+  - the original code of the server bundle: Copyright (c) 2026 LionSpacer
 
 MIT License
 
 Copyright (c) 2026 XnotCykoX
-Copyright (c) 2026 Detimes (the server bundle, mixins/worldedit-server)
+Copyright (c) 2026 LionSpacer (the server bundle, mixins/worldedit-server)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
