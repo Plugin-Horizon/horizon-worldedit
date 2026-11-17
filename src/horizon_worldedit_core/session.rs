@@ -2,11 +2,11 @@
 //! brushes bound to items. Kept by UUID, so builders on one server never share a selection, a
 //! clipboard or an `//undo`.
 
-use crate::clipboard::Clipboard;
-use crate::edit::Change;
-use crate::pattern::Pattern;
-use crate::region::Cuboid;
-use crate::world::Pos;
+use crate::horizon_worldedit_core::clipboard::Clipboard;
+use crate::horizon_worldedit_core::edit::Change;
+use crate::horizon_worldedit_core::pattern::Pattern;
+use crate::horizon_worldedit_core::region::Cuboid;
+use crate::horizon_worldedit_core::world::Pos;
 use std::collections::{HashMap, VecDeque};
 
 /// A player's UUID from a file name, as WorldEdit writes it (`8-4-4-4-12` hex digits, dashes optional).

@@ -6,7 +6,7 @@
 //! face), `navwand` (teleporting), `farwand` and `lrbuild` (a left click in the air).
 
 use super::*;
-use crate::block::BlockState;
+use crate::horizon_worldedit_core::block::BlockState;
 
 impl Engine {
     /// `/tool <type> ...`: binds a tool to the item in the main hand, or unbinds it.

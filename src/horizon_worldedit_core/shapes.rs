@@ -2,7 +2,7 @@
 //! `makePyramid` lay them out (radii are measured with half a block added, so a radius of 3 is the
 //! round shape builders expect, not a diamond).
 
-use crate::world::Pos;
+use crate::horizon_worldedit_core::world::Pos;
 use std::collections::HashSet;
 
 fn inside(x: f64, y: f64, z: f64) -> bool {

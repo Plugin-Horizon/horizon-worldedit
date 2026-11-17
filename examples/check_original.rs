@@ -4,8 +4,8 @@
 //!
 //! `cargo run --example check_original -- <path to config.yml>...`
 
-use horizon_worldedit_core::config::Config;
-use horizon_worldedit_core::yaml::{self, Node};
+use mod_worldedit::horizon_worldedit_core::config::Config;
+use mod_worldedit::horizon_worldedit_core::yaml::{self, Node};
 use std::collections::BTreeSet;
 use std::path::Path;
 

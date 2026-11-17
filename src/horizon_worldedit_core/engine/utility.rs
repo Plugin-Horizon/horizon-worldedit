@@ -4,8 +4,8 @@
 //! (`fillXZ`, `drainArea`, `fixLiquid`, `simulateSnow`, `thaw`, `green`) and its visitors.
 
 use super::*;
-use crate::block::BlockState;
-use crate::region::add;
+use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::region::add;
 use std::collections::{HashSet, VecDeque};
 
 /// A breadth-first search's six steps, and the five `DownwardVisitor` and `NonRisingVisitor` take.
@@ -50,7 +50,7 @@ fn name_at(world: &dyn World, p: Pos) -> Option<String> {
 }
 
 fn is_solid_name_block(name: &str) -> bool {
-    crate::pattern::is_solid_name(name)
+    crate::horizon_worldedit_core::pattern::is_solid_name(name)
 }
 
 /// Whether a snow layer survives on top of this block (the game's rule needs the block's shape;

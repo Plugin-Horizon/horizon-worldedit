@@ -1,7 +1,7 @@
 //! `config/worldedit.toml`: the server's WorldEdit settings, named after WorldEdit's own
 //! `config.yml` keys where there is one.
 
-use crate::yaml::{self, Node};
+use crate::horizon_worldedit_core::yaml::{self, Node};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

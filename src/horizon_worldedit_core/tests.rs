@@ -1,10 +1,10 @@
 //! The commands end to end, on a world in memory: what a builder types and what the world holds
 //! afterwards.
 
-use crate::engine::{Actor, Engine, Env};
-use crate::world::fake::FakeWorld;
-use crate::world::World;
-use crate::Config;
+use crate::horizon_worldedit_core::engine::{Actor, Engine, Env};
+use crate::horizon_worldedit_core::world::fake::FakeWorld;
+use crate::horizon_worldedit_core::world::World;
+use crate::horizon_worldedit_core::Config;
 use std::path::PathBuf;
 
 fn actor(uuid: u128) -> Actor {
@@ -76,7 +76,7 @@ fn wand_corners_and_set() {
     // A new place is said, left click first, right click second, and the corners are the clicked blocks.
     assert_eq!(e.wand_click(&w, &a, true, [5, 64, 5], 6000).unwrap().text(), "First position set to (5, 64, 5) (48).");
     assert_eq!(e.wand_click(&w, &a, false, [7, 64, 5], 6001).unwrap().text(), "Second position set to (7, 64, 5) (3).");
-    assert_eq!(e.outline_of(1).unwrap().1, crate::region::Cuboid::new([5, 64, 5], [7, 64, 5]));
+    assert_eq!(e.outline_of(1).unwrap().1, crate::horizon_worldedit_core::region::Cuboid::new([5, 64, 5], [7, 64, 5]));
 }
 
 #[test]
@@ -405,10 +405,10 @@ fn brushes_paint_where_you_look() {
 
 #[test]
 fn rotate_is_ours_only_with_degrees() {
-    assert!(crate::is_rotate("rotate 90") && crate::is_rotate("//rotate -90"));
-    assert!(!crate::is_rotate("rotate @s 90") && !crate::is_rotate("rotate Steve 90 0"));
-    assert!(crate::is_command("//set stone") && crate::is_command("schem list") && !crate::is_command("give @s stone"));
-    for u in crate::usages() {
+    assert!(crate::horizon_worldedit_core::is_rotate("rotate 90") && crate::horizon_worldedit_core::is_rotate("//rotate -90"));
+    assert!(!crate::horizon_worldedit_core::is_rotate("rotate @s 90") && !crate::horizon_worldedit_core::is_rotate("rotate Steve 90 0"));
+    assert!(crate::horizon_worldedit_core::is_command("//set stone") && crate::horizon_worldedit_core::is_command("schem list") && !crate::horizon_worldedit_core::is_command("give @s stone"));
+    for u in crate::horizon_worldedit_core::usages() {
         let name = u.split(' ').next().unwrap();
         assert!(name.strip_prefix('/').unwrap_or(name).chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()), "{u}");
     }
@@ -421,9 +421,9 @@ fn outline_follows_the_corners() {
     let a = actor(7);
     assert!(e.outline_of(7).is_none());
     run(&mut e, &mut w, &a, "//pos1 1,2,3");
-    assert_eq!(e.outline_of(7).unwrap().1, crate::region::Cuboid::new([1, 2, 3], [1, 2, 3]));
+    assert_eq!(e.outline_of(7).unwrap().1, crate::horizon_worldedit_core::region::Cuboid::new([1, 2, 3], [1, 2, 3]));
     run(&mut e, &mut w, &a, "//pos2 4,5,6");
-    assert_eq!(e.outline_of(7).unwrap(), ("minecraft:overworld".to_string(), crate::region::Cuboid::new([1, 2, 3], [4, 5, 6])));
+    assert_eq!(e.outline_of(7).unwrap(), ("minecraft:overworld".to_string(), crate::horizon_worldedit_core::region::Cuboid::new([1, 2, 3], [4, 5, 6])));
     e.config.server_side_cui = false;
     assert!(e.outline_of(7).is_none());
 }
@@ -529,16 +529,16 @@ const VANILLA_ROOTS: &[&str] = &[
 
 #[test]
 fn every_usage_reaches_the_command_tree() {
-    let usages = crate::usages();
+    let usages = crate::horizon_worldedit_core::usages();
     let problems = tree_problems(&usages, VANILLA_ROOTS);
     assert!(problems.is_empty(), "{} usages would be left out of the tree:\n{}", problems.len(), problems.join("\n"));
     // Every command word has at least one usage, under the root WorldEdit registers it with.
-    for (name, _) in crate::engine::COMMANDS {
+    for (name, _) in crate::horizon_worldedit_core::engine::COMMANDS {
         let root = |r: &str| usages.iter().any(|u| u.split(' ').next() == Some(r));
         let slashed = format!("/{name}");
-        if crate::engine::SINGLE_SLASH.contains(name) {
+        if crate::horizon_worldedit_core::engine::SINGLE_SLASH.contains(name) {
             assert!(root(name) && !root(&slashed), "{name}");
-        } else if crate::engine::BOTH_FORMS.contains(name) {
+        } else if crate::horizon_worldedit_core::engine::BOTH_FORMS.contains(name) {
             assert!(root(name) && root(&slashed), "{name}");
         } else {
             assert!(root(&slashed) && !root(name), "{name}");
@@ -651,8 +651,8 @@ fn selection_is_shared_with_other_mods() {
     assert_eq!(e.take_outline_due(), vec![7]);
     assert!(e.take_outline_due().is_empty());
     // The same engine behind the module-level handle the `[api]` package calls.
-    crate::with(|e| e.select(9, "minecraft:overworld", [1, 2, 3], [4, 5, 6]));
-    assert_eq!(crate::with(|e| e.selection_of(9)), Some(("minecraft:overworld".to_owned(), [1, 2, 3], [4, 5, 6])));
+    crate::horizon_worldedit_core::with(|e| e.select(9, "minecraft:overworld", [1, 2, 3], [4, 5, 6]));
+    assert_eq!(crate::horizon_worldedit_core::with(|e| e.selection_of(9)), Some(("minecraft:overworld".to_owned(), [1, 2, 3], [4, 5, 6])));
 }
 
 // ---- the utility commands ----
@@ -687,12 +687,12 @@ fn fill_and_fillr_fill_holes() {
 #[test]
 fn vanilla_fill_is_left_alone() {
     // `//fill stone 5` reaches the hook as `fill stone 5`; vanilla's `/fill` has seven words or more.
-    assert!(crate::is_shadowed("fill stone 5"));
-    assert!(crate::is_shadowed("//fill stone 5 2"));
-    assert!(!crate::is_shadowed("fill 0 0 0 5 5 5 stone"));
-    assert!(!crate::is_shadowed("fill stone"));
-    assert!(crate::is_shadowed("help set") && crate::is_shadowed("help -p 2") && crate::is_shadowed("rotate 90"));
-    assert!(!crate::is_shadowed("help") && !crate::is_shadowed("help tp"));
+    assert!(crate::horizon_worldedit_core::is_shadowed("fill stone 5"));
+    assert!(crate::horizon_worldedit_core::is_shadowed("//fill stone 5 2"));
+    assert!(!crate::horizon_worldedit_core::is_shadowed("fill 0 0 0 5 5 5 stone"));
+    assert!(!crate::horizon_worldedit_core::is_shadowed("fill stone"));
+    assert!(crate::horizon_worldedit_core::is_shadowed("help set") && crate::horizon_worldedit_core::is_shadowed("help -p 2") && crate::horizon_worldedit_core::is_shadowed("rotate 90"));
+    assert!(!crate::horizon_worldedit_core::is_shadowed("help") && !crate::horizon_worldedit_core::is_shadowed("help tp"));
 }
 
 #[test]
@@ -871,8 +871,8 @@ fn help_and_worldedit_subcommands() {
 #[test]
 fn every_help_entry_is_a_command_of_ours() {
     // The help lists only what this server answers: each entry's names register a usage.
-    let usages = crate::usages();
-    for e in crate::engine::help_entries() {
+    let usages = crate::horizon_worldedit_core::usages();
+    for e in crate::horizon_worldedit_core::engine::help_entries() {
         let name = e.name.trim_start_matches('/');
         // `//fill`, `//help` and `//rotate` share their names with vanilla's: heard by `is_shadowed`.
         if matches!(name, "fill" | "help" | "rotate") {
@@ -1054,7 +1054,7 @@ fn ascend_and_ceil_find_the_floor_and_the_ceiling() {
 
 #[test]
 fn a_command_runs_only_in_the_slash_form_it_is_defined_with() {
-    use crate::form_allows;
+    use crate::horizon_worldedit_core::form_allows;
     // `//set`-style commands: two slashes only.
     assert!(form_allows("set stone", true) && !form_allows("set stone", false));
     assert!(form_allows("pos1", true) && !form_allows("pos1", false));

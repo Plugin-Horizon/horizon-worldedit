@@ -1,7 +1,7 @@
 //! Turning what a command wants into writes: what was there (for `//undo`), only blocks that change,
 //! and the column runs Horizon's bulk edit (`native_edit_blocks`) takes.
 
-use crate::world::{Pos, StateId, World};
+use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::HashMap;
 
 /// One edit, as `//undo` and `//redo` replay it.
@@ -136,7 +136,7 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::fake::FakeWorld;
+    use crate::horizon_worldedit_core::world::fake::FakeWorld;
 
     #[test]
     fn plan_skips_unchanged_and_merges() {

@@ -4,16 +4,16 @@
 //!
 //! The Sponge, Litematica and MCEdit readers and the 1.12 table (`legacy_ids.rs`) come from the
 //! upstream bundle's `schematic.rs` (XnotCykoX/WorldEdit-Horizon, MIT), moved onto horizonmatica's
-//! NBT (`crate::nbt`). Changed here: where a paste lands. WorldEdit keeps the point the player stood
+//! NBT (`crate::horizon_worldedit_core::nbt`). Changed here: where a paste lands. WorldEdit keeps the point the player stood
 //! on when copying (the clipboard's origin): a v3 file's `Offset` is the box's corner relative to it,
 //! a v2 file keeps it in `Metadata.WEOffsetX/Y/Z`, a `.schematic` in `WEOffsetX/Y/Z`, and a paste
 //! puts the origin at the player, as `//paste` in WorldEdit does.
 
 mod legacy_ids;
 
-use crate::block::BlockState;
-use crate::nbt::{self, Tag};
-use crate::world::Pos;
+use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::nbt::{self, Tag};
+use crate::horizon_worldedit_core::world::Pos;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 

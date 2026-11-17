@@ -4,3 +4,4 @@ __pycache__/
 Cargo.lock
 /target
 /core/target
+.horizon/

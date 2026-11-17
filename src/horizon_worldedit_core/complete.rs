@@ -115,7 +115,7 @@ pub fn command_words(prefix: &str) -> Vec<String> {
         return Vec::new();
     }
     let lower = prefix.trim_start_matches('/').to_ascii_lowercase();
-    let mut out: Vec<String> = crate::engine::COMMANDS.iter().map(|(n, _)| (*n).to_owned()).filter(|n| n.starts_with(lower.as_str())).collect();
+    let mut out: Vec<String> = crate::horizon_worldedit_core::engine::COMMANDS.iter().map(|(n, _)| (*n).to_owned()).filter(|n| n.starts_with(lower.as_str())).collect();
     out.sort();
     out.dedup();
     out

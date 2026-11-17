@@ -1,16 +1,16 @@
 //! The commands, the wand and the brushes, for every player of a server: what a typed `//command`,
 //! a click with the wand or a brush does to the player's session and to the world.
 
-use crate::clipboard::Clipboard;
-use crate::config::Config;
-use crate::edit::{plan, Change, Queue};
-use crate::ops;
-use crate::pattern::{next_salt, Mask, Pattern};
-use crate::region::{sub, Cuboid, Dir};
-use crate::schem;
-use crate::session::{Brush, BrushShape, Sessions, Tool};
-use crate::shapes;
-use crate::world::{Pos, StateId, World};
+use crate::horizon_worldedit_core::clipboard::Clipboard;
+use crate::horizon_worldedit_core::config::Config;
+use crate::horizon_worldedit_core::edit::{plan, Change, Queue};
+use crate::horizon_worldedit_core::ops;
+use crate::horizon_worldedit_core::pattern::{next_salt, Mask, Pattern};
+use crate::horizon_worldedit_core::region::{sub, Cuboid, Dir};
+use crate::horizon_worldedit_core::schem;
+use crate::horizon_worldedit_core::session::{Brush, BrushShape, Sessions, Tool};
+use crate::horizon_worldedit_core::shapes;
+use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -1384,7 +1384,7 @@ impl Engine {
         let next = match name {
             "expand" => c.expand(dir, amount).and_then(|c| c.expand(dir.opposite(), reverse)),
             "contract" => c.contract(dir, amount).and_then(|c| c.contract(dir.opposite(), reverse)),
-            _ => Some(c.shifted(crate::region::scale(dir.vector(), amount))),
+            _ => Some(c.shifted(crate::horizon_worldedit_core::region::scale(dir.vector(), amount))),
         };
         let next = fit(next.ok_or("The selection would be empty")?);
         self.sessions.get(actor.uuid).set_selection(next, &actor.dimension);
@@ -1568,7 +1568,7 @@ impl Engine {
         }
         let pattern = match args.get(1) {
             Some(p) => self.pattern(world, actor, Some(p))?,
-            None => Pattern::single(world.resolve(&crate::block::BlockState::air()).unwrap_or(0), "air"),
+            None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
         };
         let salt = self.salt(actor);
         let ops = ops::hollow(world, &c, thickness, &pattern, salt);
@@ -1587,7 +1587,7 @@ impl Engine {
 
     fn naturalize(&mut self, world: &mut dyn World, actor: &Actor) -> R {
         let c = self.region(world, actor)?;
-        let id = |n: &str| world.resolve(&crate::block::BlockState::new(n, &[])).ok_or_else(|| format!("Block name '{n}' was not recognized."));
+        let id = |n: &str| world.resolve(&crate::horizon_worldedit_core::block::BlockState::new(n, &[])).ok_or_else(|| format!("Block name '{n}' was not recognized."));
         let ids = [id("minecraft:grass_block")?, id("minecraft:dirt")?, id("minecraft:stone")?];
         let ops = ops::naturalize(world, &c, ids);
         let (n, note) = self.commit(world, actor, ops)?;
@@ -1679,7 +1679,7 @@ impl Engine {
         let (ops, copied) = ops::stack(world, &c, step, count, args.flag('a'), mask.as_ref())?;
         let (_, note) = self.commit(world, actor, ops)?;
         if args.flag('s') {
-            self.sessions.get(actor.uuid).set_selection(c.shifted(crate::region::scale(step, count)), &actor.dimension);
+            self.sessions.get(actor.uuid).set_selection(c.shifted(crate::horizon_worldedit_core::region::scale(step, count)), &actor.dimension);
         }
         Ok(vec![format!("{copied} blocks changed. Undo with //undo{note}")])
     }
@@ -1693,13 +1693,13 @@ impl Engine {
         let offset = Self::offset_arg(actor, args.get(1))?;
         let leave = match args.get(2) {
             Some(p) => self.pattern(world, actor, Some(p))?,
-            None => Pattern::single(world.resolve(&crate::block::BlockState::air()).unwrap_or(0), "air"),
+            None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
         };
         let mask = match args.value('m') {
             Some(m) => Some(Mask::parse(world, m, actor.held.as_deref())?),
             None => None,
         };
-        let by = crate::region::scale(offset, multiplier);
+        let by = crate::horizon_worldedit_core::region::scale(offset, multiplier);
         let salt = self.salt(actor);
         let (ops, moved) = ops::move_region(world, &c, by, &leave, salt, args.flag('a'), mask.as_ref())?;
         let (_, note) = self.commit(world, actor, ops)?;
@@ -1831,7 +1831,7 @@ impl Engine {
             }
         };
         let cube = cube.clamp_y(world.min_y(), world.max_y());
-        let air = world.resolve(&crate::block::BlockState::air()).unwrap_or(0);
+        let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
         let salt = self.salt(actor);
         let mut ops = Vec::new();
         if let Some(cube) = cube {
@@ -1857,7 +1857,7 @@ impl Engine {
         let mut affected = clip.blocks.len();
         if let Some(text) = args.value('m') {
             let mask = Mask::parse(world, text, actor.held.as_deref())?;
-            let air = world.resolve(&crate::block::BlockState::air()).unwrap_or(0);
+            let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
             let w: &dyn World = &*world;
             affected = 0;
             for (_, s) in clip.blocks.iter_mut() {
@@ -1873,7 +1873,7 @@ impl Engine {
         if cut {
             let leave = match args.get(0) {
                 Some(p) => self.pattern(world, actor, Some(p))?,
-                None => Pattern::single(world.resolve(&crate::block::BlockState::air()).unwrap_or(0), "air"),
+                None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
             };
             let salt = self.salt(actor);
             let ops = c.positions().map(|p| (p, leave.pick(salt, p))).collect();
@@ -2423,7 +2423,7 @@ fn list_schematics(dir: &Path, page: usize, oldest_first: bool, newest_first: bo
 fn encode(world: &dyn World, clip: &Clipboard, env: &Env) -> Result<Vec<u8>, String> {
     let size = clip.bounds.size();
     let volume = size.iter().map(|&v| v as usize).product::<usize>();
-    let air = world.resolve(&crate::block::BlockState::air()).unwrap_or(0);
+    let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
     let mut palette: Vec<String> = vec![world.describe(air).to_string_full()];
     let mut slot: HashMap<StateId, u32> = HashMap::from([(air, 0)]);
     let mut cells = vec![0u32; volume];

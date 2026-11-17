@@ -1,7 +1,7 @@
 //! What the editor needs from the level it edits. The game glue implements [`World`] over the
 //! level in place (a dedicated server's, a LAN host's); the tests use [`fake::FakeWorld`].
 
-use crate::block::BlockState;
+use crate::horizon_worldedit_core::block::BlockState;
 
 pub type Pos = [i32; 3];
 

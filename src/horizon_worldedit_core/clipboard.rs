@@ -1,9 +1,9 @@
 //! A player's clipboard: blocks relative to the point they stood on when they copied, as
 //! WorldEdit keeps it, so `//paste` puts the copy where they stand now the way it lay around them.
 
-use crate::block::{flip_y_state, mirror_state, rotate_state, BlockState, Mirror, Rotation};
-use crate::region::{add, Cuboid, Dir};
-use crate::world::{Pos, StateId, World};
+use crate::horizon_worldedit_core::block::{flip_y_state, mirror_state, rotate_state, BlockState, Mirror, Rotation};
+use crate::horizon_worldedit_core::region::{add, Cuboid, Dir};
+use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,7 +91,7 @@ impl Clipboard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::fake::FakeWorld;
+    use crate::horizon_worldedit_core::world::fake::FakeWorld;
 
     #[test]
     fn copy_is_relative_to_the_player() {

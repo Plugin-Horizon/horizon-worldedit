@@ -4,7 +4,7 @@
 //! `teleport` (feet position); the glass platform of `//up` and `/ceil` is written at once.
 
 use super::*;
-use crate::block::BlockState;
+use crate::horizon_worldedit_core::block::BlockState;
 
 /// Whether a player walks through the block at `p` (WorldEdit: not a movement blocker). Above the
 /// build height is open sky; an unloaded chunk or the void below the world stops a search.

@@ -1,10 +1,10 @@
 //! The region operations that need more than "every position of a shape": overlay, hollow,
 //! naturalize, smooth, stack, move, and the ray a brush or `//hpos1` follows.
 
-use crate::pattern::{Mask, Pattern};
-use crate::region::{add, scale, Cuboid};
+use crate::horizon_worldedit_core::pattern::{Mask, Pattern};
+use crate::horizon_worldedit_core::region::{add, scale, Cuboid};
 use std::collections::{HashSet, VecDeque};
-use crate::world::{Pos, StateId, World};
+use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 
 /// `//overlay`: the pattern on top of the highest existing block of each column of the region
 /// (WorldEdit's layer visitor: a column whose block above the region is already existing is skipped).
@@ -38,7 +38,7 @@ pub fn overlay(world: &dyn World, region: &Cuboid, pattern: &Pattern, salt: u64)
 /// are kept too; everything not touching the outside becomes `pattern`.
 pub fn hollow(world: &dyn World, region: &Cuboid, thickness: i32, pattern: &Pattern, salt: u64) -> Vec<(Pos, StateId)> {
     const DIRS: [Pos; 6] = [[0, 0, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0], [0, 1, 0], [0, -1, 0]];
-    let solid = |p: Pos| world.get(p).is_some_and(|s| crate::pattern::is_solid_name(&world.describe(s).name));
+    let solid = |p: Pos| world.get(p).is_some_and(|s| crate::horizon_worldedit_core::pattern::is_solid_name(&world.describe(s).name));
     let mut outside: HashSet<Pos> = HashSet::new();
     let flood = |origin: Pos, outside: &mut HashSet<Pos>| {
         let mut queue = VecDeque::from([origin]);
@@ -179,7 +179,7 @@ pub fn smooth(world: &dyn World, region: &Cuboid, iterations: u32, mask: Option<
         current = next;
     }
     let mut out = Vec::new();
-    let air = world.resolve(&crate::block::BlockState::air()).unwrap_or(0);
+    let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
     for i in 0..w {
         for j in 0..l {
             if !loaded[i * l + j] {
@@ -294,7 +294,7 @@ pub fn look_vector(yaw: f32, pitch: f32) -> [f64; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::fake::FakeWorld;
+    use crate::horizon_worldedit_core::world::fake::FakeWorld;
 
     #[test]
     fn overlay_goes_on_top() {
