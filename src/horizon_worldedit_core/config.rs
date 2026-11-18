@@ -408,6 +408,8 @@ mod tests {
         // The file's saving.dir is relative to the plugin folder; everything else is the default.
         let mut expected = Config::default();
         expected.schematics_dir = "schematics".into();
+        // The port's own default is 128 (see `max_radius` above); the original's file says -1.
+        expected.max_radius = -1.0;
         assert_eq!(c, expected);
         // Keys the port does not implement (polygon limit, butcher radius, ...) are not asked for.
         let want: BTreeSet<String> = ORIGINAL_KEYS.iter().map(|k| k.to_string()).collect();

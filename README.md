@@ -91,7 +91,7 @@ Written with comments on first start, read again whenever it is saved:
 | `history_size` | 15 | `history.size` |
 | `wand_item` | `minecraft:wooden_axe` | `wand-item` |
 | `max_brush_radius` / `brush_range` | 5 / 300 | `limits.max-brush-radius` |
-| `max_radius` | -1 | `limits.max-radius` |
+| `max_radius` | 128 (the original: -1) | `limits.max-radius` |
 | `schematics_dir` | `worldedit/schematics` (inside `config/`) | `saving.dir` |
 | `disallowed_blocks` | WorldEdit's list | `limits.disallowed-blocks` (applies below operator level 4) |
 | `creative_only` | false | |
