@@ -2002,7 +2002,6 @@ impl Engine {
                 "sponge_v3: sponge, sponge.3, schem3 (write and read)".into(),
                 "sponge_v1, sponge_v2: sponge.1, sponge.2 (read)".into(),
                 "litematica: litematic (read)".into(),
-                "mce: mcedit, schematic (read)".into(),
                 "minecraft_structure: structure, nbt (read)".into(),
             ]),
             Some("load") => {
@@ -2339,7 +2338,7 @@ impl Engine {
     }
 }
 
-const EXTENSIONS: [&str; 4] = [".schem", ".litematic", ".schematic", ".nbt"];
+const EXTENSIONS: [&str; 3] = [".schem", ".litematic", ".nbt"];
 
 /// A name inside the schematics folder: no absolute path, no `..`, no backslash.
 fn safe_name(name: &str) -> Result<&str, String> {

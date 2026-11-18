@@ -82,7 +82,7 @@ pub fn mask_words(prefix: &str, ids: &[String]) -> Vec<String> {
 /// The schematic files under `dir` (two folders deep), as `//schem load` names them: no extension, `/`
 /// between folders, those that start with `prefix` (any case).
 pub fn schematic_words(dir: &Path, prefix: &str) -> Vec<String> {
-    const EXTENSIONS: [&str; 4] = [".schem", ".litematic", ".schematic", ".nbt"];
+    const EXTENSIONS: [&str; 3] = [".schem", ".litematic", ".nbt"];
     let lower = prefix.to_ascii_lowercase();
     let mut out: Vec<String> = Vec::new();
     let mut walk: Vec<(std::path::PathBuf, String, u8)> = vec![(dir.to_path_buf(), String::new(), 0)];

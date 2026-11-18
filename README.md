@@ -99,8 +99,9 @@ Written with comments on first start, read again whenever it is saved:
 
 Point `schematics_dir` at a Paper server's `plugins/WorldEdit/schematics` and both servers share the files:
 `/schem save` writes Sponge v3, the format WorldEdit 7.3+ writes, with the copy's origin in
-`Metadata.WorldEdit.Origin`; loading reads Sponge v1 to v3 (with v2's `WEOffset` metadata), Litematica,
-MCEdit/legacy `.schematic` and vanilla structure `.nbt`.
+`Metadata.WorldEdit.Origin`; loading reads Sponge v1 to v3 (with v2's `WEOffset` metadata), Litematica
+and vanilla structure `.nbt`. Old MCEdit `.schematic` files (1.12 block ids) are not read: that needs a table of
+Mojang's pre-1.13 block ids, which the registry policy keeps out of mods.
 
 One command looks at no more than 10,000,000 positions, whatever `max_blocks` says.
 

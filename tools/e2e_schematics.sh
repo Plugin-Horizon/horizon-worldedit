@@ -72,14 +72,6 @@ ctl command "//pos1 40 100 0"
 ctl command "//pos2 46 101 2"
 ctl command "//schem save verify-litematic"
 
-echo "=== mcedit (60 100 0)"
-ctl command "//schem load harbor.schematic"
-ctl tp 60 100 0
-ctl command "//paste"
-ctl command "//pos1 60 100 0"
-ctl command "//pos2 61 101 1"
-ctl command "//schem save verify-mcedit"
-
 echo "=== a path outside the folder"
 ctl command "//schem load $scratch/fixtures/harbor-v3.schem"
 

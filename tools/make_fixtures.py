@@ -1,4 +1,4 @@
-"""Write test schematics: Sponge v2 and v3, Litematica, legacy MCEdit."""
+"""Write test schematics: Sponge v2 and v3, Litematica."""
 import gzip
 import struct
 import sys
@@ -277,23 +277,6 @@ def litematic():
     return gzip.compress(named("", body), mtime=0)
 
 
-def mcedit():
-    width, height, length = 2, 2, 2
-    ids = [1, 1, 1, 1, 5, 5, 5, 5]  # stone, then oak planks
-    data = [0, 0, 0, 0]
-    body = compound(
-        [
-            ("Width", tag(*short(width))),
-            ("Height", tag(*short(height))),
-            ("Length", tag(*short(length))),
-            ("Blocks", tag(*byte_array(ids))),
-            ("Data", tag(*byte_array(data))),
-            ("WEOffset", tag(*int_array([0, 0, 0]))),
-        ]
-    )
-    return gzip.compress(named("Schematic", body), mtime=0)
-
-
 def main():
     out = pathlib.Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
@@ -317,7 +300,6 @@ def main():
     (out / "harbor-v2.schem").write_bytes(sponge(2, size, palette, indices))
     (out / "harbor-v3.schem").write_bytes(sponge(3, size, palette, indices))
     (out / "harbor.litematic").write_bytes(litematic())
-    (out / "harbor.schematic").write_bytes(mcedit())
     for path in sorted(out.iterdir()):
         print(f"{path.name}: {path.stat().st_size} bytes")
 

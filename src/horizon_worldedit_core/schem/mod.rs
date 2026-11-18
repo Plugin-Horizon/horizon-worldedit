@@ -1,26 +1,24 @@
-//! Schematic files: Sponge `.schem` (v1 to v3, WorldEdit's own), Litematica `.litematic`, MCEdit
-//! `.schematic` (1.12 block ids) and vanilla structure `.nbt`, read; Sponge v3 written, the format
+//! Schematic files: Sponge `.schem` (v1 to v3, WorldEdit's own), Litematica `.litematic` and vanilla
+//! structure `.nbt`, read; Sponge v3 written, the format
 //! WorldEdit 7.3 and later writes, so files go back and forth with a Paper server's WorldEdit.
 //!
-//! The Sponge, Litematica and MCEdit readers and the 1.12 table (`legacy_ids.rs`) come from the
+//! The Sponge and Litematica readers come from the
 //! upstream bundle's `schematic.rs` (XnotCykoX/WorldEdit-Horizon, MIT), moved onto horizonmatica's
 //! NBT (`crate::horizon_worldedit_core::nbt`). Changed here: where a paste lands. WorldEdit keeps the point the player stood
 //! on when copying (the clipboard's origin): a v3 file's `Offset` is the box's corner relative to it,
-//! a v2 file keeps it in `Metadata.WEOffsetX/Y/Z`, a `.schematic` in `WEOffsetX/Y/Z`, and a paste
+//! a v2 file keeps it in `Metadata.WEOffsetX/Y/Z`, and a paste
 //! puts the origin at the player, as `//paste` in WorldEdit does.
 
-mod legacy_ids;
 
 use crate::horizon_worldedit_core::block::BlockState;
 use crate::horizon_worldedit_core::nbt::{self, Tag};
 use crate::horizon_worldedit_core::world::Pos;
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 
 /// A file's blocks: positions relative to the paste origin, each an index into `palette`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loaded {
-    /// `Sponge v3`, `Litematica v6`, `MCEdit`, `Structure`.
+    /// `Sponge v3`, `Litematica v6`, `Structure`.
     pub format: String,
     pub size: Pos,
     pub palette: Vec<BlockState>,
@@ -30,7 +28,7 @@ pub struct Loaded {
 /// The most a file may unpack to (bytes).
 const MAX_UNPACKED: usize = 1 << 30;
 
-/// Reads a schematic from its bytes, whatever of the four formats it is (the contents decide,
+/// Reads a schematic from its bytes, whatever of the three formats it is (the contents decide,
 /// not the name); refuses one of more than `max_blocks` blocks.
 pub fn read(bytes: &[u8], max_blocks: u64) -> Result<Loaded, String> {
     let root = if bytes.starts_with(&[0x78]) {
@@ -46,8 +44,6 @@ pub fn read(bytes: &[u8], max_blocks: u64) -> Result<Loaded, String> {
     };
     if root.get("Regions").is_some() {
         read_litematic(&root, max_blocks)
-    } else if matches!(root.get("Blocks"), Some(Tag::ByteArray(_))) {
-        read_mcedit(&root, max_blocks)
     } else if root.get("palette").is_some() || root.get("palettes").is_some() {
         read_structure(&root, max_blocks)
     } else {
@@ -293,75 +289,6 @@ fn read_litematic(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
     Ok(Loaded { format, size, palette, blocks })
 }
 
-/// The 1.12 state `id << 4 | data` as a 1.13 name and `key=value;...`.
-fn legacy_state(id: usize) -> BlockState {
-    static TABLE: OnceLock<Vec<BlockState>> = OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let mut out = vec![BlockState::air(); 4096];
-        for line in legacy_ids::LEGACY.lines() {
-            let mut f = line.split('\t');
-            let Some(i) = f.next().and_then(|v| v.trim().parse::<usize>().ok()) else { continue };
-            let name = f.next().unwrap_or("minecraft:air");
-            let props = f.next().unwrap_or("").replace(';', ",");
-            let spec = if props.is_empty() { name.to_owned() } else { format!("{name}[{props}]") };
-            if let (Some(slot), Some(s)) = (out.get_mut(i), BlockState::parse(&spec)) {
-                *slot = s;
-            }
-        }
-        out
-    });
-    table.get(id).cloned().unwrap_or_else(BlockState::air)
-}
-
-fn read_mcedit(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
-    let size = checked_size(
-        int(root.get("Width")).ok_or("the schematic has no Width")?,
-        int(root.get("Height")).ok_or("the schematic has no Height")?,
-        int(root.get("Length")).ok_or("the schematic has no Length")?,
-        max_blocks,
-    )?;
-    let Some(Tag::ByteArray(ids)) = root.get("Blocks") else { return Err("the schematic has no Blocks".into()) };
-    let data: &[i8] = match root.get("Data") {
-        Some(Tag::ByteArray(v)) => v,
-        _ => &[],
-    };
-    let added: &[i8] = match root.get("AddBlocks") {
-        Some(Tag::ByteArray(v)) => v,
-        _ => &[],
-    };
-    let shift: Pos = match (int(root.get("WEOffsetX")), int(root.get("WEOffsetY")), int(root.get("WEOffsetZ"))) {
-        (Some(x), Some(y), Some(z)) => [x as i32, y as i32, z as i32],
-        _ => [0; 3],
-    };
-    let volume = size.iter().map(|&v| v as usize).product::<usize>();
-    if ids.len() < volume {
-        return Err(format!("the schematic holds {} blocks, not {volume}", ids.len()));
-    }
-    let nibble = |v: &[i8], i: usize| v.get(i / 2).map_or(0u8, |&b| if i % 2 == 0 { b as u8 & 0x0f } else { b as u8 >> 4 });
-    let mut palette: Vec<BlockState> = Vec::new();
-    let mut slot: BTreeMap<usize, u32> = BTreeMap::new();
-    let mut blocks = Vec::with_capacity(volume);
-    let (w, l) = (size[0] as usize, size[2] as usize);
-    for y in 0..size[1] {
-        for z in 0..size[2] {
-            for x in 0..size[0] {
-                let i = (y as usize * l + z as usize) * w + x as usize;
-                let mut id = usize::from(ids[i] as u8);
-                if !added.is_empty() {
-                    id |= usize::from(nibble(added, i)) << 8;
-                }
-                let legacy = ((id << 4) | usize::from(nibble(data, i))).min(4095);
-                let p = *slot.entry(legacy).or_insert_with(|| {
-                    palette.push(legacy_state(legacy));
-                    palette.len() as u32 - 1
-                });
-                blocks.push(([x + shift[0], y + shift[1], z + shift[2]], p));
-            }
-        }
-    }
-    Ok(Loaded { format: "MCEdit".into(), size, palette, blocks })
-}
-
 /// A vanilla structure (`/place template`, a structure block's save): `size`, `palette` (or the
 /// first of `palettes`) and `blocks` with `pos` and `state`. Cells it doesn't list stay as they are
 /// in the world, as structure voids do.
@@ -504,22 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn mcedit_and_structure() {
-        let root = compound(vec![
-            ("Width", Tag::Short(2)),
-            ("Height", Tag::Short(1)),
-            ("Length", Tag::Short(1)),
-            ("Blocks", Tag::ByteArray(vec![1, 5])),
-            ("Data", Tag::ByteArray(vec![0x00])),
-            ("WEOffsetX", Tag::Int(-1)),
-            ("WEOffsetY", Tag::Int(0)),
-            ("WEOffsetZ", Tag::Int(0)),
-        ]);
-        let l = read(&nbt::write_gzip("Schematic", &root), 100).unwrap();
-        assert_eq!(l.format, "MCEdit");
-        let names: Vec<String> = l.blocks.iter().map(|b| l.palette[b.1 as usize].name.clone()).collect();
-        assert_eq!(names, vec!["minecraft:stone", "minecraft:oak_planks"]);
-        assert_eq!(l.blocks[0].0, [-1, 0, 0]);
+    fn structure_files_are_read() {
         let s = compound(vec![
             ("size", Tag::List(vec![Tag::Int(1), Tag::Int(2), Tag::Int(1)])),
             ("palette", Tag::List(vec![compound(vec![("Name", Tag::String("minecraft:glass".into()))])])),
