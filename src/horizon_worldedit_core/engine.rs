@@ -3,7 +3,8 @@
 
 use crate::horizon_worldedit_core::clipboard::Clipboard;
 use crate::horizon_worldedit_core::config::Config;
-use crate::horizon_worldedit_core::edit::{plan, Change, Queue};
+use crate::horizon_worldedit_core::edit::{plan_with, Change, Queue};
+use crate::horizon_worldedit_core::nbt::Tag;
 use crate::horizon_worldedit_core::ops;
 use crate::horizon_worldedit_core::pattern::{next_salt, Mask, Pattern};
 use crate::horizon_worldedit_core::region::{sub, Cuboid, Dir};
@@ -1115,35 +1116,43 @@ impl Engine {
 
     /// Writes `writes` now, or the first tick's worth now and the rest over the next ticks; the
     /// note for the report.
-    fn write(&mut self, world: &mut dyn World, actor: &Actor, writes: Vec<(Pos, StateId)>) -> String {
+    fn write(&mut self, world: &mut dyn World, actor: &Actor, writes: Vec<(Pos, StateId)>, mut entities: HashMap<Pos, Tag>) -> String {
         let budget = self.config.blocks_per_tick.max(1);
         if writes.len() <= budget {
             world.write(&writes);
+            load_entities(world, entities);
             return String::new();
         }
         world.write(&writes[..budget]);
+        let now: HashMap<Pos, Tag> = writes[..budget].iter().filter_map(|&(p, _)| entities.remove(&p).map(|t| (p, t))).collect();
+        load_entities(world, now);
         let rest = writes[budget..].to_vec();
         let ticks = rest.len().div_ceil(budget);
-        self.queue.push(actor.uuid, &actor.dimension, rest);
+        self.queue.push_with(actor.uuid, &actor.dimension, rest, entities);
         format!(" (finishing over the next {ticks} tick{})", if ticks == 1 { "" } else { "s" })
     }
 
     /// Plans `ops`, checks the limit, writes it and remembers it for `//undo`: how many blocks
     /// changed, and the note on the ticks still to come.
-    fn commit(&mut self, world: &mut dyn World, actor: &Actor, mut ops: Vec<(Pos, StateId)>) -> Result<(usize, String), String> {
+    fn commit(&mut self, world: &mut dyn World, actor: &Actor, ops: Vec<(Pos, StateId)>) -> Result<(usize, String), String> {
+        self.commit_with(world, actor, ops, HashMap::new())
+    }
+
+    /// [`Engine::commit`] for blocks that bring block entity data (`entities`, by world position).
+    fn commit_with(&mut self, world: &mut dyn World, actor: &Actor, mut ops: Vec<(Pos, StateId)>, entities: HashMap<Pos, Tag>) -> Result<(usize, String), String> {
         // `//gmask`: only blocks the player's global mask accepts are changed.
         if let Some(text) = self.sessions.get(actor.uuid).global_mask.clone() {
             let mask = Mask::parse(world, &text, None)?;
             let w: &dyn World = &*world;
             ops.retain(|&(p, _)| w.get(p).is_some_and(|s| mask.hits(w, s)));
         }
-        let mut change = plan(world, &actor.dimension, ops);
+        let mut change = plan_with(world, &actor.dimension, ops, entities);
         change.at_ms = self.now_ms;
         if !self.allows(actor, change.len() as u64) {
             return Err(format!("Max blocks changed in an operation reached ({}).", self.max_blocks(actor)));
         }
         let n = change.len();
-        let note = self.write(world, actor, change.forward());
+        let note = self.write(world, actor, change.forward(), change.forward_entities());
         let size = self.config.history_size;
         self.sessions.get(actor.uuid).remember(change, size);
         Ok((n, note))
@@ -1174,9 +1183,10 @@ impl Engine {
         if self.queue.is_empty() {
             return Vec::new();
         }
-        let (writes, done) = self.queue.take(dimension, self.config.blocks_per_tick.max(1));
+        let (writes, entities, done) = self.queue.take_with(dimension, self.config.blocks_per_tick.max(1));
         if !writes.is_empty() {
             world.write(&writes);
+            world.set_block_entities(&entities);
         }
         done
     }
@@ -1677,7 +1687,9 @@ impl Engine {
             None => None,
         };
         let (ops, copied) = ops::stack(world, &c, step, count, args.flag('a'), mask.as_ref())?;
-        let (_, note) = self.commit(world, actor, ops)?;
+        let shifts: Vec<Pos> = (1..=count).map(|n| crate::horizon_worldedit_core::region::scale(step, n)).collect();
+        let entities = ops::carried_entities(world, &c, &shifts, mask.as_ref());
+        let (_, note) = self.commit_with(world, actor, ops, entities)?;
         if args.flag('s') {
             self.sessions.get(actor.uuid).set_selection(c.shifted(crate::horizon_worldedit_core::region::scale(step, count)), &actor.dimension);
         }
@@ -1702,7 +1714,8 @@ impl Engine {
         let by = crate::horizon_worldedit_core::region::scale(offset, multiplier);
         let salt = self.salt(actor);
         let (ops, moved) = ops::move_region(world, &c, by, &leave, salt, args.flag('a'), mask.as_ref())?;
-        let (_, note) = self.commit(world, actor, ops)?;
+        let entities = ops::carried_entities(world, &c, &[by], mask.as_ref());
+        let (_, note) = self.commit_with(world, actor, ops, entities)?;
         if args.flag('s') {
             self.sessions.get(actor.uuid).set_selection(c.shifted(by), &actor.dimension);
         }
@@ -1860,11 +1873,12 @@ impl Engine {
             let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
             let w: &dyn World = &*world;
             affected = 0;
-            for (_, s) in clip.blocks.iter_mut() {
+            for (p, s) in clip.blocks.iter_mut() {
                 if mask.hits(w, *s) {
                     affected += 1;
                 } else {
                     *s = air;
+                    clip.entities.remove(&*p);
                 }
             }
         }
@@ -1901,7 +1915,8 @@ impl Engine {
                 writes.retain(|(_, s)| mask.hits(w, *s));
             }
             let affected = writes.len();
-            let note = self.commit(world, actor, writes)?.1;
+            let entities = clip.entities_for(at, &writes);
+            let note = self.commit_with(world, actor, writes, entities)?.1;
             lines.push(format!("The clipboard has been pasted at {}{note}", pt(at)));
             lines.push(format!("{affected} blocks affected"));
             lines.push("0 biomes affected".into());
@@ -1965,9 +1980,9 @@ impl Engine {
                 }
                 break;
             }
-            let writes = if undo { change.backward() } else { change.forward() };
+            let (writes, entities) = if undo { (change.backward(), change.backward_entities()) } else { (change.forward(), change.forward_entities()) };
             edits += 1;
-            note = self.write(world, actor, writes);
+            note = self.write(world, actor, writes, entities);
             let s = self.sessions.get(owner);
             if undo {
                 s.redo.push(change);
@@ -2028,7 +2043,12 @@ impl Engine {
                     })
                     .collect();
                 let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone());
-                let clip = Clipboard::from_blocks(blocks, format!("{file} ({})", loaded.format));
+                let mut clip = Clipboard::from_blocks(blocks, format!("{file} ({})", loaded.format));
+                clip.entities = loaded
+                    .block_entities
+                    .iter()
+                    .map(|(p, t)| (*p, if loaded.data_version > 0 { world.upgrade_block_entity(loaded.data_version, t.clone()) } else { t.clone() }))
+                    .collect();
                 let mut out = vec![format!("{name} loaded. Paste it with //paste")];
                 if unknown > 0 {
                     out.push(format!("{unknown} blocks of it have no match in this game and were left out"));
@@ -2418,6 +2438,14 @@ fn list_schematics(dir: &Path, page: usize, oldest_first: bool, newest_first: bo
     Ok(out)
 }
 
+/// Loads block entity data into the blocks just written.
+fn load_entities(world: &mut dyn World, entities: HashMap<Pos, Tag>) {
+    if !entities.is_empty() {
+        let list: Vec<(Pos, Tag)> = entities.into_iter().collect();
+        world.set_block_entities(&list);
+    }
+}
+
 /// The clipboard as a Sponge v3 file.
 fn encode(world: &dyn World, clip: &Clipboard, env: &Env) -> Result<Vec<u8>, String> {
     let size = clip.bounds.size();
@@ -2439,7 +2467,8 @@ fn encode(world: &dyn World, clip: &Clipboard, env: &Env) -> Result<Vec<u8>, Str
         }
     }
     let origin = clip.origin.as_ref().map_or([0; 3], |o| o.1);
-    schem::write_sponge3(size, clip.bounds.min, origin, env.data_version, &palette, &cells, env.now_ms)
+    let entities: Vec<(Pos, Tag)> = clip.entities.iter().map(|(p, t)| (sub(*p, clip.bounds.min), t.clone())).collect();
+    schem::write_sponge3(size, clip.bounds.min, origin, env.data_version, &palette, &cells, env.now_ms, &entities)
 }
 
 #[cfg(test)]

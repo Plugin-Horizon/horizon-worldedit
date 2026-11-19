@@ -3,7 +3,8 @@
 
 use crate::horizon_worldedit_core::pattern::{Mask, Pattern};
 use crate::horizon_worldedit_core::region::{add, scale, Cuboid};
-use std::collections::{HashSet, VecDeque};
+use crate::horizon_worldedit_core::nbt::Tag;
+use std::collections::{HashMap, HashSet, VecDeque};
 use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 
 /// `//overlay`: the pattern on top of the highest existing block of each column of the region
@@ -230,6 +231,24 @@ pub fn stack(world: &dyn World, region: &Cuboid, step: Pos, count: i32, skip_air
     Ok((out, copied))
 }
 
+/// The block entity data of the blocks `//stack` or `//move` copy (the same blocks they pick), by each place the
+/// block goes to: `shifts` are the offsets of the copies.
+pub fn carried_entities(world: &dyn World, region: &Cuboid, shifts: &[Pos], only: Option<&Mask>) -> HashMap<Pos, Tag> {
+    let mut out = HashMap::new();
+    for p in region.positions() {
+        let Some(s) = world.get(p) else { continue };
+        if world.is_air(s) || !only.is_none_or(|m| m.hits(world, s)) {
+            continue;
+        }
+        if let Some(tag) = world.block_entity_at(p) {
+            for &by in shifts {
+                out.insert(add(p, by), tag.clone());
+            }
+        }
+    }
+    out
+}
+
 /// `//move`: the region cleared to `leave` and placed `distance` blocks toward `dir` (one edit).
 pub fn move_region(world: &dyn World, region: &Cuboid, by: Pos, leave: &Pattern, salt: u64, skip_air: bool, only: Option<&Mask>) -> Result<(Vec<(Pos, StateId)>, usize), String> {
     let mut placed = Vec::with_capacity(region.volume() as usize);
@@ -359,6 +378,17 @@ mod tests {
         assert_eq!(moved, 2);
         assert_eq!(m.len(), 4);
         assert!(m.contains(&([0, 3, 0], w.id("stone"))) && m.contains(&([0, 0, 0], 0)));
+    }
+
+    #[test]
+    fn stack_and_move_carry_block_entities() {
+        let mut w = FakeWorld::new();
+        w.fill([0, 0, 0], [1, 0, 0], "stone");
+        let tag = Tag::Byte(7);
+        w.entities.insert([1, 0, 0], tag.clone());
+        let r = Cuboid::new([0, 0, 0], [1, 0, 0]);
+        let got = carried_entities(&w, &r, &[[2, 0, 0], [4, 0, 0]], None);
+        assert_eq!(got, HashMap::from([([3, 0, 0], tag.clone()), ([5, 0, 0], tag)]));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! level in place (a dedicated server's, a LAN host's); the tests use [`fake::FakeWorld`].
 
 use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::nbt::Tag;
 
 pub type Pos = [i32; 3];
 
@@ -33,6 +34,17 @@ pub trait World {
     fn property_values(&self, _block: &str, _property: &str) -> Vec<String> {
         Vec::new()
     }
+    /// The saved data of the block entity at `p` (chest contents, sign text, a spawner's settings), with its
+    /// `id` set to the type; `None` where there is none.
+    fn block_entity_at(&self, _p: Pos) -> Option<Tag> {
+        None
+    }
+    /// Loads saved data into the block entities of blocks just written (`id`, `x`, `y`, `z` in it are ignored).
+    fn set_block_entities(&mut self, _entities: &[(Pos, Tag)]) {}
+    /// Block entity data saved at `data_version` (a schematic's) brought up to the game's version.
+    fn upgrade_block_entity(&self, _data_version: i32, data: Tag) -> Tag {
+        data
+    }
 }
 
 pub mod fake {
@@ -47,6 +59,8 @@ pub mod fake {
         pub max_y: i32,
         /// Columns (chunk x, chunk z) that count as not loaded.
         pub unloaded: Vec<(i32, i32)>,
+        /// Block entity data by position (a block written over loses its entry, as in the game).
+        pub entities: HashMap<Pos, Tag>,
         /// How many `write` calls there were, and how many blocks they carried.
         pub write_calls: usize,
         pub written: usize,
@@ -96,7 +110,7 @@ pub mod fake {
             for t in ["bottom", "top", "double"] {
                 states.push(BlockState::new("minecraft:stone_slab", &[("type", t), ("waterlogged", "false")]));
             }
-            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), write_calls: 0, written: 0 }
+            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), entities: HashMap::new(), write_calls: 0, written: 0 }
         }
         pub fn id(&self, spec: &str) -> StateId {
             self.resolve(&BlockState::parse(spec).unwrap()).unwrap_or_else(|| panic!("no state {spec}"))
@@ -161,10 +175,21 @@ pub mod fake {
             }
             values
         }
+        fn block_entity_at(&self, p: Pos) -> Option<Tag> {
+            self.entities.get(&p).cloned()
+        }
+        fn set_block_entities(&mut self, entities: &[(Pos, Tag)]) {
+            for (p, t) in entities {
+                self.entities.insert(*p, t.clone());
+            }
+        }
         fn write(&mut self, writes: &[(Pos, StateId)]) -> usize {
             self.write_calls += 1;
             self.written += writes.len();
             for &(p, s) in writes {
+                if self.blocks.get(&p).copied().unwrap_or(0) != s {
+                    self.entities.remove(&p);
+                }
                 if s == 0 {
                     self.blocks.remove(&p);
                 } else {

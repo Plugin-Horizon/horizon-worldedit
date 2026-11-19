@@ -24,6 +24,7 @@ use mod_api::{
     RegisterConfigsEvent, RightClickBlockEvent, ServerHost, ServerStoppedEvent, StateConstraint,
     Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext,
 };
+use mod_api::Tag as HostTag;
 use mod_api::{CommandSender, NodeDefault, PayloadHandleError, PermissionGatherNodesEvent, PermissionLevel, PermissionNode, PermissionValueType};
 use mod_api::{IPayloadContext, IPayloadHandler, PayloadBytes, PayloadId};
 use std::sync::Arc;
@@ -480,6 +481,33 @@ impl we::World for GameWorld<'_> {
             .unwrap_or_default()
     }
 
+    fn block_entity_at(&self, p: we::Pos) -> Option<we::nbt::Tag> {
+        let entity = self.host.block_entity(self.level, p)?;
+        let data = entity.data(&*self.host)?;
+        let mut tag = from_host_tag(&HostTag::Compound(data));
+        if let (we::nbt::Tag::Compound(map), Some(kind)) = (&mut tag, entity.kind(&*self.host)) {
+            map.insert("id".into(), we::nbt::Tag::String(kind.id(&*self.host).to_string()));
+        }
+        Some(tag)
+    }
+
+    fn set_block_entities(&mut self, entities: &[(we::Pos, we::nbt::Tag)]) {
+        for (p, tag) in entities {
+            let Some(entity) = self.host.block_entity(self.level, *p) else { continue };
+            let HostTag::Compound(data) = to_host_tag(tag) else { continue };
+            // `id` and the position in the data are ignored; a refusal leaves that block entity empty.
+            let _ = entity.replace_data(&mut *self.host, data);
+        }
+    }
+
+    fn upgrade_block_entity(&self, data_version: i32, data: we::nbt::Tag) -> we::nbt::Tag {
+        let HostTag::Compound(compound) = to_host_tag(&data) else { return data };
+        match self.host.upgrade_block_entity_nbt(data_version, compound) {
+            Ok(upgraded) => from_host_tag(&HostTag::Compound(upgraded)),
+            Err(_) => data,
+        }
+    }
+
     fn write(&mut self, writes: &[(we::Pos, we::StateId)]) -> usize {
         if writes.is_empty() {
             return 0;
@@ -515,6 +543,45 @@ impl we::World for GameWorld<'_> {
                 changed
             }
         }
+    }
+}
+
+/// The core's NBT as the game's, for block entity data.
+fn to_host_tag(tag: &we::nbt::Tag) -> HostTag {
+    use we::nbt::Tag as T;
+    match tag {
+        T::Byte(v) => HostTag::Byte(*v),
+        T::Short(v) => HostTag::Short(*v),
+        T::Int(v) => HostTag::Int(*v),
+        T::Long(v) => HostTag::Long(*v),
+        T::Float(v) => HostTag::Float(v.to_bits()),
+        T::Double(v) => HostTag::Double(v.to_bits()),
+        T::ByteArray(v) => HostTag::ByteArray(v.iter().map(|&b| b as u8).collect()),
+        T::String(v) => HostTag::String(v.as_str().into()),
+        T::List(v) => HostTag::List(v.iter().map(to_host_tag).collect()),
+        T::Compound(m) => HostTag::Compound(m.iter().map(|(k, v)| (k.as_str().into(), to_host_tag(v))).collect()),
+        T::IntArray(v) => HostTag::IntArray(v.clone()),
+        T::LongArray(v) => HostTag::LongArray(v.clone()),
+    }
+}
+
+/// The game's NBT as the core's.
+fn from_host_tag(tag: &HostTag) -> we::nbt::Tag {
+    use we::nbt::Tag as T;
+    match tag {
+        HostTag::End => T::Byte(0),
+        HostTag::Byte(v) => T::Byte(*v),
+        HostTag::Short(v) => T::Short(*v),
+        HostTag::Int(v) => T::Int(*v),
+        HostTag::Long(v) => T::Long(*v),
+        HostTag::Float(v) => T::Float(f32::from_bits(*v)),
+        HostTag::Double(v) => T::Double(f64::from_bits(*v)),
+        HostTag::ByteArray(v) => T::ByteArray(v.iter().map(|&b| b as i8).collect()),
+        HostTag::String(v) => T::String(v.to_string_lossy()),
+        HostTag::List(v) => T::List(v.iter().map(from_host_tag).collect()),
+        HostTag::Compound(m) => T::Compound(m.iter().map(|(k, v)| (k.to_string_lossy(), from_host_tag(v))).collect()),
+        HostTag::IntArray(v) => T::IntArray(v.clone()),
+        HostTag::LongArray(v) => T::LongArray(v.clone()),
     }
 }
 

@@ -340,6 +340,41 @@ fn limit_and_big_edits_over_ticks() {
 }
 
 #[test]
+fn block_entities_survive_copy_paste_cut_undo_and_schematics() {
+    use crate::horizon_worldedit_core::nbt::Tag;
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    let env = env("schem_entities");
+    w.fill([0, 64, 0], [1, 64, 0], "stone");
+    let chest = Tag::Compound([("id".to_string(), Tag::String("minecraft:chest".into())), ("Lock".to_string(), Tag::String("key".into()))].into_iter().collect());
+    w.entities.insert([1, 64, 0], chest.clone());
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 1,64,0");
+    a.position = [0.5, 64.0, 0.5];
+    run(&mut e, &mut w, &a, "//copy");
+    a.position = [10.5, 70.0, 10.5];
+    run(&mut e, &mut w, &a, "//paste");
+    assert_eq!(w.entities.get(&[11, 70, 10]), Some(&chest));
+    run(&mut e, &mut w, &a, "//undo");
+    assert_eq!(w.entities.get(&[11, 70, 10]), None);
+    // Cut takes the chest away, undo brings it back with its data.
+    run(&mut e, &mut w, &a, "//cut");
+    assert_eq!(w.entities.get(&[1, 64, 0]), None);
+    run(&mut e, &mut w, &a, "//undo");
+    assert_eq!(w.entities.get(&[1, 64, 0]), Some(&chest));
+    // The same through a schematic file.
+    a.position = [0.5, 64.0, 0.5];
+    run(&mut e, &mut w, &a, "//copy");
+    assert_eq!(e.command(&mut w, &a, "/schem save chests", &env).text(), "chests saved.");
+    run(&mut e, &mut w, &a, "/clearclipboard");
+    assert_eq!(e.command(&mut w, &a, "/schem load chests", &env).text(), "chests loaded. Paste it with //paste");
+    a.position = [30.5, 70.0, 30.5];
+    run(&mut e, &mut w, &a, "//paste");
+    assert_eq!(w.entities.get(&[31, 70, 30]), Some(&chest));
+}
+
+#[test]
 fn schematics_round_trip_and_stay_in_their_folder() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();

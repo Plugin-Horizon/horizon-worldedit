@@ -121,6 +121,9 @@ What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: .
 
 - The selection outline (WorldEdit CUI) is not drawn.
 - No selection API for other mods yet (WorldGuard on arismoko reports that it has no selection).
+- Entities (`-e`) and biomes (`-b`) are not copied: the host API has no entity spawn from saved data and no biome write for this mod.
+- Block entities (chest contents, signs, spawners...) are copied, cut, pasted, stacked, moved, undone and saved in schematics
+  (Sponge v3 `BlockEntities`; read from Sponge v2/v3, structure `.nbt` and Litematica files).
 
 ## Licence and sources
 

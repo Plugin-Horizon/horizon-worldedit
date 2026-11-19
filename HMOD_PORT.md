@@ -11,3 +11,6 @@ Round 1
   - Default level 2 is the config default of `permission_level`; a server that sets another value keeps 2 as the node default (gather runs before config is applied to the node defaults).
   - Tab-completion has no sender, so `suggest` gets `None`; `may_use` still filters the list for the caller.
   - The `worldedit.*` node check per command is unchanged; only the query path moved from strings to typed nodes.
+
+## Fix round 1 (parity audit)
+- Fixed: block entity data is now read (`block_entity` + `data`) and written back (`replace_data` after `edit_blocks`) by `//copy`, `//cut`, `//paste`, `//stack`, `//move`, `//undo`, `//redo` and `/schem save|load` (core: `World::block_entity_at`, `set_block_entities`, `upgrade_block_entity`).
