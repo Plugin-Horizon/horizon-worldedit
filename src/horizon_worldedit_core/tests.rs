@@ -853,6 +853,28 @@ fn limit_gmask_and_toggleplace() {
 }
 
 #[test]
+fn navigation_wand_and_clipboard_distribution() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    let r = e.command(&mut w, &a, "wand -n", &env("none"));
+    assert_eq!(r.give, vec!["minecraft:compass".to_string()]);
+    assert_eq!(r.text(), "Left click: jump to location; Right click: pass through walls");
+    let mut nobody = actor(2);
+    nobody.permission = 0;
+    nobody.granted.insert("worldedit.wand".into());
+    assert_eq!(fails(&mut e, &mut w, &nobody, "wand -n"), "You are not permitted to do that. Are you in the right mode?");
+    assert_eq!(fails(&mut e, &mut w, &a, "//distr -c"), "Your clipboard is empty. Use //copy first.");
+    w.fill([0, 64, 0], [1, 64, 0], "stone");
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 2,64,0");
+    run(&mut e, &mut w, &a, "//copy");
+    w.blocks.clear();
+    let r = run(&mut e, &mut w, &a, "//distr -c");
+    assert!(r.contains("Total Block Count: 3") && r.contains("Stone") && r.contains("Air"), "{r}");
+}
+
+#[test]
 fn placement_types_and_offsets() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();

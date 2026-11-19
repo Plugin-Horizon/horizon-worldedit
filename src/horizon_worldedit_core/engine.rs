@@ -316,14 +316,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
 /// without a space), `text` (the rest of the line, always last). Literals are the fixed choices.
 const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["we", "worldedit"], "", &["", "version", "help"]),
-    (&["wand"], "", &[""]),
+    (&["wand"], "n", &["{flags}"]),
     (&["pos1", "pos2"], "", &["", "<x:word> <y:word> <z:word>"]),
     (&["hpos1", "hpos2"], "", &[""]),
     (&["sel"], "", &["", "cuboid", "extend"]),
     (&["desel", "deselect", "naturalize", "clearclipboard", "clearhistory", "none"], "", &[""]),
     (&["size"], "c", &["{flags}"]),
     (&["chunk"], "sc", &["{flags}", "{flags} <x:word> <y:word> <z:word>"]),
-    (&["distr"], "dmp", &["{flags}"]),
+    (&["distr"], "cdmp", &["{flags}"]),
     (
         &["expand"],
         "",
@@ -618,10 +618,10 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "brush" | "br" | "cone" => ("h", "h"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
-        "distr" => ("cdpm", "dpm"),
+        "distr" => ("cdpm", "cdpm"),
         "chunk" => ("sc", "sc"),
         "size" => ("c", "c"),
-        "wand" => ("n", ""),
+        "wand" => ("n", "n"),
         "up" | "ceil" => ("fg", "fg"),
         "drain" => ("w", "w"),
         "snow" => ("s", "s"),
@@ -1056,7 +1056,7 @@ impl Engine {
             return Reply::err("Your last edit is still being written; wait a moment".into());
         }
         if name == "wand" {
-            return self.wand(actor);
+            return self.wand(actor, args.flag('n'));
         }
         if matches!(name.as_str(), "up" | "ascend" | "descend" | "thru" | "jumpto" | "unstuck" | "ceil") {
             return match self.navigate(world, actor, &name, &args) {
@@ -1257,9 +1257,18 @@ impl Engine {
 
     // ---- selection ----
 
-    fn wand(&mut self, actor: &Actor) -> Reply {
+    fn wand(&mut self, actor: &Actor, navigation: bool) -> Reply {
         if let Err(e) = self.allowed(actor) {
             return Reply::err(e);
+        }
+        if navigation {
+            // WorldEdit's `NavigationWand.canUse`: the item is only worth giving to someone who may jump.
+            if let Err(e) = self.permitted(actor, Some("worldedit.navigation.jumpto.tool")) {
+                return Reply::err(e);
+            }
+            let mut r = Reply::ok(vec!["Left click: jump to location; Right click: pass through walls".into()]);
+            r.give.push(self.config.nav_wand_item.clone());
+            return r;
         }
         let mut r = Reply::ok(vec!["Left click: select pos #1; Right click: select pos #2".into()]);
         r.give.push(self.config.wand_item.clone());
@@ -1503,6 +1512,20 @@ impl Engine {
     fn distr(&mut self, world: &dyn World, actor: &Actor, args: &Args) -> R {
         let rows: Vec<(String, u64)> = match args.value('p') {
             Some(_) => self.sessions.get(actor.uuid).distribution.clone().ok_or("No previous distribution.")?,
+            None if args.flag('c') => {
+                // `-c`: what the clipboard holds, not the selection.
+                let clip = self.sessions.get(actor.uuid).clipboard.as_ref().ok_or("Your clipboard is empty. Use //copy first.")?;
+                let mut counts: HashMap<String, u64> = HashMap::new();
+                for (_, s) in &clip.blocks {
+                    let state = world.describe(*s);
+                    let key = if args.flag('d') { state.to_string_full() } else { state.name.clone() };
+                    *counts.entry(key).or_default() += 1;
+                }
+                let mut rows: Vec<(String, u64)> = counts.into_iter().collect();
+                rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                self.sessions.get(actor.uuid).distribution = Some(rows.clone());
+                rows
+            }
             None => {
                 let c = self.region(world, actor)?;
                 let mask = match args.value('m') {
