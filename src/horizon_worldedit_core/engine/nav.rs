@@ -245,7 +245,7 @@ impl Engine {
             },
             "jumpto" => {
                 let Some(hit) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), 300.0) else {
-                    return Err("No block in sight!".into());
+                    return Err("No block in sight (or too far away)!".into());
                 };
                 let mut r = Reply::default();
                 if let Some(feet) = find_free(world, hit) {

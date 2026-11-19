@@ -48,7 +48,7 @@ impl Engine {
         let s = self.sessions.get(actor.uuid);
         s.brushes.remove(&item);
         s.tools.insert(item.clone(), tool);
-        Ok(vec![format!("{key} bound to {}.", block_title(&item)), "Run /tool none while holding the item to unbind it.".into()])
+        Ok(vec![format!("{key} bound to {}.", block_title(&item))])
     }
 
     /// A left (`left`) or right click on the block at `pos` with an item that has a tool. `None` when

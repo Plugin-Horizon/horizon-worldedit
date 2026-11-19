@@ -470,6 +470,10 @@ impl we::World for GameWorld<'_> {
         names.into_iter().collect()
     }
 
+    fn item_names(&self) -> Vec<String> {
+        self.host.registry_entries("minecraft:item").unwrap_or_default().iter().map(|id| id.to_string()).collect()
+    }
+
     fn property_values(&self, block: &str, property: &str) -> Vec<String> {
         let meta = self.host.block_states();
         let Some(key) = self.host.block_state_id(block).map(|s| s.block()) else { return Vec::new() };

@@ -2102,7 +2102,7 @@ impl Engine {
                     .iter()
                     .map(|(p, t)| (*p, if loaded.data_version > 0 { world.upgrade_block_entity(loaded.data_version, t.clone()) } else { t.clone() }))
                     .collect();
-                let mut out = vec![format!("{name} loaded. Paste it with //paste")];
+                let mut out = vec!["(Please wait... loading schematic.)".to_owned(), format!("{name} loaded. Paste it with //paste")];
                 if unknown > 0 {
                     out.push(format!("{unknown} blocks of it have no match in this game and were left out"));
                 }
@@ -2125,7 +2125,7 @@ impl Engine {
                     std::fs::create_dir_all(parent).map_err(|_| "Could not create folder for schematics!".to_string())?;
                 }
                 std::fs::write(&path, bytes).map_err(|e| format!("Failed to save schematic: {e}"))?;
-                Ok(vec![format!("{name} saved{}", if overwrite { " (overwriting previous file)." } else { "." })])
+                Ok(vec!["(Please wait... saving schematic.)".to_owned(), format!("{name} saved{}", if overwrite { " (overwriting previous file)." } else { "." })])
             }
             Some("delete" | "d" | "remove") => {
                 let name = args.rest(1);
@@ -2320,7 +2320,7 @@ impl Engine {
             return Some(Reply::err(e));
         }
         let Some(target) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.nav_wand_max_distance) else {
-            return Some(Reply::err("No block in sight!".into()));
+            return Some(Reply::err("No block in sight (or too far away)!".into()));
         };
         // WorldEdit's findFreePosition: the first spot above the block with two free blocks, feet and head.
         let free = |p: Pos| world.get(p).is_some_and(|s| world.is_air(s));
@@ -2379,7 +2379,7 @@ impl Engine {
             Some(p) => p,
             None => match ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.brush_range) {
                 Some(p) => p,
-                None => return Some(Reply::err("No block in sight!".into())),
+                None => return Some(Reply::err("No block in sight (or too far away)!".into())),
             },
         };
         if self.repeated(actor, target, false, now_ms) {

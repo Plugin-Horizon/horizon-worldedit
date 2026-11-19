@@ -400,21 +400,34 @@ impl Engine {
         if args.flag('b') && args.flag('i') {
             return Err("You cannot use both the 'b' and 'i' flags simultaneously.".into());
         }
-        if args.flag('i') {
-            return Err("Items that are not blocks cannot be searched on this server.".into());
-        }
         let page: usize = match args.value('p') {
             Some(p) => p.parse().map_err(|_| number_error(p))?,
             None => 1,
         };
         let wanted = search.replace(' ', "_");
-        let mut names = world.block_names();
-        names.sort();
-        let hits: Vec<String> = names.into_iter().filter(|id| id.contains(&wanted)).map(|id| format!("{} ({id})", block_title(&id))).collect();
-        if hits.is_empty() {
-            return Ok(vec!["No results found.".into()]);
+        let blocks: HashSet<String> = world.block_names().into_iter().collect();
+        let mut names = world.item_names();
+        if names.is_empty() {
+            // The game's item list is not offered: the blocks are what can be searched.
+            if args.flag('i') {
+                return Err("Items that are not blocks cannot be searched on this server.".into());
+            }
+            names = blocks.iter().cloned().collect();
         }
-        Ok(help::paged(&format!("Search results for '{search}'"), &hits, page)?)
+        names.sort();
+        names.dedup();
+        let hits: Vec<String> = names
+            .into_iter()
+            .filter(|id| id.contains(&wanted) && (!args.flag('b') || blocks.contains(id)) && (!args.flag('i') || !blocks.contains(id)))
+            .map(|id| format!("{} ({id})", block_title(&id)))
+            .collect();
+        let mut out = vec!["(Please wait... searching items.)".to_owned()];
+        if hits.is_empty() {
+            out.push("No results found.".into());
+            return Ok(out);
+        }
+        out.extend(help::paged(&format!("Search results for '{search}'"), &hits, page)?);
+        Ok(out)
     }
 }
 

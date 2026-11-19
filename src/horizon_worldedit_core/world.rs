@@ -34,6 +34,10 @@ pub trait World {
     fn property_values(&self, _block: &str, _property: &str) -> Vec<String> {
         Vec::new()
     }
+    /// Every item name of the game (`minecraft:stone`), for `//searchitem`. Empty where unknown.
+    fn item_names(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// The saved data of the block entity at `p` (chest contents, sign text, a spawner's settings), with its
     /// `id` set to the type; `None` where there is none.
     fn block_entity_at(&self, _p: Pos) -> Option<Tag> {
@@ -157,6 +161,11 @@ pub mod fake {
                 .iter()
                 .position(|s| s.matches(state) && state.properties.keys().all(|k| s.properties.contains_key(k)))
                 .map(|i| i as StateId)
+        }
+        fn item_names(&self) -> Vec<String> {
+            let mut names = self.block_names();
+            names.push("minecraft:stick".into());
+            names
         }
         fn block_names(&self) -> Vec<String> {
             let mut names: Vec<String> = self.states.iter().map(|s| s.name.clone()).collect();

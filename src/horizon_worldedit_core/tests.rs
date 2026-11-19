@@ -366,9 +366,9 @@ fn block_entities_survive_copy_paste_cut_undo_and_schematics() {
     // The same through a schematic file.
     a.position = [0.5, 64.0, 0.5];
     run(&mut e, &mut w, &a, "//copy");
-    assert_eq!(e.command(&mut w, &a, "/schem save chests", &env).text(), "chests saved.");
+    assert_eq!(e.command(&mut w, &a, "/schem save chests", &env).text(), "(Please wait... saving schematic.)\nchests saved.");
     run(&mut e, &mut w, &a, "/clearclipboard");
-    assert_eq!(e.command(&mut w, &a, "/schem load chests", &env).text(), "chests loaded. Paste it with //paste");
+    assert_eq!(e.command(&mut w, &a, "/schem load chests", &env).text(), "(Please wait... loading schematic.)\nchests loaded. Paste it with //paste");
     a.position = [30.5, 70.0, 30.5];
     run(&mut e, &mut w, &a, "//paste");
     assert_eq!(w.entities.get(&[31, 70, 30]), Some(&chest));
@@ -387,10 +387,10 @@ fn schematics_round_trip_and_stay_in_their_folder() {
     a.position = [1.5, 64.0, -1.5];
     run(&mut e, &mut w, &a, "//copy");
     let r = e.command(&mut w, &a, "/schem save house", &env);
-    assert_eq!(r.text(), "house saved.");
+    assert_eq!(r.text(), "(Please wait... saving schematic.)\nhouse saved.");
     assert!(env.schematics_dir.join("house.schem").is_file());
     assert_eq!(e.command(&mut w, &a, "/schem save house", &env).text(), "That schematic already exists. Use the -f flag to overwrite it.");
-    assert_eq!(e.command(&mut w, &a, "/schem save house -f", &env).text(), "house saved (overwriting previous file).");
+    assert_eq!(e.command(&mut w, &a, "/schem save house -f", &env).text(), "(Please wait... saving schematic.)\nhouse saved (overwriting previous file).");
     let r = e.command(&mut w, &a, "/schem save sub/tower", &env);
     assert!(!r.lines[0].error, "{}", r.text());
     for bad in ["/schem load ../secret", "/schem load /etc/passwd", "/schem save a\\b", "/schem delete ./x"] {
@@ -400,7 +400,7 @@ fn schematics_round_trip_and_stay_in_their_folder() {
     assert!(list.starts_with("Available schematics") && list.contains("[L] house.schem") && list.contains("[L] sub/tower.schem"), "{list}");
     run(&mut e, &mut w, &a, "/clearclipboard");
     let r = e.command(&mut w, &a, "/schem load house", &env);
-    assert_eq!(r.text(), "house loaded. Paste it with //paste");
+    assert_eq!(r.text(), "(Please wait... loading schematic.)\nhouse loaded. Paste it with //paste");
     a.position = [50.5, 64.0, 49.5];
     run(&mut e, &mut w, &a, "//paste -a");
     assert_eq!(w.name_at([49, 64, 51]), "minecraft:stone");
@@ -662,9 +662,9 @@ fn schematics_never_print_a_path() {
     say(&mut e, &mut w, "//pos1 0,64,0");
     say(&mut e, &mut w, "//pos2 2,66,2");
     say(&mut e, &mut w, "//copy");
-    assert_eq!(say(&mut e, &mut w, "//schem save house"), "house saved.");
+    assert_eq!(say(&mut e, &mut w, "//schem save house"), "(Please wait... saving schematic.)\nhouse saved.");
     assert!(say(&mut e, &mut w, "//schem list").contains("[L] house.schem"));
-    assert_eq!(say(&mut e, &mut w, "//schem load house"), "house loaded. Paste it with //paste");
+    assert_eq!(say(&mut e, &mut w, "//schem load house"), "(Please wait... loading schematic.)\nhouse loaded. Paste it with //paste");
     assert_eq!(say(&mut e, &mut w, "//schem delete house"), "house has been deleted.");
     assert_eq!(say(&mut e, &mut w, "//schem load nowhere"), "Schematic nowhere does not exist!");
 }
@@ -904,8 +904,11 @@ fn searchitem_and_calc() {
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem st"), "Enter a longer search string (len > 2).");
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem -b -i stone"), "You cannot use both the 'b' and 'i' flags simultaneously.");
     let r = run(&mut e, &mut w, &a, "//searchitem stair");
-    assert!(r.contains("Search results for 'stair'") && r.contains("Oak Stairs (minecraft:oak_stairs)"), "{r}");
-    assert_eq!(run(&mut e, &mut w, &a, "//search zzzz"), "No results found.");
+    assert!(r.starts_with("(Please wait... searching items.)\nSearch results for 'stair'") && r.contains("Oak Stairs (minecraft:oak_stairs)"), "{r}");
+    assert_eq!(run(&mut e, &mut w, &a, "//search zzzz"), "(Please wait... searching items.)\nNo results found.");
+    // -i is the items that are not blocks, -b the blocks.
+    assert!(run(&mut e, &mut w, &a, "//searchitem -i stick").contains("Stick (minecraft:stick)"));
+    assert_eq!(run(&mut e, &mut w, &a, "//searchitem -b stick"), "(Please wait... searching items.)\nNo results found.");
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem -p 9 stone"), "Invalid page number");
     // Two plus two, printed as WorldEdit does (the words as a list).
     assert_eq!(run(&mut e, &mut w, &a, "//calc 2+2"), "[2+2] = 4");
@@ -979,7 +982,7 @@ fn tools_bind_and_click() {
     let mut w = FakeWorld::new();
     let mut a = actor(1);
     a.held = Some("minecraft:stick".into());
-    assert_eq!(run(&mut e, &mut w, &a, "/tool selwand"), "Selection wand bound to Stick.\nRun /tool none while holding the item to unbind it.");
+    assert_eq!(run(&mut e, &mut w, &a, "/tool selwand"), "Selection wand bound to Stick.");
     // Left click is position 1, right click position 2, on any item.
     assert_eq!(e.tool_click(&mut w, &a, true, [1, 64, 1], 0).unwrap().text(), "First position set to (1, 64, 1).");
     assert_eq!(e.tool_click(&mut w, &a, false, [3, 64, 3], 1000).unwrap().text(), "Second position set to (3, 64, 3) (9).");
