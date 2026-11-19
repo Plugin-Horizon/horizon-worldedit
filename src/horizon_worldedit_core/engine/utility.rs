@@ -356,19 +356,38 @@ impl Engine {
     /// `//toggleplace`: shapes and fills are made at position 1 instead of at your feet, and back.
     pub(super) fn toggle_place(&mut self, actor: &Actor) -> R {
         let s = self.sessions.get(actor.uuid);
-        s.place_at_pos1 = !s.place_at_pos1;
-        Ok(vec![if s.place_at_pos1 { "Now placing at pos #1." } else { "Now placing at the block you stand in." }.into()])
+        s.place_kind = if s.place_kind == PlaceKind::Pos1 { PlaceKind::Player } else { PlaceKind::Pos1 };
+        s.place_offset = [0; 3];
+        Ok(vec![place_info(s.place_kind, s.place_offset)])
     }
 
-    /// `//placement <pos1|player>`: what `//toggleplace` flips, set directly.
+    /// `//placement <pos1|player|here|world|min|max> [multiplier] [offset]`: where shapes and pastes are made.
     pub(super) fn placement_type(&mut self, actor: &Actor, args: &Args) -> R {
-        let s = self.sessions.get(actor.uuid);
-        match args.get(0).map(str::to_ascii_lowercase).as_deref() {
-            Some("pos1") => s.place_at_pos1 = true,
-            Some("player") => s.place_at_pos1 = false,
+        let kind = args.get(0).map(str::to_ascii_lowercase);
+        let multiplier = args.int(1, 1)?;
+        let offset = match args.get(2) {
+            Some(w) => Self::offset_arg(actor, Some(w))?,
+            None => [0; 3],
+        };
+        let mut offset = offset.map(|v| v.saturating_mul(multiplier));
+        let kind = match kind.as_deref() {
+            Some("world") => PlaceKind::World,
+            Some("player") => PlaceKind::Player,
+            Some("pos1") => PlaceKind::Pos1,
+            Some("min") => PlaceKind::Min,
+            Some("max") => PlaceKind::Max,
+            // `here` is the world with the block the player stands in added to the offset.
+            Some("here") => {
+                let b = actor.block();
+                offset = [offset[0] + b[0], offset[1] + b[1], offset[2] + b[2]];
+                PlaceKind::World
+            }
             _ => return Err(usage("placement")),
-        }
-        Ok(vec![if s.place_at_pos1 { "Now placing at pos #1." } else { "Now placing at the block you stand in." }.into()])
+        };
+        let s = self.sessions.get(actor.uuid);
+        s.place_kind = kind;
+        s.place_offset = offset;
+        Ok(vec![place_info(kind, offset)])
     }
 
     /// `//searchitem [-b] [-i] [-p page] <query>`. Only blocks can be searched: the game's item list
@@ -396,5 +415,23 @@ impl Engine {
             return Ok(vec!["No results found.".into()]);
         }
         Ok(help::paged(&format!("Search results for '{search}'"), &hits, page)?)
+    }
+}
+
+/// WorldEdit's `worldedit.toggleplace.*` lines.
+fn place_info(kind: PlaceKind, offset: Pos) -> String {
+    let (plain, from) = match kind {
+        PlaceKind::World => ("Now placing at world origin.", ""),
+        PlaceKind::Player => ("Now placing at the block you stand in.", "the block you stand in"),
+        PlaceKind::Pos1 => ("Now placing at pos #1.", "pos #1"),
+        PlaceKind::Min => ("Now placing at the minimum of the current selection.", "the minimum of the current selection"),
+        PlaceKind::Max => ("Now placing at the maximum of the current selection.", "the maximum of the current selection"),
+    };
+    if offset == [0; 3] {
+        plain.to_owned()
+    } else if kind == PlaceKind::World {
+        format!("Now placing at ({}, {}, {}).", offset[0], offset[1], offset[2])
+    } else {
+        format!("Now placing at an offset of ({}, {}, {}) from {from}.", offset[0], offset[1], offset[2])
     }
 }

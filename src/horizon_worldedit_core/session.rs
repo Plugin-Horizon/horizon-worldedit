@@ -57,6 +57,17 @@ pub enum Tool {
     FloodFill { pattern: Pattern, range: i32 },
 }
 
+/// What the placement point is counted from (WorldEdit's `PlacementType`, `HERE` being `World` plus the player's block).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaceKind {
+    World,
+    #[default]
+    Player,
+    Pos1,
+    Min,
+    Max,
+}
+
 #[derive(Debug, Default)]
 pub struct Session {
     pub pos1: Option<Pos>,
@@ -75,8 +86,9 @@ pub struct Session {
     pub distribution: Option<Vec<(String, u64)>>,
     /// Tools by item id (`/tool ...`); an item has a brush or a tool, never both.
     pub tools: HashMap<String, Tool>,
-    /// `//toggleplace`: shapes and the like are made at position 1 instead of at the player.
-    pub place_at_pos1: bool,
+    /// `//placement`, `//toggleplace`: where shapes and the like are made, and the offset from it.
+    pub place_kind: PlaceKind,
+    pub place_offset: Pos,
     /// `//limit`: this player's most blocks changed in one operation (`None`: the server's).
     pub block_limit: Option<i64>,
     /// `//gmask`: only blocks this accepts are changed, by every edit.

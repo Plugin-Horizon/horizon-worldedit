@@ -9,7 +9,7 @@ use crate::horizon_worldedit_core::ops;
 use crate::horizon_worldedit_core::pattern::{next_salt, Mask, Pattern};
 use crate::horizon_worldedit_core::region::{sub, Cuboid, Dir};
 use crate::horizon_worldedit_core::schem;
-use crate::horizon_worldedit_core::session::{Brush, BrushShape, Sessions, Tool};
+use crate::horizon_worldedit_core::session::{Brush, BrushShape, PlaceKind, Sessions, Tool};
 use crate::horizon_worldedit_core::shapes;
 use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::{BTreeSet, HashMap};
@@ -65,6 +65,7 @@ pub const NODES: &[&str] = &[
     "worldedit.history.undo.other",
     "worldedit.history.undo.self",
     "worldedit.limit",
+    "worldedit.placement",
     "worldedit.limit.unrestricted",
     "worldedit.anyblock",
     "worldedit.navigation.ascend",
@@ -399,7 +400,7 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["selwand", "info", "cycler"], "", &[""]),
     (&["repl"], "", &["<pattern:pattern>"]),
     (&["floodfill", "flood"], "", &["<pattern:pattern> <range:integer>"]),
-    (&["placement"], "", &["pos1", "player"]),
+    (&["placement"], "", &["pos1", "player", "here", "world", "min", "max", "pos1 <multiplier:integer>", "player <multiplier:integer>", "here <multiplier:integer>", "world <multiplier:integer>", "min <multiplier:integer>", "max <multiplier:integer>", "pos1 <multiplier:integer> {dir}", "player <multiplier:integer> {dir}", "here <multiplier:integer> {dir}", "world <multiplier:integer> {dir}", "min <multiplier:integer> {dir}", "max <multiplier:integer> {dir}"]),
     (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
 ];
 
@@ -671,7 +672,7 @@ fn usage(name: &str) -> String {
         "up" => "<distance>".into(),
         "ceil" => "[clearance]".into(),
         "ascend" | "descend" => "[levels]".into(),
-        "placement" => "<pos1|player>".into(),
+        "placement" => "<pos1|player|here|world|min|max> [multiplier] [offset]".into(),
         "gmask" => "[mask]".into(),
         "searchitem" => "<query>".into(),
         "calc" => "<expression>".into(),
@@ -824,7 +825,8 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "extinguish" => "worldedit.extinguish",
         "limit" => "worldedit.limit",
         "gmask" => "worldedit.global-mask",
-        "toggleplace" | "placement" => return None,
+        "toggleplace" => return None,
+        "placement" => "worldedit.placement",
         "up" => "worldedit.navigation.up",
         "ascend" => "worldedit.navigation.ascend",
         "descend" => "worldedit.navigation.descend",
@@ -1196,10 +1198,14 @@ impl Engine {
     /// position 1 after `//toggleplace`.
     fn placement(&mut self, actor: &Actor) -> Result<Pos, String> {
         let s = self.sessions.get(actor.uuid);
-        if s.place_at_pos1 {
-            return s.pos1.ok_or_else(|| "Make a region selection first.".to_owned());
-        }
-        Ok(actor.block())
+        let base = match s.place_kind {
+            PlaceKind::Player => actor.block(),
+            PlaceKind::World => [0; 3],
+            PlaceKind::Pos1 => s.pos1.ok_or_else(|| "Make a region selection first.".to_owned())?,
+            PlaceKind::Min => s.selection(&actor.dimension)?.min,
+            PlaceKind::Max => s.selection(&actor.dimension)?.max,
+        };
+        Ok(crate::horizon_worldedit_core::region::add(base, s.place_offset))
     }
 
     /// The writes still queued for `dimension`, this tick's share; the players whose edits finished.

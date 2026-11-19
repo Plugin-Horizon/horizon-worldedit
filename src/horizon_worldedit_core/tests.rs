@@ -853,6 +853,28 @@ fn limit_gmask_and_toggleplace() {
 }
 
 #[test]
+fn placement_types_and_offsets() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    run(&mut e, &mut w, &a, "//pos1 20,70,20");
+    run(&mut e, &mut w, &a, "//pos2 24,72,26");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement min"), "Now placing at the minimum of the current selection.");
+    run(&mut e, &mut w, &a, "//pyramid sand 1");
+    assert_eq!(w.name_at([20, 70, 20]), "minecraft:sand");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement max 2 up"), "Now placing at an offset of (0, 2, 0) from the maximum of the current selection.");
+    run(&mut e, &mut w, &a, "//pyramid gravel 1");
+    assert_eq!(w.name_at([24, 74, 26]), "minecraft:gravel");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement world 1 5,6,7"), "Now placing at (5, 6, 7).");
+    run(&mut e, &mut w, &a, "//pyramid dirt 1");
+    assert_eq!(w.name_at([5, 6, 7]), "minecraft:dirt");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement here"), "Now placing at (0, 64, 0).");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement pos1 1 1,0,0"), "Now placing at an offset of (1, 0, 0) from pos #1.");
+    assert_eq!(run(&mut e, &mut w, &a, "//toggleplace"), "Now placing at the block you stand in.");
+    assert_eq!(run(&mut e, &mut w, &a, "//toggleplace"), "Now placing at pos #1.");
+}
+
+#[test]
 fn searchitem_and_calc() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();
