@@ -328,10 +328,10 @@ impl Engine {
             None => default,
         };
         // Lifting the limit is for full operators, unless `node_levels` gives that node another level.
-        let may_disable = actor.permission >= self.config.node_levels.get("worldedit.limit.unrestricted").copied().unwrap_or(4);
-        // WorldEdit lets a `-1` (no limit) through its own maximum check; here it is above any maximum.
-        if !may_disable && default > -1 && (limit > default || limit < 0) {
-            return Err(format!("Your maximum allowable limit is {default}."));
+        let may_disable = self.holds(actor, "worldedit.limit.unrestricted");
+        let maximum = self.config.max_blocks_maximum;
+        if !may_disable && maximum > -1 && limit > maximum {
+            return Err(format!("Your maximum allowable limit is {maximum}."));
         }
         self.sessions.get(actor.uuid).block_limit = Some(limit);
         let mut line = format!("Block change limit set to {limit}.");

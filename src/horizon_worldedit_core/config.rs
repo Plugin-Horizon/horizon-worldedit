@@ -16,6 +16,10 @@ permission_level = 2
 # The most blocks one edit may change (WorldEdit's limits.max-blocks-changed); -1 = no limit.
 max_blocks = -1
 
+# The most a player may raise their own limit to with //limit (limits.max-blocks-changed.maximum); -1 = no maximum.
+# Players with the worldedit.limit.unrestricted node are not held to it.
+max_blocks_maximum = -1
+
 # Blocks written per server tick. A bigger edit is written over the next ticks, so the server keeps
 # ticking; the player is told when it is done.
 blocks_per_tick = 200000
@@ -135,6 +139,7 @@ nav_wand_max_distance = 100.0
 pub struct Config {
     pub permission_level: u8,
     pub max_blocks: i64,
+    pub max_blocks_maximum: i64,
     pub blocks_per_tick: usize,
     pub history_size: usize,
     pub wand_item: String,
@@ -162,6 +167,7 @@ impl Default for Config {
         Self {
             permission_level: 2,
             max_blocks: -1,
+            max_blocks_maximum: -1,
             blocks_per_tick: 200_000,
             history_size: 15,
             wand_item: "minecraft:wooden_axe".into(),
@@ -275,6 +281,7 @@ impl Config {
         let mut keys = Keys { root: &root, read: BTreeSet::new() };
         let mut c = Config::default();
         keys.i64("limits.max-blocks-changed.default", &mut c.max_blocks);
+        keys.i64("limits.max-blocks-changed.maximum", &mut c.max_blocks_maximum);
         keys.int("limits.vertical-height.default", &mut c.default_vertical_height);
         keys.float("limits.max-radius", &mut c.max_radius);
         keys.int("limits.max-super-pickaxe-size", &mut c.max_super_pickaxe_size);
@@ -386,8 +393,9 @@ mod tests {
         )
     }
 
-    const ORIGINAL_KEYS: [&str; 13] = [
+    const ORIGINAL_KEYS: [&str; 14] = [
         "limits.max-blocks-changed.default",
+        "limits.max-blocks-changed.maximum",
         "limits.vertical-height.default",
         "limits.max-radius",
         "limits.max-super-pickaxe-size",

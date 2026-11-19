@@ -713,7 +713,9 @@ impl Hooks for Mod {
     fn permission_gather_nodes(&self, event: &mut PermissionGatherNodesEvent<'_>) {
         // Every node the core asks about, at the operator level the old string nodes fell back to (`permission_level`).
         for &name in we::NODES {
-            let _ = event.nodes.add(node(name), NodeDefault::Level(PermissionLevel::from_level(2)));
+            // The nodes that lift a limit need level 4 (`FULL_OPERATOR_NODES`); every other one level 2.
+            let level = if we::FULL_OPERATOR_NODES.contains(&name) { 4 } else { 2 };
+            let _ = event.nodes.add(node(name), NodeDefault::Level(PermissionLevel::from_level(level)));
         }
     }
 

@@ -804,7 +804,7 @@ fn snow_thaw_green_extinguish() {
 
 #[test]
 fn limit_gmask_and_toggleplace() {
-    let mut e = Engine::new(Config { max_blocks: 100, ..Config::default() });
+    let mut e = Engine::new(Config { max_blocks: 100, max_blocks_maximum: 100, ..Config::default() });
     let mut w = FakeWorld::new();
     let mut a = actor(1);
     a.permission = 2;
@@ -814,12 +814,21 @@ fn limit_gmask_and_toggleplace() {
     assert_eq!(run(&mut e, &mut w, &a, "//limit 50"), "Block change limit set to 50. (Use //limit to go back to the default.)");
     assert!(fails(&mut e, &mut w, &a, "//set stone").contains("(50)"));
     assert_eq!(fails(&mut e, &mut w, &a, "//limit 500"), "Your maximum allowable limit is 100.");
-    assert_eq!(fails(&mut e, &mut w, &a, "//limit -1"), "Your maximum allowable limit is 100.");
+    // -1 passes WorldEdit's check, but the maximum still holds for the edits themselves.
+    assert_eq!(run(&mut e, &mut w, &a, "//limit -1"), "Block change limit set to -1. (Use //limit to go back to the default.)");
+    assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (100 blocks affected)");
     run(&mut e, &mut w, &a, "//limit");
     assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (100 blocks affected)");
     // An operator of the node's level may lift it.
-    let mut e = Engine::new(Config { max_blocks: 100, node_levels: [("worldedit.limit.unrestricted".to_string(), 2u8)].into(), ..Config::default() });
-    assert_eq!(run(&mut e, &mut w, &a, "//limit -1"), "Block change limit set to -1. (Use //limit to go back to the default.)");
+    let mut e = Engine::new(Config { max_blocks: 100, max_blocks_maximum: 100, node_levels: [("worldedit.limit.unrestricted".to_string(), 2u8)].into(), ..Config::default() });
+    assert_eq!(run(&mut e, &mut w, &a, "//limit 5000"), "Block change limit set to 5000. (Use //limit to go back to the default.)");
+    // A grant of the permission system works the same as the level.
+    let mut e = Engine::new(Config { max_blocks: 100, max_blocks_maximum: 100, ..Config::default() });
+    a.permission = 0;
+    a.granted.insert("worldedit.limit".into());
+    a.granted.insert("worldedit.limit.unrestricted".into());
+    assert_eq!(run(&mut e, &mut w, &a, "//limit 5000"), "Block change limit set to 5000. (Use //limit to go back to the default.)");
+    a.permission = 2;
     // Global mask: only stone is changed, by every edit.
     let mut e = Engine::default();
     w.fill([0, 64, 0], [9, 64, 9], "dirt");

@@ -65,6 +65,8 @@ pub const NODES: &[&str] = &[
     "worldedit.history.undo.other",
     "worldedit.history.undo.self",
     "worldedit.limit",
+    "worldedit.limit.unrestricted",
+    "worldedit.anyblock",
     "worldedit.navigation.ascend",
     "worldedit.navigation.ceiling",
     "worldedit.navigation.descend",
@@ -112,6 +114,10 @@ pub const NODES: &[&str] = &[
     "worldedit.tool.replacer",
     "worldedit.wand",
 ];
+
+/// Nodes that lift a limit and need operator level 4 where `node_levels` names no other level (the original's `default: op`
+/// would give them to level 2; a server whose operators are trusted that far can set the level in `node_levels`).
+pub const FULL_OPERATOR_NODES: &[&str] = &["worldedit.limit.unrestricted", "worldedit.anyblock"];
 
 /// The player a command, a click or a brush belongs to, as the server sees them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -957,11 +963,23 @@ impl Engine {
     /// by the permission system (`Actor::granted`). No other player gets WorldEdit.
     fn permitted(&self, actor: &Actor, node: Option<&str>) -> Result<(), String> {
         let nodes: Vec<&str> = node.map(|n| n.split('|').collect()).unwrap_or_default();
-        let level = nodes.iter().map(|n| self.config.node_levels.get(*n).copied().unwrap_or(self.config.permission_level)).min().unwrap_or(self.config.permission_level);
+        let level = nodes.iter().map(|n| self.node_level(n)).min().unwrap_or(self.config.permission_level);
         if actor.permission >= level || nodes.iter().any(|n| actor.granted.contains(*n)) {
             return Ok(());
         }
         Err("You are not permitted to do that. Are you in the right mode?".into())
+    }
+
+    /// The operator level that holds `node` without the permission system: `node_levels`, else 4 for the nodes that lift
+    /// a limit (`FULL_OPERATOR_NODES`), else `permission_level`.
+    fn node_level(&self, node: &str) -> u8 {
+        let fallback = if FULL_OPERATOR_NODES.contains(&node) { 4 } else { self.config.permission_level };
+        self.config.node_levels.get(node).copied().unwrap_or(fallback)
+    }
+
+    /// Whether the actor holds `node` (a grant of the permission system, or the operator level of `node_level`).
+    fn holds(&self, actor: &Actor, node: &str) -> bool {
+        self.permitted(actor, Some(node)).is_ok()
     }
 
     /// The checks every command and click has besides its node: WorldEdit's creative-only mode.
@@ -1160,7 +1178,13 @@ impl Engine {
 
     /// The most blocks one operation of this player may change: their `//limit`, else the server's.
     fn max_blocks(&mut self, actor: &Actor) -> i64 {
-        self.sessions.get(actor.uuid).block_limit.unwrap_or(self.config.max_blocks)
+        let limit = self.sessions.get(actor.uuid).block_limit.unwrap_or(self.config.max_blocks);
+        let maximum = self.config.max_blocks_maximum;
+        // `//limit -1` is let through by WorldEdit's own check, but the maximum still holds for anyone not unrestricted.
+        if maximum > -1 && (limit < 0 || limit > maximum) && !self.holds(actor, "worldedit.limit.unrestricted") {
+            return maximum;
+        }
+        limit
     }
 
     fn allows(&mut self, actor: &Actor, blocks: u64) -> bool {
@@ -1214,7 +1238,7 @@ impl Engine {
     fn pattern(&self, world: &dyn World, actor: &Actor, spec: Option<&str>) -> Result<Pattern, String> {
         let spec = spec.ok_or("A pattern is needed: a block such as stone, or a list such as 70%stone,30%gravel")?;
         let p = Pattern::parse(world, spec, actor.held.as_deref())?;
-        if actor.permission < 4 && !self.config.disallowed_blocks.is_empty() {
+        if !self.config.disallowed_blocks.is_empty() && !self.holds(actor, "worldedit.anyblock") {
             for &(_, s) in &p.entries {
                 let name = world.describe(s).name;
                 if self.config.disallowed_blocks.iter().any(|d| *d == name) {

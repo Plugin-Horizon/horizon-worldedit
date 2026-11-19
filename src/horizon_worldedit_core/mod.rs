@@ -25,7 +25,7 @@ pub mod yaml; // vendored horizon-yaml: reads the original plugins/WorldEdit/con
 
 pub use block::BlockState;
 pub use config::Config;
-pub use engine::{form_allows, is_command, is_rotate, is_shadowed, usages, Actor, Engine, Env, Line, Reply, NODES};
+pub use engine::{form_allows, is_command, is_rotate, is_shadowed, usages, Actor, Engine, Env, Line, Reply, FULL_OPERATOR_NODES, NODES};
 pub use world::{Pos, StateId, World};
 
 use std::collections::BTreeSet;
