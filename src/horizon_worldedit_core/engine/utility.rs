@@ -353,6 +353,59 @@ impl Engine {
         Ok(vec!["Global mask set.".into()])
     }
 
+    /// `//trim [mask]`: the selection shrinks to the box round the blocks that match (non-air by default).
+    pub(super) fn trim(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let selection = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
+        let c = selection.clamp_y(world.min_y(), world.max_y()).ok_or("The selection is outside the build height")?;
+        if c.volume() > SCAN_LIMIT {
+            return Err(format!("The selection is {} blocks; one edit handles at most {SCAN_LIMIT}", c.volume()));
+        }
+        let text = args.rest(0);
+        let mask = Mask::parse(world, if text.is_empty() { "#existing" } else { &text }, actor.held.as_deref())?;
+        let mut found: Option<(Pos, Pos)> = None;
+        for p in c.positions() {
+            if world.get(p).is_some_and(|s| mask.hits(world, s)) {
+                found = Some(match found {
+                    None => (p, p),
+                    Some((lo, hi)) => (std::array::from_fn(|a| lo[a].min(p[a])), std::array::from_fn(|a| hi[a].max(p[a]))),
+                });
+            }
+        }
+        let (lo, hi) = found.ok_or("No blocks matched the trim mask.")?;
+        self.sessions.get(actor.uuid).set_selection(Cuboid::new(lo, hi), &actor.dimension);
+        Ok(vec!["Region trimmed.".into()])
+    }
+
+    /// `/chunkinfo`: the chunk you stand in and the names of its files in the old save formats.
+    pub(super) fn chunk_info(&mut self, actor: &Actor) -> R {
+        let p = actor.block();
+        let (x, z) = (p[0] >> 4, p[2] >> 4);
+        let modulo = |n: i32| ((n % 64) + 64) % 64;
+        Ok(vec![
+            format!("Chunk: {x}, {z}"),
+            format!("Old format: {}/{}/c.{}.{}.dat", base36(modulo(x)), base36(modulo(z)), base36(x), base36(z)),
+            format!("McRegion: region/r.{}.{}.mca", x >> 5, z >> 5),
+        ])
+    }
+
+    /// `/listchunks [-p page]`: the chunks the selection reaches.
+    pub(super) fn list_chunks(&mut self, actor: &Actor, args: &Args) -> R {
+        let c = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
+        let page: usize = match args.value('p') {
+            Some(p) => p.parse().map_err(|_| number_error(p))?,
+            None => 1,
+        };
+        let mut chunks = Vec::new();
+        for x in (c.min[0] >> 4)..=(c.max[0] >> 4) {
+            for z in (c.min[2] >> 4)..=(c.max[2] >> 4) {
+                chunks.push(format!("({x}, {z})"));
+            }
+        }
+        let mut out = vec![format!("Listing chunks for: {}", actor.name)];
+        out.extend(help::paged("Selected Chunks", &chunks, page)?);
+        Ok(out)
+    }
+
     /// `//toggleplace`: shapes and fills are made at position 1 instead of at your feet, and back.
     pub(super) fn toggle_place(&mut self, actor: &Actor) -> R {
         let s = self.sessions.get(actor.uuid);
@@ -447,4 +500,21 @@ fn place_info(kind: PlaceKind, offset: Pos) -> String {
     } else {
         format!("Now placing at an offset of ({}, {}, {}) from {from}.", offset[0], offset[1], offset[2])
     }
+}
+
+/// `Integer.toString(n, 36)`.
+fn base36(n: i32) -> String {
+    let mut v = i64::from(n).unsigned_abs();
+    if v == 0 {
+        return "0".into();
+    }
+    let mut digits = Vec::new();
+    while v > 0 {
+        digits.push(char::from_digit((v % 36) as u32, 36).unwrap_or('0'));
+        v /= 36;
+    }
+    if n < 0 {
+        digits.push('-');
+    }
+    digits.iter().rev().collect()
 }

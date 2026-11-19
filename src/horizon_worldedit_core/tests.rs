@@ -875,6 +875,25 @@ fn navigation_wand_and_clipboard_distribution() {
 }
 
 #[test]
+fn trim_chunkinfo_and_listchunks() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    w.fill([3, 65, 4], [5, 67, 4], "stone");
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 9,70,9");
+    assert_eq!(run(&mut e, &mut w, &a, "//trim"), "Region trimmed.");
+    assert_eq!(e.selection_of(1), Some(("minecraft:overworld".to_owned(), [3, 65, 4], [5, 67, 4])));
+    assert_eq!(fails(&mut e, &mut w, &a, "//trim gold_block"), "No blocks matched the trim mask.");
+    a.position = [-17.5, 64.0, 40.5];
+    assert_eq!(run(&mut e, &mut w, &a, "/chunkinfo"), "Chunk: -2, 2\nOld format: 1q/2/c.-2.2.dat\nMcRegion: region/r.-1.0.mca");
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 17,64,16");
+    let r = run(&mut e, &mut w, &a, "/listchunks");
+    assert!(r.starts_with("Listing chunks for: builder1\n") && r.contains("Selected Chunks") && r.ends_with("(0, 0)\n(0, 1)\n(1, 0)\n(1, 1)"), "{r}");
+}
+
+#[test]
 fn placement_types_and_offsets() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();

@@ -67,6 +67,9 @@ pub const NODES: &[&str] = &[
     "worldedit.limit",
     "worldedit.placement",
     "worldedit.limit.unrestricted",
+    "worldedit.chunkinfo",
+    "worldedit.listchunks",
+    "worldedit.selection.trim",
     "worldedit.anyblock",
     "worldedit.navigation.ascend",
     "worldedit.navigation.ceiling",
@@ -307,6 +310,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("floodfill", "<args:text>"),
     ("flood", "<args:text>"),
     ("placement", "<args:text>"),
+    ("trim", "[mask:text]"),
+    ("chunkinfo", ""),
+    ("listchunks", "[flags:text]"),
 ];
 
 /// The typed usages, one per sub-command path: the names a command answers to (aliases too), the flags
@@ -400,6 +406,9 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["selwand", "info", "cycler"], "", &[""]),
     (&["repl"], "", &["<pattern:pattern>"]),
     (&["floodfill", "flood"], "", &["<pattern:pattern> <range:integer>"]),
+    (&["trim"], "", &["", "<mask:mask>"]),
+    (&["chunkinfo"], "", &[""]),
+    (&["listchunks"], "p", &["{flags}"]),
     (&["placement"], "", &["pos1", "player", "here", "world", "min", "max", "pos1 <multiplier:integer>", "player <multiplier:integer>", "here <multiplier:integer>", "world <multiplier:integer>", "min <multiplier:integer>", "max <multiplier:integer>", "pos1 <multiplier:integer> {dir}", "player <multiplier:integer> {dir}", "here <multiplier:integer> {dir}", "world <multiplier:integer> {dir}", "min <multiplier:integer> {dir}", "max <multiplier:integer> {dir}"]),
     (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
 ];
@@ -491,7 +500,7 @@ fn qualify(rest: &str, mid: &BTreeSet<String>) -> String {
 /// names in `BOTH_FORMS` it registers both ways (`/brush` and `//brush`); every other command is
 /// registered with a leading `/` in its name (`@Command(name = "/set")`), which the player types as
 /// `//set`.
-pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard", "selwand", "info", "cycler", "repl", "floodfill", "flood", "placement"];
+pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard", "selwand", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks"];
 pub const BOTH_FORMS: &[&str] = &[
     "brush", "br", "schem", "schematic", "undo", "redo", "clearhistory", "material", "removeabove", "removebelow", "removenear", "replacenear", "fixwater", "fixlava", "snow", "thaw", "green", "extinguish", "ex", "ext", "gmask",
     "toggleplace", "searchitem", "ascend", "asc", "descend", "desc", "thru", "jumpto", "j", "unstuck", "ceil",
@@ -627,6 +636,7 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "snow" => ("s", "s"),
         "green" => ("f", "f"),
         "searchitem" => ("bip", "bip"),
+        "listchunks" => ("p", "p"),
         "help" => ("sp", "sp"),
         "report" => ("p", ""),
         _ => ("", ""),
@@ -675,6 +685,7 @@ fn usage(name: &str) -> String {
         "placement" => "<pos1|player|here|world|min|max> [multiplier] [offset]".into(),
         "gmask" => "[mask]".into(),
         "searchitem" => "<query>".into(),
+        "trim" => "[mask]".into(),
         "calc" => "<expression>".into(),
         "help" => "[command...]".into(),
         "tool" => "<none|selwand|info|repl|cycler|floodfill> ...".into(),
@@ -694,7 +705,7 @@ fn usage(name: &str) -> String {
 
 /// Whether flag `c` of command `name` is followed by a value.
 fn takes_value(name: &str, c: char) -> bool {
-    c == 'm' || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help"))
+    c == 'm' || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks"))
 }
 
 /// Splits a command's words from its flags. Unknown flags and flags this server does not implement
@@ -762,6 +773,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "none" => return None,
         "sel" | "desel" | "deselect" => "worldedit.selection.sel",
         "version" | "ver" => return None,
+        "trim" => "worldedit.selection.trim",
         "help" => "worldedit.help",
         "wand" => "worldedit.wand",
         "pos1" | "pos2" => "worldedit.selection.pos",
@@ -1050,7 +1062,7 @@ impl Engine {
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
         let writes = !matches!(
             name.as_str(),
-            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc"
+            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks"
         );
         if writes && self.queue.busy(actor.uuid) {
             return Reply::err("Your last edit is still being written; wait a moment".into());
@@ -1078,6 +1090,9 @@ impl Engine {
             "gmask" => self.gmask(world, actor, &args),
             "toggleplace" => self.toggle_place(actor),
             "placement" => self.placement_type(actor, &args),
+            "trim" => self.trim(world, actor, &args),
+            "chunkinfo" => self.chunk_info(actor),
+            "listchunks" => self.list_chunks(actor, &args),
             "searchitem" => self.search_item(world, &args),
             "calc" => self.calc(&args),
             "pos1" | "pos2" => self.pos(world, actor, name == "pos1", &args),
