@@ -434,6 +434,14 @@ fn brushes_paint_where_you_look() {
     assert_eq!(w.name_at([0, 60, 5]), "minecraft:stone");
     assert_eq!(w.name_at([0, 61, 5]), "minecraft:dirt");
     assert_eq!(run(&mut e, &mut w, &a, "/brush none"), "Brush unbound from your current item.");
+    // The extinguisher brush: air over fire only.
+    w.fill([0, 61, 8], [0, 61, 8], "fire");
+    w.fill([1, 61, 8], [1, 61, 8], "gold_block");
+    assert_eq!(run(&mut e, &mut w, &a, "/brush ex 3"), "Extinguisher equipped (3).\nRun /brush unbind while holding the item to unbind it.");
+    e.brush_use(&mut w, &a, Some([0, 60, 8]), 2000).unwrap();
+    assert_eq!(w.name_at([0, 61, 8]), "minecraft:air");
+    assert_eq!(w.name_at([1, 61, 8]), "minecraft:gold_block");
+    run(&mut e, &mut w, &a, "/brush none");
     assert!(e.brush_use(&mut w, &a, None, 2000).is_none());
     assert_eq!(run(&mut e, &mut w, &a, "/tool none"), "Your current item is not bound.");
 }

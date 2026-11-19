@@ -31,6 +31,7 @@ pub const NODES: &[&str] = &[
     "worldedit.analysis.count",
     "worldedit.analysis.distr",
     "worldedit.brush.cylinder",
+    "worldedit.brush.ex",
     "worldedit.brush.options.mask",
     "worldedit.brush.options.material",
     "worldedit.brush.smooth",
@@ -384,6 +385,10 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
             "smooth <radius:number>",
             "smooth <radius:number> <iterations:integer>",
             "smooth <radius:number> <iterations:integer> <filter:mask>",
+            "extinguish",
+            "extinguish <radius:number>",
+            "ex",
+            "ex <radius:number>",
         ],
     ),
     (&["mask"], "", &["", "<filter:mask>"]),
@@ -670,7 +675,7 @@ fn usage(name: &str) -> String {
         "flip" | "mirror" => "[direction]".into(),
         "pos1" | "pos2" => "[coordinates]".into(),
         "chunk" => "[coordinates]".into(),
-        "brush" | "br" => "<sphere|cylinder|smooth|none> ...".into(),
+        "brush" | "br" => "<sphere|cylinder|smooth|extinguish|none> ...".into(),
         "brush sphere" => "<pattern> [radius]".into(),
         "brush cylinder" => "<pattern> [radius] [height]".into(),
         "fill" | "fillr" => "<pattern> <radius> [depth]".into(),
@@ -824,6 +829,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("sphere" | "s") => "worldedit.brush.sphere",
             Some("cylinder" | "cyl" | "c") => "worldedit.brush.cylinder",
             Some("smooth") => "worldedit.brush.smooth",
+            Some("extinguish" | "ex") => "worldedit.brush.ex",
             _ => return None,
         },
         "fill" => "worldedit.fill",
@@ -2191,6 +2197,11 @@ impl Engine {
                 (BrushShape::Cylinder { radius: radius(2, 2.0)?, height: args.int(3, 1)?, hollow: args.flag('h') }, Some(p))
             }
             "smooth" => (BrushShape::Smooth { radius: radius(1, 2.0)?, iterations: args.int(2, 4)?.clamp(1, 50) as u32 }, None),
+            // The fire extinguisher: a sphere of air over the fire it finds.
+            "extinguish" | "ex" => {
+                let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
+                (BrushShape::Sphere { radius: radius(1, 5.0)?, hollow: false }, Some(Pattern::single(air, "air")))
+            }
             other => return Err(format!("The sub-command '{other}' under 'brush' could not be found.")),
         };
         let (r, h) = match &shape {
@@ -2204,8 +2215,10 @@ impl Engine {
         if let Some(text) = &arg_mask {
             Mask::parse(world, text, actor.held.as_deref())?;
         }
+        let extinguisher = matches!(kind.as_str(), "extinguish" | "ex");
         // `String.format("%.0f")` for the sphere, a truncation for the others.
         let msg = match &shape {
+            BrushShape::Sphere { radius, .. } if extinguisher => format!("Extinguisher equipped ({}).", *radius as i64),
             BrushShape::Sphere { radius, .. } => format!("Sphere brush shape equipped ({}).", (radius + 0.0).round() as i64),
             BrushShape::Cylinder { radius, height, .. } => format!("Cylinder brush shape equipped ({} by {height}).", *radius as i64),
             BrushShape::Smooth { radius, iterations } => {
@@ -2213,7 +2226,7 @@ impl Engine {
             }
         };
         let s = self.sessions.get(actor.uuid);
-        let mask = arg_mask.or_else(|| s.brushes.get(&item).and_then(|b| b.mask.clone()));
+        let mask = if extinguisher { Some("minecraft:fire".to_owned()) } else { arg_mask.or_else(|| s.brushes.get(&item).and_then(|b| b.mask.clone())) };
         s.tools.remove(&item);
         s.brushes.insert(item.clone(), Brush { shape, pattern, mask });
         Ok(vec![msg, Self::unbind_hint()])
