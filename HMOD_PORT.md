@@ -1,5 +1,32 @@
 # hmod port: worldedit
-Parity: 53% now / 53% with our PRs (~465/~880 items; method: commands, sub-commands, flags, permission nodes, config keys, lang strings and listed features of the original counted, an item blocked by a missing engine API counts as not done). Blind-written, not compiled.
+Parity: 56% now / 56% with our PRs / 56% with engine changes / 56% with new SDK (490/880 items; C = 497; was 53% / 53% / 54% / 53%; method: commands, sub-commands, flags, permission nodes, config keys, lang strings and listed features of the original counted, an item blocked by a missing engine API counts as not done). Blind-written, not compiled.
+Steps: B = A (no open upstream PR covers a worldedit item); C adds the 7 tree and biome items of wave G10 that were already counted (472) on top of round 100; D = A (no merged upstream API applies). The estimate is by hand, not a measured count.
+
+## Checklist round 100 (walked against orig-src/worldedit, 2026-11-20)
+Walked: the `@Command` names of every class in `worldedit-core/.../command/`, the brush list (`BrushCommands`), the tool list (`ToolCommands`, `ToolUtilCommands`), the `@CommandPermissions` nodes of the commands above, the flags of snowsmooth, revolve and clipboard, the lang strings of those commands. Not walked in detail this round (open): `GenerationCommands` (structure, feature, pumpkins, forestgen), `BiomeCommands`, `ChunkCommands` `delchunks`, `SnapshotCommands` and `LegacySnapshotCommands`, `SuperPickaxeCommands`, `ApplyBrushCommands` and `PaintBrushCommands`, `SchematicCommands share`, the config keys of `LocalConfiguration`, and the remaining lang strings.
+- [x] `//revolve <count> [-m mask] [-r]` (`ClipboardCommands.revolve`); `-e` and `-b` refused (not supported).
+- [x] `/brush snowsmooth [radius] [iterations] [-l] [-m]` (`BrushCommands.snowSmoothBrush`); its kernel is 10, not a parameter.
+- [x] `/brush clipboard` / `copy` with `-a`, `-o`, `-v`, `-m`; `-e` and `-b` refused.
+- [x] `/tool navwand` / `/navwand` (right click only; the left click, pass through walls, is not ported).
+- [x] `//smooth`, `//snowsmooth` and the smooth brush now use WorldEdit's Gaussian kernel (11 x 11 for radius 5, not 5 x 5) and its edge rule (`HeightMapFilter` reads the centre cell off the map).
+- [x] Earlier rounds: selection, region, shape, clipboard, history, schematic, brush sphere / cylinder / smooth / extinguish, tools selwand / info / repl / cycler / floodfill / farwand, navigation commands, limit / fast / perf / timeout / reorder / drawsel / watchdog / registry / searchitem / calc, `/butcher`, `/remove`, `//generate`, `//deform`.
+- [ ] Brushes not ported: splatter, gravity, butcher, set, raise, lower, snow, morph, erode, dilate (no API needed, open); heightmap (reads an image file, open); forest, feature (generation API, see GAPS_UPSTREAM.md); biome (no biome write API).
+- [ ] Tools not ported: tree, deltree, stacker, lrbuild (hooks, GAPS_UPSTREAM.md); super pickaxe `/` and `,` (drop-items API); `/tool mask`, `material`, `range`, `size`, `tracemask` (no API, open).
+- [ ] Commands not ported: `//regen`, `//forest`, `//flora`, biome commands and `-b` (API); `//world` (level-by-name API); `/delchunks` (API: `LevelRef::delete_chunks` in GAPS_UPSTREAM.md); `/cs`, `.s` (scripting, out of scope); snapshots (open).
+- [ ] navwand left click `thru` (left click in the air, API).
+- Unsure:
+  - The revolve turn: WorldEdit's `rotateY` signs taken from `AffineTransform.rotateY`; the block is moved to the nearest block of its turned centre, and the offset of WorldEdit's `translate(0.5)` is folded into that rounding. Quarter turns are exact; the other angles are an estimate.
+  - The clipboard brush centre is `floor((min + max) / 2)` relative to the origin, read from `Region.getCenter()` and `toBlockPoint()`; not checked against a run.
+  - `snowsmooth` iterations clamp to 0..50 here (the original has no limit); the brush's `-l` default is 1 as in the original.
+
+Round 100 (blind)
+- Fixed: the blur kernel. WorldEdit's `GaussianKernel(5, 1.0)` is an 11 x 11 square (radius 5); the port used 5 x 5. `HeightMapFilter` also reads the centre cell for a sample off the map, not the edge cell; the port clamped. Affects `//smooth`, `//snowsmooth` and the smooth brush (`ops::kernel`, `ops::blur_once`).
+- Added: `/brush snowsmooth` (`BrushShape::SnowSmooth`, `ops::snow_brush_box`), `//revolve` (`engine.rs` `revolve`, `Clipboard::turned`), `/brush clipboard` (`BrushShape::Paste`, the paste is done in `brush_use` with its own commit so block entity data goes along), `/tool navwand` (`Tool::NavWand`, `nav_use` takes a bound item).
+- Permission nodes added: `worldedit.brush.snowsmooth`, `worldedit.brush.clipboard`, `worldedit.revolve`. The `/tool navwand` node is `worldedit.navigation.jumpto.tool` (as in the original).
+- Unit tests (literal values, not run): `gaussian_kernel_is_radius_sized_and_sums_to_one`, `blur_reads_the_centre_off_the_map`, `snow_brush_box_floors_and_grows_ten_up`, `turned_copy_moves_blocks_round_the_origin`.
+- Flags: `brush` accepts `-h -l -m -a -o -v` (and refuses `-e -b`), `revolve` takes `-m -r`.
+- Note: the request named a "kernel-size parameter" for `/brush snowsmooth`. The original has none: the brush's kernel is fixed (`GaussianKernel(10, 1.0)`), so the port does the same.
+
 Round 5 (curve and snowsmooth, blind)
 - Added: `//curve [-h] <pattern> [thickness]` (`engine.rs` `curve`, `shapes::spline`): only on a convex polyhedral selection, otherwise WorldEdit's "//curve only works with convex polyhedral selections"; the spline runs through the selection's vertices as `EditSession.drawSpline` does with tension, bias and continuity 0 (Catmull-Rom), sampled about ten times per unit of arc length, ballooned by the thickness, hollowed with `-h`; message "N blocks have been changed.".
 - Added: `//snowsmooth [iterations] [-l layers] [-m mask]` (`engine.rs` `snow_smooth`, `ops::snow_smooth`): WorldEdit's `SnowHeightMap` (snow layers as fractions of a block, highest ground block per column, the 5x5 blur `iterations` times, half a layer added, growing columns get snow layers and copied blocks below, shrinking ones are cut down, liquid tops do not grow); message "Snow's height map smoothed. N blocks changed."; iterations clamped to 0..50 as the port's `//smooth` does (the original has no limit).

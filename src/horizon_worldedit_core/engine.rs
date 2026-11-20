@@ -2715,7 +2715,7 @@ impl Engine {
         }
         let salt = self.salt(actor);
         let (lo, hi) = (world.min_y(), world.max_y());
-        let keep =|p: &Pos, world: &dyn World| (lo..=hi).contains(&p[1]) && mask.as_ref().is_none_or(|m| world.get(*p).is_some_and(|s| m.hits(world, s)));
+        let keep = |p: &Pos, world: &dyn World| (lo..=hi).contains(&p[1]) && mask.as_ref().is_none_or(|m| world.get(*p).is_some_and(|s| m.hits(world, s)));
         let ops: Vec<(Pos, StateId)> = match (&brush.shape, &brush.pattern) {
             (BrushShape::Sphere { radius, hollow }, Some(p)) => shapes::sphere(target, [*radius; 3], *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),
             (BrushShape::Cylinder { radius, height, hollow }, Some(p)) => shapes::cylinder(target, [*radius; 2], *height, *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),
