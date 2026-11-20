@@ -38,6 +38,7 @@ pub const NODES: &[&str] = &[
     "worldedit.brush.options.mask",
     "worldedit.brush.options.material",
     "worldedit.brush.smooth",
+    "worldedit.brush.snowsmooth",
     "worldedit.brush.sphere",
     "worldedit.calc",
     "worldedit.butcher",
@@ -429,6 +430,9 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
             "smooth <radius:number>",
             "smooth <radius:number> <iterations:integer>",
             "smooth <radius:number> <iterations:integer> <filter:mask>",
+            "snowsmooth",
+            "snowsmooth <radius:number>",
+            "snowsmooth <radius:number> <iterations:integer>",
             "extinguish",
             "extinguish <radius:number>",
             "ex",
@@ -685,7 +689,8 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "stack" => ("abersm", "asrm"),
         "move" => ("abesm", "asm"),
         "sphere" | "hsphere" => ("hr", "hr"),
-        "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "brush" | "br" | "cone" => ("h", "h"),
+        "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "cone" => ("h", "h"),
+        "brush" | "br" => ("hlm", "hlm"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
         "distr" => ("cdpm", "cdpm"),
@@ -745,7 +750,7 @@ fn usage(name: &str) -> String {
         "butcher" => "[radius]".into(),
         "remove" | "rem" | "rement" => "<type> <radius>".into(),
         "sel" => "[cuboid|extend|poly|polyextend|ellipsoid|sphere|cyl|convex]".into(),
-        "brush" | "br" => "<sphere|cylinder|smooth|extinguish|none> ...".into(),
+        "brush" | "br" => "<sphere|cylinder|smooth|snowsmooth|extinguish|none> ...".into(),
         "brush sphere" => "<pattern> [radius]".into(),
         "brush cylinder" => "<pattern> [radius] [height]".into(),
         "fill" | "fillr" => "<pattern> <radius> [depth]".into(),
@@ -780,7 +785,7 @@ fn usage(name: &str) -> String {
 
 /// Whether flag `c` of command `name` is followed by a value.
 fn takes_value(name: &str, c: char) -> bool {
-    c == 'm' || (c == 'l' && name == "snowsmooth") || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "registry"))
+    c == 'm' || (c == 'l' && matches!(name, "snowsmooth" | "brush" | "br")) || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "registry"))
 }
 
 /// Splits a command's words from its flags. Unknown flags and flags this server does not implement
@@ -902,6 +907,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("sphere" | "s") => "worldedit.brush.sphere",
             Some("cylinder" | "cyl" | "c") => "worldedit.brush.cylinder",
             Some("smooth") => "worldedit.brush.smooth",
+            Some("snowsmooth") => "worldedit.brush.snowsmooth",
             Some("extinguish" | "ex") => "worldedit.brush.ex",
             _ => return None,
         },
@@ -2354,6 +2360,22 @@ impl Engine {
                 (BrushShape::Cylinder { radius: radius(2, 2.0)?, height: args.int(3, 1)?, hollow: args.flag('h') }, Some(p))
             }
             "smooth" => (BrushShape::Smooth { radius: radius(1, 2.0)?, iterations: args.int(2, 4)?.clamp(1, 50) as u32 }, None),
+            // SnowSmoothBrush: `-l` snow blocks under the snow, `-m` the mask of the height map.
+            "snowsmooth" => {
+                let layers = match args.value('l') {
+                    Some(v) => v.parse::<i32>().map_err(|_| number_error(v))?,
+                    None => 1,
+                };
+                let mask = match args.value('m') {
+                    Some(text) => {
+                        Mask::parse(world, text, actor.held.as_deref())?;
+                        Some(text.to_owned())
+                    }
+                    None => None,
+                };
+                let shape = BrushShape::SnowSmooth { radius: radius(1, 2.0)?, iterations: args.int(2, 4)?.clamp(0, 50) as u32, layers, mask };
+                (shape, None)
+            }
             // The fire extinguisher: a sphere of air over the fire it finds.
             "extinguish" | "ex" => {
                 let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
@@ -2362,7 +2384,7 @@ impl Engine {
             other => return Err(format!("The sub-command '{other}' under 'brush' could not be found.")),
         };
         let (r, h) = match &shape {
-            BrushShape::Sphere { radius, .. } | BrushShape::Smooth { radius, .. } => (*radius, 0),
+            BrushShape::Sphere { radius, .. } | BrushShape::Smooth { radius, .. } | BrushShape::SnowSmooth { radius, .. } => (*radius, 0),
             BrushShape::Cylinder { radius, height, .. } => (*radius, *height),
         };
         if r > self.config.max_brush_radius || f64::from(h) > self.config.max_brush_radius {
@@ -2380,6 +2402,9 @@ impl Engine {
             BrushShape::Cylinder { radius, height, .. } => format!("Cylinder brush shape equipped ({} by {height}).", *radius as i64),
             BrushShape::Smooth { radius, iterations } => {
                 format!("Smooth brush equipped ({} x {iterations}x using {}).", *radius as i64, if arg_mask.is_some() { "filter" } else { "any block" })
+            }
+            BrushShape::SnowSmooth { radius, iterations, layers, mask } => {
+                format!("SnowSmooth brush equipped ({} x {iterations}x using {}), {layers} snow blocks.", *radius as i64, if mask.is_some() { "filter" } else { "any block" })
             }
         };
         let s = self.sessions.get(actor.uuid);
@@ -2555,6 +2580,7 @@ impl Engine {
             BrushShape::Sphere { .. } => "worldedit.brush.sphere",
             BrushShape::Cylinder { .. } => "worldedit.brush.cylinder",
             BrushShape::Smooth { .. } => "worldedit.brush.smooth",
+            BrushShape::SnowSmooth { .. } => "worldedit.brush.snowsmooth",
         };
         if let Err(e) = self.permitted(actor, Some(node)).and(self.allowed(actor)) {
             return Some(Reply::err(e));
@@ -2587,6 +2613,15 @@ impl Engine {
                 let r = radius.ceil() as i32;
                 let region = Cuboid::new(sub(target, [r, r, r]), [target[0] + r, target[1] + r, target[2] + r]);
                 ops::smooth(world, &region, *iterations, mask.as_ref())
+            }
+            (BrushShape::SnowSmooth { radius, iterations, layers, mask: heights }, _) => {
+                let region = ops::snow_brush_box(target, *radius);
+                let heights = match heights.as_deref().map(|m| Mask::parse(world, m, None)) {
+                    Some(Ok(m)) => Some(m),
+                    Some(Err(e)) => return Some(Reply::err(e)),
+                    None => None,
+                };
+                ops::snow_smooth(world, &region, *iterations, *layers, heights.as_ref(), 10)
             }
             _ => Vec::new(),
         };

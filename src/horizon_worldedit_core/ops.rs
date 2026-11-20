@@ -225,6 +225,18 @@ pub fn smooth(world: &dyn World, region: &Cuboid, iterations: u32, mask: Option<
     out
 }
 
+/// The box of the snow smooth brush (`SnowSmoothBrush.build`): `size` around `target` in x and z, and in y
+/// `size` below and `size + 10` above. The bounds are floored, as `Vector3.toBlockPoint` does, so a fractional
+/// size reaches one block further down and left than up and right.
+pub fn snow_brush_box(target: Pos, size: f64) -> Cuboid {
+    let lo = |v: i32| (f64::from(v) - size).floor() as i32;
+    let hi = |v: i32, extra: f64| (f64::from(v) + size + extra).floor() as i32;
+    Cuboid::new(
+        [lo(target[0]), lo(target[1]), lo(target[2])],
+        [hi(target[0], 0.0), hi(target[1], 10.0), hi(target[2], 0.0)],
+    )
+}
+
 /// `//snowsmooth` (WorldEdit's `SnowHeightMap`): the height map of the region where a snow layer counts as
 /// a fraction of a block, blurred `iterations` times with a Gaussian kernel of `blur_radius` (`//snowsmooth`
 /// uses 5, the brush 10) and written back. A column that grows gets snow layers on top and copies the blocks
@@ -507,6 +519,14 @@ mod tests {
         let sum: f64 = k.iter().flatten().sum();
         assert!((sum - 1.0).abs() < 1e-12);
         assert!((kernel(1)[1][1] - 0.204_17).abs() < 1e-4);
+    }
+
+    #[test]
+    fn snow_brush_box_floors_and_grows_ten_up() {
+        // Whole sizes are symmetric in x and z; y reaches ten blocks higher than the size.
+        assert_eq!(snow_brush_box([0, 10, 0], 2.0), Cuboid::new([-2, 8, -2], [2, 22, 2]));
+        // A fractional size floors the low side: floor(-2.5) = -3, floor(2.5) = 2.
+        assert_eq!(snow_brush_box([0, 10, 0], 2.5), Cuboid::new([-3, 7, -3], [2, 22, 2]));
     }
 
     #[test]

@@ -30,6 +30,9 @@ pub enum BrushShape {
     Sphere { radius: f64, hollow: bool },
     Cylinder { radius: f64, height: i32, hollow: bool },
     Smooth { radius: f64, iterations: u32 },
+    /// `/brush snowsmooth [radius] [iterations] [-l layers] [-m mask]`: `mask` is the height map's filter (`-m`),
+    /// not the `/mask` of the brush.
+    SnowSmooth { radius: f64, iterations: u32, layers: i32, mask: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
