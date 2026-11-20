@@ -117,6 +117,8 @@ horizon-launcher native-build <path to this folder> --server-output <dir> --vers
 
 ## Known gaps
 
+- Round 3: polygon, ellipsoid, sphere, cylinder and convex selectors, `//generate`, `//deform`, `/butcher`, `/remove` are ported. Still open: `//regen`, `//curve`, `//snowsmooth`, `//revolve`, `//forest`, `//flora`, super pickaxe, tree/farwand/lrbuild tools, snapshots, biome commands (no engine API, see HMOD_PORT.md).
+
 What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: ...)` in `src/lib.rs`):
 
 - The selection outline (WorldEdit CUI) is not drawn.

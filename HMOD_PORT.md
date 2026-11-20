@@ -1,4 +1,10 @@
 # hmod port: worldedit
+Parity: before 42% -> after 49% (~430/~880 items; method: commands, sub-commands, flags, permission nodes, config keys, lang strings and listed features of the original counted, an item blocked by a missing engine API counts as not done). Blind-written, not compiled.
+
+Round 3 (100 % round)
+- Added: selectors `//sel poly|polyextend|ellipsoid|sphere|cyl|convex` (+ `-d`), their clicks and messages, `//size` info, `//expand|contract|shift|outset|inset` rules for shapes; commands that take the shape into account: `//set //walls //faces //replace //count //distr //copy //cut` (src/horizon_worldedit_core/selector.rs, engine/select.rs). Other region commands (hollow, overlay, naturalize, smooth, stack, move, paste target) still use the shape's bounding box.
+- Added: `//generate` (`//gen`, `//g`, flags -hroc), `//deform` (-roc) with an expression language (engine/expr.rs: variables, assignments, `;`, `?:`, comparisons, math functions), `/butcher` (all flags, nodes `worldedit.butcher.*`, `limits.butcher-radius` keys), `/remove` (`/rem`, `/rement`), through the new World methods `entities_in` and `remove_entities`.
+- Gaps (see GAPS_UPSTREAM.md): `//regen`, biome commands and `-b`, `//paste -e`, `//forest`/`//flora`/tree tool, server-side outline of shapes. Not done yet: `//curve`, `//snowsmooth`, `//revolve`, super pickaxe, `/tool tree|deltree|farwand|lrbuild|stack`, snapshots, `//timeout`, `//fast`, `//perf`. `//generate` has no `type`/`data` variables (always -1).
 Round 1
 - Fixed: `CommandArgumentType::suggest` takes the sender first (`_sender: Option<&CommandSender>`); the two internal calls pass `None` (src/lib.rs).
 - Fixed: `IPayloadHandler::handle` returns `PayloadHandleError` (`CuiInbox`, src/lib.rs).
