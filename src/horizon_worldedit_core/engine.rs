@@ -103,6 +103,7 @@ pub const NODES: &[&str] = &[
     "worldedit.region.line",
     "worldedit.region.curve",
     "worldedit.region.snowsmooth",
+    "worldedit.revolve",
     "worldedit.region.move",
     "worldedit.region.naturalize",
     "worldedit.region.overlay",
@@ -269,6 +270,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("snowsmooth", "[args:text]"),
     ("line", "<args:text>"),
     ("curve", "<args:text>"),
+    ("revolve", "<args:text>"),
     ("stack", "[args:text]"),
     ("move", "[args:text]"),
     ("sphere", "<args:text>"),
@@ -390,6 +392,7 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["snowsmooth"], "lm", &["{flags}", "<iterations:integer> {flags}"]),
     (&["line"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
     (&["curve"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
+    (&["revolve"], "r", &["<count:integer>", "{flags} <count:integer>"]),
     (&["stack"], "asr", &["{flags}", "<count:integer> {flags}", "<count:integer> {dir} {flags}"]),
     (
         &["move"],
@@ -691,6 +694,7 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "sphere" | "hsphere" => ("hr", "hr"),
         "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "cone" => ("h", "h"),
         "brush" | "br" => ("hlm", "hlm"),
+        "revolve" => ("mreb", "mr"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
         "distr" => ("cdpm", "cdpm"),
@@ -731,6 +735,7 @@ fn usage(name: &str) -> String {
         "snowsmooth" => "[iterations]".into(),
         "line" => "<pattern> [thickness]".into(),
         "curve" => "<pattern> [thickness]".into(),
+        "revolve" => "<count> [-m mask] [-r]".into(),
         "stack" => "[count] [offset]".into(),
         "move" => "[multiplier] [offset] [replace]".into(),
         "sphere" | "hsphere" => "<pattern> <radii>".into(),
@@ -871,6 +876,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "set" => "worldedit.region.set",
         "line" => "worldedit.region.line",
         "curve" => "worldedit.region.curve",
+        "revolve" => "worldedit.revolve",
         "replace" | "re" | "rep" => "worldedit.region.replace",
         "overlay" => "worldedit.region.overlay",
         "center" | "middle" => "worldedit.region.center",
@@ -1206,6 +1212,7 @@ impl Engine {
             "snowsmooth" => self.snow_smooth(world, actor, &args),
             "line" => self.line(world, actor, &args),
             "curve" => self.curve(world, actor, &args),
+            "revolve" => self.revolve(world, actor, &args),
             "stack" => self.stack(world, actor, &args),
             "move" => self.move_(world, actor, &args),
             "sphere" | "hsphere" => self.sphere(world, actor, name == "hsphere", &args),
@@ -1865,6 +1872,51 @@ impl Engine {
         let ops = shapes::spline(&points, thickness, !args.flag('h')).into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been changed.{note}")])
+    }
+
+    /// `//revolve <count> [-m mask] [-r]` (`ClipboardCommands.revolve`): the selection is copied around the
+    /// placement point, then pasted `count - 1` more times, each copy turned a further 360 / count degrees
+    /// round that point (the other way with `-r`). Air is never pasted, so a later copy only overwrites what it
+    /// fills. `-m` leaves out the blocks it does not match.
+    fn revolve(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let c = self.region(world, actor)?;
+        let count = match args.get(0) {
+            Some(w) => w.parse::<i32>().map_err(|_| number_error(w))?,
+            None => return Err(usage("revolve")),
+        };
+        if count < 2 {
+            return Err("Paste count must be at least 2.".into());
+        }
+        let origin = self.placement(actor)?;
+        let mut clip = Clipboard::copy(world, &c, origin, &actor.dimension)?;
+        if let Some(text) = args.value('m') {
+            let mask = Mask::parse(world, text, actor.held.as_deref())?;
+            let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
+            let w: &dyn World = &*world;
+            for (p, s) in clip.blocks.iter_mut() {
+                if !mask.hits(w, *s) {
+                    *s = air;
+                    clip.entities.remove(&*p);
+                }
+            }
+        }
+        let sign = if args.flag('r') { 1.0 } else { -1.0 };
+        let mut writes: Vec<(Pos, StateId)> = Vec::new();
+        let mut entities: HashMap<Pos, Tag> = HashMap::new();
+        for i in 1..count {
+            let (turned, block_entities) = clip.turned(world, sign * 360.0 * f64::from(i) / f64::from(count));
+            writes.extend(turned);
+            entities.extend(block_entities);
+        }
+        // Later copies overwrite earlier ones where they overlap.
+        let mut last: HashMap<Pos, StateId> = HashMap::new();
+        for (p, s) in writes {
+            last.insert(p, s);
+        }
+        let writes: Vec<(Pos, StateId)> = last.into_iter().map(|(p, s)| (crate::horizon_worldedit_core::region::add(origin, p), s)).collect();
+        let entities: HashMap<Pos, Tag> = entities.into_iter().map(|(p, t)| (crate::horizon_worldedit_core::region::add(origin, p), t)).collect();
+        let (n, note) = self.commit_with(world, actor, writes, entities)?;
+        Ok(vec![format!("The selection has been pasted {count} times."), format!("{n} blocks changed.{note}")])
     }
 
     fn dir_arg(actor: &Actor, word: Option<&str>) -> Result<Dir, String> {

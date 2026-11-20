@@ -69,6 +69,37 @@ impl Clipboard {
             .map(|&(p, s)| (add(at, p), s))
             .collect()
     }
+    /// The non-air blocks turned `degrees` round the origin's vertical axis, for `//revolve`. Each block's
+    /// relative position goes through WorldEdit's `rotateY` (x' = x cos + z sin, z' = -x sin + z cos) and is
+    /// rounded to the nearest block. Block states turn only for whole quarter turns; other angles keep them.
+    /// The block entity data goes with its block. Positions are relative to the origin.
+    pub fn turned(&self, world: &dyn World, degrees: f64) -> (Vec<(Pos, StateId)>, HashMap<Pos, Tag>) {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let quarters = degrees / 90.0;
+        let whole = quarters.round();
+        let exact = (quarters - whole).abs() < 1e-9;
+        let rotation = Rotation::from_quarter_turns(whole.rem_euclid(4.0) as u8);
+        let mut turned_state: HashMap<StateId, StateId> = HashMap::new();
+        let mut blocks = Vec::with_capacity(self.blocks.len());
+        let mut entities = HashMap::new();
+        for &(p, s) in &self.blocks {
+            if world.is_air(s) {
+                continue;
+            }
+            let (fx, fz) = (f64::from(p[0]), f64::from(p[2]));
+            let q = [(fx * cos + fz * sin + 0.5).floor() as i32, p[1], (-fx * sin + fz * cos + 0.5).floor() as i32];
+            let s = if exact {
+                *turned_state.entry(s).or_insert_with(|| world.resolve(&rotate_state(&world.describe(s), rotation)).unwrap_or(s))
+            } else {
+                s
+            };
+            if let Some(tag) = self.entities.get(&p) {
+                entities.insert(q, tag.clone());
+            }
+            blocks.push((q, s));
+        }
+        (blocks, entities)
+    }
     /// The block entity data of a paste at `at` for the blocks `writes` place there.
     pub fn entities_for(&self, at: Pos, writes: &[(Pos, StateId)]) -> HashMap<Pos, Tag> {
         let mut out = HashMap::new();

@@ -522,6 +522,21 @@ mod tests {
     }
 
     #[test]
+    fn turned_copy_moves_blocks_round_the_origin() {
+        use crate::horizon_worldedit_core::clipboard::Clipboard;
+        let mut w = FakeWorld::new();
+        w.fill([2, 0, 0], [2, 0, 0], "stone");
+        let clip = Clipboard::copy(&w, &Cuboid::new([2, 0, 0], [2, 0, 0]), [0, 0, 0], "test").unwrap();
+        // rotateY(90): x' = x cos + z sin = 0, z' = -x sin + z cos = -2.
+        let (quarter, _) = clip.turned(&w, 90.0);
+        assert_eq!(quarter.len(), 1);
+        assert_eq!(quarter[0].0, [0, 0, -2]);
+        // A 45 degree turn: x' = 2 cos 45 = 1.41 -> 1, z' = -2 sin 45 = -1.41 -> -1.
+        let (diagonal, _) = clip.turned(&w, 45.0);
+        assert_eq!(diagonal[0].0, [1, 0, -1]);
+    }
+
+    #[test]
     fn snow_brush_box_floors_and_grows_ten_up() {
         // Whole sizes are symmetric in x and z; y reaches ten blocks higher than the size.
         assert_eq!(snow_brush_box([0, 10, 0], 2.0), Cuboid::new([-2, 8, -2], [2, 22, 2]));
