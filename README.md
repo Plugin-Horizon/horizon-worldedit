@@ -1,5 +1,9 @@
 # WorldEdit for Horizon
 
+## Port status
+
+Compared with WorldEdit 7.4.7-SNAPSHOT (349ea51): **56 %** of the original's commands, permissions, config keys, messages and features work today; **56 %** once our open Horizon PRs are merged; **56 %** with the engine changes we are writing; **56 %** with the newest Horizon SDK. Counted on 490/880 items (see HMOD_PORT.md). Status: not yet compiled after the 2026-11-20 round.
+
 > **Unofficial Rust port of WorldEdit for the Horizon server (https://github.com/arismoko/horizon). Not affiliated with or endorsed by the WorldEdit authors.**
 
 In-game world editing for [Horizon](https://github.com/arismoko/horizon) (the Rust Minecraft 26.3) as a native
