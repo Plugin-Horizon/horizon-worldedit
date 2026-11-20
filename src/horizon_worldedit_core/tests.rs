@@ -1268,3 +1268,33 @@ fn butcher_and_remove() {
     assert_eq!(run(&mut e, &mut w, &a, "/butcher"), "1 mobs have been killed in a radius of -1.");
     assert!(fails(&mut e, &mut w, &a, "/remove bogus 5").starts_with("Acceptable types"));
 }
+
+#[test]
+fn session_options_say_what_worldedit_says() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(7);
+    assert_eq!(run(&mut e, &mut w, &a, "//timeout"), "Timeout time set to 100ms.");
+    assert_eq!(run(&mut e, &mut w, &a, "//timeout 250"), "Timeout time set to 250ms. (Use //timeout to go back to the default.)");
+    assert_eq!(
+        run(&mut e, &mut w, &a, "//fast"),
+        "Fast mode enabled. Lighting in the affected chunks may be wrong and/or you may need to rejoin to see changes."
+    );
+    assert_eq!(fails(&mut e, &mut w, &a, "//fast on"), "Fast mode already enabled.");
+    assert_eq!(run(&mut e, &mut w, &a, "//fast off"), "Fast mode disabled.");
+    assert_eq!(run(&mut e, &mut w, &a, "//perf lighting"), "Side effect \"Lighting\" is set to On");
+    assert_eq!(run(&mut e, &mut w, &a, "//perf neighbors off"), "Side effect \"Neighbors\" set to Off");
+    assert_eq!(fails(&mut e, &mut w, &a, "//perf neighbors off"), "Side effect \"Neighbors\" is already Off");
+    assert!(run(&mut e, &mut w, &a, "//perf").contains("Entity AI: Off"));
+    assert_eq!(run(&mut e, &mut w, &a, "//reorder"), "The reorder mode is multi");
+    assert_eq!(run(&mut e, &mut w, &a, "//reorder fast"), "The reorder mode is now fast");
+    assert_eq!(fails(&mut e, &mut w, &a, "//reorder sideways"), "Usage: //reorder [mode]");
+    assert_eq!(fails(&mut e, &mut w, &a, "//watchdog"), "This platform has no watchdog hook.");
+    assert_eq!(run(&mut e, &mut w, &a, "//drawsel off"), "Server CUI disabled.");
+    assert_eq!(fails(&mut e, &mut w, &a, "//drawsel off"), "Server CUI already disabled.");
+    assert!(run(&mut e, &mut w, &a, "//registry block zzzq").contains("No results found."));
+    // The far wand is bound like the other tools; its binding takes the item in hand.
+    a.held = Some("minecraft:stick".into());
+    assert!(run(&mut e, &mut w, &a, "//tool farwand").starts_with("Far wand tool bound to"));
+    a.held = None;
+}

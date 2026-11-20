@@ -941,9 +941,12 @@ impl Hooks for Mod {
         actor.held = Some(event.click.stack.item().id(&*host));
         let reply = {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
-            we::with(|e| match e.brush_use(&mut world, &actor, None, now_ms()) {
+            we::with(|e| match e.far_wand_air(&world, &actor, now_ms()) {
                 Some(r) => Some(r),
-                None => e.nav_use(&world, &actor, now_ms()),
+                None => match e.brush_use(&mut world, &actor, None, now_ms()) {
+                    Some(r) => Some(r),
+                    None => e.nav_use(&world, &actor, now_ms()),
+                },
             })
         };
         if let Some(reply) = reply {

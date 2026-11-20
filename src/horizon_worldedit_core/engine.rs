@@ -133,6 +133,14 @@ pub const NODES: &[&str] = &[
     "worldedit.tool.info",
     "worldedit.tool.replacer",
     "worldedit.wand",
+    "worldedit.timeout",
+    "worldedit.fast",
+    "worldedit.perf",
+    "worldedit.reorder",
+    "worldedit.drawsel",
+    "worldedit.watchdog",
+    "worldedit.registry",
+    "worldedit.tool.farwand",
 ];
 
 /// Nodes that lift a limit and need operator level 4 where `node_levels` names no other level (the original's `default: op`
@@ -337,6 +345,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("remove", "<args:text>"),
     ("rem", "<args:text>"),
     ("rement", "<args:text>"),
+    ("timeout", "[limit:integer]"),
+    ("fast", "[mode:word]"),
+    ("perf", "[sideeffect:word] [state:word]"),
+    ("reorder", "[mode:word]"),
+    ("drawsel", "[state:word]"),
+    ("watchdog", "[mode:word]"),
+    ("registry", "<registry:word> [query:text]"),
 ];
 
 /// The typed usages, one per sub-command path: the names a command answers to (aliases too), the flags
@@ -443,6 +458,13 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["butcher"], "pnagbtfrw", &["{flags}", "{flags} <radius:integer>"]),
     (&["remove", "rem", "rement"], "", &["<type:word> <radius:integer>"]),
     (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
+    (&["timeout"], "", &["", "<limit:integer>"]),
+    (&["fast"], "", &["", "on", "off"]),
+    (&["perf"], "h", &["{flags}", "{flags} <sideeffect:word>", "{flags} <sideeffect:word> <state:word>"]),
+    (&["reorder"], "", &["", "multi", "fast", "none"]),
+    (&["drawsel"], "", &["", "on", "off"]),
+    (&["watchdog"], "", &["", "active", "inactive"]),
+    (&["registry"], "p", &["{flags} <registry:word> <query:text>"]),
 ];
 
 /// The direction words the usages list. The short forms (`n`, `u`, `f`...) are accepted too; the
@@ -673,6 +695,8 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "green" => ("f", "f"),
         "searchitem" => ("bip", "bip"),
         "listchunks" => ("p", "p"),
+        "perf" => ("h", "h"),
+        "registry" => ("p", "p"),
         "help" => ("sp", "sp"),
         "report" => ("p", ""),
         _ => ("", ""),
@@ -746,7 +770,7 @@ fn usage(name: &str) -> String {
 
 /// Whether flag `c` of command `name` is followed by a value.
 fn takes_value(name: &str, c: char) -> bool {
-    c == 'm' || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks"))
+    c == 'm' || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "registry"))
 }
 
 /// Splits a command's words from its flags. Unknown flags and flags this server does not implement
@@ -809,6 +833,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("repl") => "worldedit.tool.replacer",
             Some("cycler") => "worldedit.tool.data-cycler",
             Some("floodfill" | "flood") => "worldedit.tool.flood-fill",
+            Some("farwand") => "worldedit.tool.farwand",
             _ => return None,
         },
         "none" => return None,
@@ -1108,7 +1133,7 @@ impl Engine {
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
         let writes = !matches!(
             name.as_str(),
-            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks" | "butcher" | "remove"
+            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks" | "butcher" | "remove" | "timeout" | "fast" | "perf" | "reorder" | "drawsel" | "watchdog" | "registry"
         );
         if writes && self.queue.busy(actor.uuid) {
             return Reply::err("Your last edit is still being written; wait a moment".into());
@@ -1189,6 +1214,13 @@ impl Engine {
             "material" => self.material(world, actor, &args),
             "none" => self.unbind(actor, false),
             "tool" => self.tool(world, actor, &args),
+            "timeout" => self.timeout(actor, &args),
+            "fast" => self.fast(actor, &args),
+            "perf" => self.perf(actor, &args),
+            "reorder" => self.reorder(actor, &args),
+            "drawsel" => self.drawsel(actor, &args),
+            "watchdog" => self.watchdog(&args),
+            "registry" => self.registry(world, &args),
             _ => Err(format!("The command '{name}' could not be found.")),
         };
         match result {

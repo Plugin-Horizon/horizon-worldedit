@@ -95,6 +95,13 @@ pub(crate) const ENTRIES: &[Entry] = &[
     Entry { name: "jumpto", aliases: &["j", "/jumpto", "/j"], desc: "Teleport to a location" },
     Entry { name: "/up", aliases: &[], desc: "Go upwards some distance" },
     Entry { name: "placement", aliases: &["/placement"], desc: "Select your placement type" },
+    Entry { name: "/timeout", aliases: &[], desc: "Modify evaluation timeout time" },
+    Entry { name: "/fast", aliases: &[], desc: "Toggle fast mode" },
+    Entry { name: "/perf", aliases: &[], desc: "Toggle side effects for performance" },
+    Entry { name: "/reorder", aliases: &[], desc: "Sets the reorder mode of WorldEdit" },
+    Entry { name: "/drawsel", aliases: &[], desc: "Toggle drawing the current selection" },
+    Entry { name: "/watchdog", aliases: &[], desc: "Changes watchdog hook state" },
+    Entry { name: "/registry", aliases: &[], desc: "Search through the given registry" },
     Entry { name: "worldedit", aliases: &["we"], desc: "WorldEdit commands" },
 ];
 

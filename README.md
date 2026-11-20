@@ -47,8 +47,8 @@ WorldEdit there. Nothing is needed on the client.
 | Schematics | `/schem list [-p page] [-d\|-n]` `/schem load <name>` `/schem save <name> [-f]` `/schem delete <name>` `/schem formats` |
 | Brushes | `/brush sphere [-h] <pattern> [r]` `/brush cylinder [-h] <pattern> [r] [height]` `/brush smooth [r] [n] [mask]` `/mask [mask]` `/material <pattern>` `/brush none` (`/brush unbind`) (`/br` for `/brush`) `/tool none` (`/tool unbind`) |
 | Utility | `//fill <pattern> <radius> [depth]` `//fillr <pattern> <radius> [depth]` `//drain [-w] <radius>` `//fixwater <radius>` `//fixlava <radius>` `//snow [-s] [size] [height]` `//thaw [size] [height]` `//green [-f] [size] [height]` `//extinguish [radius]` (`//ex`, `//ext`) |
-| Session | `//limit [n]` `//gmask [mask]` `//toggleplace` `//searchitem [-b] [-p page] <query>` (`//search`, `//l`) `//calc <expression>` (`//eval`, `//solve`) |
-| Tools | `/tool selwand` `/tool info` `/tool repl <pattern>` `/tool cycler` `/tool floodfill <pattern> <range>` `/tool none` |
+| Session | `//limit [n]` `//gmask [mask]` `//toggleplace` `//searchitem [-b] [-p page] <query>` (`//search`, `//l`) `//calc <expression>` (`//eval`, `//solve`) `//timeout [ms]` `//fast [on\|off]` `//perf [sideeffect] [state] [-h]` `//reorder [multi\|fast\|none]` `//drawsel [on\|off]` `//watchdog [active\|inactive]` `//registry [-p page] <block\|item> [query]` |
+| Tools | `/tool selwand` `/tool info` `/tool repl <pattern>` `/tool cycler` `/tool floodfill <pattern> <range>` `/tool farwand` `/tool none` |
 | Help | `/we` `/we version` `/we help [-s] [-p page] [command]` `/we reload` `/we report` `/we trace [active\|inactive]` `/we tz <offset>` `/we cui` |
 
 An offset is a direction word or `x,y,z`. Patterns: `stone`, `70%stone,30%gravel` (weights may be fractional),
@@ -117,13 +117,14 @@ horizon-launcher native-build <path to this folder> --server-output <dir> --vers
 
 ## Known gaps
 
-- Round 3: polygon, ellipsoid, sphere, cylinder and convex selectors, `//generate`, `//deform`, `/butcher`, `/remove` are ported. Still open: `//regen`, `//curve`, `//snowsmooth`, `//revolve`, `//forest`, `//flora`, super pickaxe, tree/farwand/lrbuild tools, snapshots, biome commands (no engine API, see HMOD_PORT.md).
+- Round 4: `//timeout`, `//fast`, `//perf`, `//reorder`, `//drawsel`, `//watchdog`, `//registry` and `/tool farwand` are ported. `//fast`, `//perf` and `//reorder` record their state only, and `//timeout` is recorded without a calculator to apply it to (see HMOD_PORT.md).
+- Round 3: polygon, ellipsoid, sphere, cylinder and convex selectors, `//generate`, `//deform`, `/butcher`, `/remove` are ported. Still open: `//regen`, `//curve`, `//snowsmooth`, `//revolve`, `//forest`, `//flora`, super pickaxe, tree/stack/lrbuild tools, snapshots, biome commands (no engine API, see HMOD_PORT.md).
 
 What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: ...)` in `src/lib.rs`):
 
 - The selection outline (WorldEdit CUI) is not drawn.
 - No selection API for other mods yet (WorldGuard on arismoko reports that it has no selection).
-- Not ported yet: non-cuboid selectors, `//curve`, `//generate`, `//deform`, `//regen`, `//forest`, `//flora`, `//snowsmooth`, `//revolve`, `/butcher`, `/remove`, the super pickaxe, tree/farwand/lrbuild tools, snapshots, biome commands, `//timeout`/`//fast`/`//perf`/`//reorder`/`//drawsel`/`//world`/`//watchdog`/`//registry`, `/delchunks` and CraftScript.
+- Not ported yet: `//curve`, `//regen`, `//forest`, `//flora`, `//snowsmooth`, `//revolve` (clipboard turns are quarter turns only), the super pickaxe, tree/deltree/stacker/lrbuild tools, snapshots, biome commands, `//world` (needs a level by name), `/delchunks` and CraftScript.
 - Entities (`-e`) and biomes (`-b`) are not copied: the host API has no entity spawn from saved data and no biome write for this mod.
 - Block entities (chest contents, signs, spawners...) are copied, cut, pasted, stacked, moved, undone and saved in schematics
   (Sponge v3 `BlockEntities`; read from Sponge v2/v3, structure `.nbt` and Litematica files).

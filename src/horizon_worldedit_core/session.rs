@@ -7,7 +7,7 @@ use crate::horizon_worldedit_core::edit::Change;
 use crate::horizon_worldedit_core::pattern::Pattern;
 use crate::horizon_worldedit_core::region::Cuboid;
 use crate::horizon_worldedit_core::world::Pos;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 /// A player's UUID from a file name, as WorldEdit writes it (`8-4-4-4-12` hex digits, dashes optional).
 pub fn uuid_from_stem(stem: &str) -> Option<u128> {
@@ -55,7 +55,49 @@ pub enum Tool {
     Cycler { property: Option<String> },
     /// `/tool floodfill <pattern> <range>`: right click replaces the connected blocks of that type.
     FloodFill { pattern: Pattern, range: i32 },
+    /// `/tool farwand`: the wand's corners, taken from the block the player looks at (WorldEdit's `DistanceWand`).
+    /// Left click is position #1, right click position #2, as with the wand; a right click in the air works too.
+    FarWand,
 }
+
+/// The state of one side effect (`//perf`): WorldEdit's `SideEffect.State`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideState {
+    Off,
+    On,
+    Delayed,
+}
+
+impl SideState {
+    /// The word WorldEdit prints for the state.
+    pub fn word(self) -> &'static str {
+        match self {
+            SideState::Off => "Off",
+            SideState::On => "On",
+            SideState::Delayed => "Delayed",
+        }
+    }
+
+    /// The state a `//perf` argument names (`on`, `off`, `delayed`), any case.
+    pub fn parse(word: &str) -> Option<SideState> {
+        match word.to_ascii_lowercase().as_str() {
+            "on" => Some(SideState::On),
+            "off" => Some(SideState::Off),
+            "delayed" => Some(SideState::Delayed),
+            _ => None,
+        }
+    }
+}
+
+/// WorldEdit's exposed side effects: the name `//perf` takes, the name it prints and the default state.
+pub const SIDE_EFFECTS: [(&str, &str, SideState); 6] = [
+    ("lighting", "Lighting", SideState::On),
+    ("neighbors", "Neighbors", SideState::On),
+    ("update", "Update", SideState::On),
+    ("validation", "Validation", SideState::Off),
+    ("entity_ai", "Entity AI", SideState::Off),
+    ("events", "Mod/Plugin Events", SideState::Off),
+];
 
 /// What the placement point is counted from (WorldEdit's `PlacementType`, `HERE` being `World` plus the player's block).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -102,6 +144,14 @@ pub struct Session {
     pub trace: bool,
     /// `/we tz`: the offset from UTC in minutes, and how the player wrote it.
     pub timezone: Option<(i32, String)>,
+    /// `//timeout`: the evaluation timeout in milliseconds (`None`: the server's default).
+    pub timeout_ms: Option<i64>,
+    /// `//fast`: WorldEdit's fast mode flag. Recorded only: writes here already skip neighbour updates.
+    pub fast: bool,
+    /// `//perf`: the side effects this player changed, by their `//perf` name (the others keep `SIDE_EFFECTS`).
+    pub side_effects: BTreeMap<String, SideState>,
+    /// `//reorder`: `multi`, `fast` or `none` (`None`: `multi`). Recorded only.
+    pub reorder: Option<&'static str>,
 }
 
 impl Session {

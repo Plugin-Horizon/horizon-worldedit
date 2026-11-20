@@ -6,6 +6,7 @@
 use super::*;
 use crate::horizon_worldedit_core::block::BlockState;
 use crate::horizon_worldedit_core::region::add;
+use crate::horizon_worldedit_core::session::{SideState, SIDE_EFFECTS};
 use std::collections::{HashSet, VecDeque};
 
 /// A breadth-first search's six steps, and the five `DownwardVisitor` and `NonRisingVisitor` take.
@@ -481,6 +482,220 @@ impl Engine {
         }
         out.extend(help::paged(&format!("Search results for '{search}'"), &hits, page)?);
         Ok(out)
+    }
+
+    /// `//timeout [ms]`: the evaluation timeout (`calculation.timeout`, 100 ms). Recorded only: the calculator
+    /// here has no timeout to apply it to.
+    pub(super) fn timeout(&mut self, actor: &Actor, args: &Args) -> R {
+        let limit = match args.get(0) {
+            Some(w) => w.parse::<i64>().map_err(|_| number_error(w))?.max(-1),
+            None => DEFAULT_TIMEOUT_MS,
+        };
+        self.sessions.get(actor.uuid).timeout_ms = Some(limit);
+        let mut line = format!("Timeout time set to {limit}ms.");
+        if limit != DEFAULT_TIMEOUT_MS {
+            line.push_str(" (Use //timeout to go back to the default.)");
+        }
+        Ok(vec![line])
+    }
+
+    /// `//fast [on|off]`: WorldEdit's fast mode, a flag kept per player (see `Session::fast`).
+    pub(super) fn fast(&mut self, actor: &Actor, args: &Args) -> R {
+        let on = self.sessions.get(actor.uuid).fast;
+        let wanted = match args.get(0) {
+            Some(w) => Some(switch_arg(w).ok_or_else(|| usage("fast"))?),
+            None => None,
+        };
+        if wanted == Some(on) {
+            let text: &str = if on { "Fast mode already enabled." } else { "Fast mode already disabled." };
+            return Err(text.into());
+        }
+        self.sessions.get(actor.uuid).fast = !on;
+        let text: &str = if on {
+            "Fast mode disabled."
+        } else {
+            "Fast mode enabled. Lighting in the affected chunks may be wrong and/or you may need to rejoin to see changes."
+        };
+        Ok(vec![text.to_owned()])
+    }
+
+    /// `//perf [sideeffect] [state] [-h]`: the side effects of a player's edits. The state is recorded; the
+    /// writes here do not run side effects, so nothing else changes. Without a side effect, or with `-h`, the
+    /// list of all of them is printed as text (WorldEdit prints an info box).
+    pub(super) fn perf(&mut self, actor: &Actor, args: &Args) -> R {
+        let show_all = args.flag('h');
+        let mut out = Vec::new();
+        if let Some(word) = args.get(0) {
+            let (key, label, default) = side_effect(word).ok_or_else(|| usage("perf"))?;
+            let state = match args.get(1) {
+                Some(w) => Some(SideState::parse(w).ok_or_else(|| usage("perf"))?),
+                None => None,
+            };
+            let current = self.sessions.get(actor.uuid).side_effects.get(key).copied().unwrap_or(default);
+            match state {
+                Some(new) if new == current => {
+                    if !show_all {
+                        return Err(format!("Side effect \"{label}\" is already {}", new.word()));
+                    }
+                }
+                Some(new) => {
+                    self.sessions.get(actor.uuid).side_effects.insert(key.to_owned(), new);
+                    if !show_all {
+                        out.push(format!("Side effect \"{label}\" set to {}", new.word()));
+                    }
+                }
+                None => out.push(format!("Side effect \"{label}\" is set to {}", current.word())),
+            }
+        }
+        if args.get(0).is_none() || show_all {
+            let s = self.sessions.get(actor.uuid);
+            for (key, label, default) in SIDE_EFFECTS {
+                let state = s.side_effects.get(key).copied().unwrap_or(default);
+                out.push(format!("{label}: {}", state.word()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// `//reorder [multi|fast|none]`: the reorder mode, recorded per player. Nothing reorders here.
+    pub(super) fn reorder(&mut self, actor: &Actor, args: &Args) -> R {
+        match args.get(0) {
+            None => {
+                let current = self.sessions.get(actor.uuid).reorder.unwrap_or("multi");
+                Ok(vec![format!("The reorder mode is {current}")])
+            }
+            Some(w) => {
+                let mode = match w.to_ascii_lowercase().as_str() {
+                    "multi" => "multi",
+                    "fast" => "fast",
+                    "none" => "none",
+                    _ => return Err(usage("reorder")),
+                };
+                self.sessions.get(actor.uuid).reorder = Some(mode);
+                Ok(vec![format!("The reorder mode is now {mode}")])
+            }
+        }
+    }
+
+    /// `//drawsel [on|off]`: whether this player gets the selection outline (`server_side_cui`). Off puts the
+    /// player in the same list as a `useServerCUI: false` session file.
+    pub(super) fn drawsel(&mut self, actor: &Actor, args: &Args) -> R {
+        if !self.config.server_side_cui {
+            return Err("This functionality is disabled (see WorldEdit configuration).".into());
+        }
+        let drawing = !self.cui_off.contains(&actor.uuid);
+        let wanted = match args.get(0) {
+            Some(w) => Some(switch_arg(w).ok_or_else(|| usage("drawsel"))?),
+            None => None,
+        };
+        if wanted == Some(drawing) {
+            let text: &str = if drawing { "Server CUI already enabled." } else { "Server CUI already disabled." };
+            return Err(text.into());
+        }
+        if drawing {
+            self.cui_off.insert(actor.uuid);
+            Ok(vec!["Server CUI disabled.".to_owned()])
+        } else {
+            self.cui_off.remove(&actor.uuid);
+            Ok(vec!["Server CUI enabled. This only supports cuboid regions, with a maximum size of 48x48x48.".to_owned()])
+        }
+    }
+
+    /// `//watchdog [active|inactive]`: WorldEdit's watchdog hook. Horizon has no watchdog to hook, so the answer
+    /// is WorldEdit's own answer for such a platform.
+    pub(super) fn watchdog(&mut self, args: &Args) -> R {
+        if let Some(w) = args.get(0) {
+            if !matches!(w.to_ascii_lowercase().as_str(), "active" | "inactive") {
+                return Err(usage("watchdog"));
+            }
+        }
+        Err("This platform has no watchdog hook.".into())
+    }
+
+    /// `//registry <registry> [-p page] [query]`: searches the block or item registry by id. A query without
+    /// `*` or `?` matches anywhere in the id; `*` and `?` are the usual wildcards.
+    pub(super) fn registry(&mut self, world: &mut dyn World, args: &Args) -> R {
+        let name = args.get(0).ok_or_else(|| usage("registry"))?.to_ascii_lowercase();
+        let page: usize = match args.value('p') {
+            Some(p) => p.parse().map_err(|_| number_error(p))?,
+            None => 1,
+        };
+        let mut query = args.words.iter().skip(1).copied().collect::<Vec<&str>>().join("_");
+        if query.is_empty() {
+            query = "*".to_owned();
+        }
+        if !query.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | ':' | '?' | '*' | '/')) {
+            // WorldEdit prints its message with the placeholder unfilled; kept as it is.
+            return Err("Invalid registry key: {0}".into());
+        }
+        let mut ids = match name.as_str() {
+            "block" => world.block_names(),
+            "item" => world.item_names(),
+            _ => return Err(format!("Unknown registry: {name}")),
+        };
+        ids.sort();
+        ids.dedup();
+        let pattern: Vec<char> = if query.contains('*') || query.contains('?') { query.chars().collect() } else { format!("*{query}*").chars().collect() };
+        let hits: Vec<String> = ids.into_iter().filter(|id| glob_match(&pattern, &id.chars().collect::<Vec<char>>())).collect();
+        let title = if query == "*" { "Registry contents".to_owned() } else { format!("Search results for '{query}'") };
+        let mut out = vec!["(Please wait... searching registry...)".to_owned()];
+        if hits.is_empty() {
+            out.push("No results found.".into());
+            return Ok(out);
+        }
+        out.extend(help::paged(&title, &hits, page)?);
+        Ok(out)
+    }
+}
+
+/// `//timeout`'s default, `calculation.timeout`, in milliseconds.
+const DEFAULT_TIMEOUT_MS: i64 = 100;
+
+/// `on`/`true` and `off`/`false`, any case: the switch words of `//fast` and `//drawsel`.
+fn switch_arg(word: &str) -> Option<bool> {
+    match word.to_ascii_lowercase().as_str() {
+        "on" | "true" => Some(true),
+        "off" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// The side effect a `//perf` argument names: its key, its printed name and its default.
+fn side_effect(word: &str) -> Option<(&'static str, &'static str, SideState)> {
+    let w = word.to_ascii_lowercase();
+    SIDE_EFFECTS.iter().find(|e| e.0 == w.as_str()).copied()
+}
+
+/// `*` matches any run of characters and `?` one character, the rest matches itself.
+pub(super) fn glob_match(pattern: &[char], text: &[char]) -> bool {
+    let (p, t) = (pattern.first().copied(), text.first().copied());
+    match (p, t) {
+        (None, None) => true,
+        (Some('*'), _) => glob_match(&pattern[1..], text) || (t.is_some() && glob_match(pattern, &text[1..])),
+        (Some('?'), Some(_)) => glob_match(&pattern[1..], &text[1..]),
+        (Some(a), Some(b)) if a == b => glob_match(&pattern[1..], &text[1..]),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_match;
+
+    fn m(pattern: &str, text: &str) -> bool {
+        let p: Vec<char> = pattern.chars().collect();
+        let t: Vec<char> = text.chars().collect();
+        glob_match(&p, &t)
+    }
+
+    #[test]
+    fn globs_follow_the_registry_search() {
+        assert!(m("*stone*", "minecraft:stone_bricks"));
+        assert!(m("minecraft:st?ne", "minecraft:stone"));
+        assert!(!m("minecraft:st?ne", "minecraft:stne"));
+        assert!(m("*", ""));
+        assert!(!m("a*", "b"));
+        assert!(m("*_wall", "minecraft:oak_wall"));
     }
 }
 
