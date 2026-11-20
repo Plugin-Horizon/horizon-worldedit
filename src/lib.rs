@@ -495,6 +495,31 @@ impl we::World for GameWorld<'_> {
         Some(tag)
     }
 
+    fn entities_in(&mut self, min: [f64; 3], max: [f64; 3]) -> Vec<we::EntityInfo> {
+        let mut out = Vec::new();
+        for e in self.level.entities_in(&*self.host, min, max).unwrap_or_default() {
+            let (Some(kind), Some(pos)) = (e.kind(&*self.host), e.position(&*self.host)) else { continue };
+            let living = self.host.living(e).is_some();
+            let nbt = e.nbt(&mut *self.host);
+            let has = |key: &str| nbt.as_ref().is_some_and(|c| c.iter().any(|(k, _)| k.to_string_lossy() == key));
+            let (named, tamed) = (has("CustomName"), has("Owner") || has("owner"));
+            out.push(we::EntityInfo { id: u64::from(e.id()), kind: kind.id(&*self.host).to_string(), pos, living, named, tamed });
+        }
+        out
+    }
+
+    fn remove_entities(&mut self, ids: &[u64]) -> usize {
+        let mut n = 0;
+        for id in ids {
+            if let Some(e) = u32::try_from(*id).ok().and_then(|i| self.host.entity(i)) {
+                if e.discard(&mut *self.host) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     fn set_block_entities(&mut self, entities: &[(we::Pos, we::nbt::Tag)]) {
         for (p, tag) in entities {
             let Some(entity) = self.host.block_entity(self.level, *p) else { continue };
