@@ -448,7 +448,7 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["mask"], "", &["", "<filter:mask>"]),
     (&["gmask"], "", &["", "<filter:mask>"]),
     (&["material"], "", &["<block:pattern>"]),
-    (&["tool"], "", &["none", "unbind", "selwand", "info", "cycler", "repl <pattern:pattern>", "floodfill <pattern:pattern> <range:integer>", "flood <pattern:pattern> <range:integer>"]),
+    (&["tool"], "", &["none", "unbind", "selwand", "info", "navwand", "cycler", "repl <pattern:pattern>", "floodfill <pattern:pattern> <range:integer>", "flood <pattern:pattern> <range:integer>"]),
     (&["we", "worldedit"], "", &["reload", "report", "trace", "cui", "ver", "version", "tz <timezone:word>", "help", "help <command:command>"]),
     (&["fixwater", "fixlava"], "", &["<radius:number>"]),
     (&["drain"], "w", &["{flags} <radius:number>"]),
@@ -570,7 +570,7 @@ fn qualify(rest: &str, mid: &BTreeSet<String>) -> String {
 /// names in `BOTH_FORMS` it registers both ways (`/brush` and `//brush`); every other command is
 /// registered with a leading `/` in its name (`@Command(name = "/set")`), which the player types as
 /// `//set`.
-pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard", "selwand", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks"];
+pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard", "selwand", "navwand", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks"];
 pub const BOTH_FORMS: &[&str] = &[
     "brush", "br", "schem", "schematic", "undo", "redo", "clearhistory", "material", "removeabove", "removebelow", "removenear", "replacenear", "fixwater", "fixlava", "snow", "thaw", "green", "extinguish", "ex", "ext", "gmask",
     "toggleplace", "searchitem", "ascend", "asc", "descend", "desc", "thru", "jumpto", "j", "unstuck", "ceil",
@@ -857,6 +857,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("cycler") => "worldedit.tool.data-cycler",
             Some("floodfill" | "flood") => "worldedit.tool.flood-fill",
             Some("farwand") => "worldedit.tool.farwand",
+            Some("navwand" | "/navwand") => "worldedit.navigation.jumpto.tool",
             _ => return None,
         },
         "none" => return None,
@@ -1124,7 +1125,7 @@ impl Engine {
             words.insert(0, "schem");
         }
         // The deprecated tool commands are `/tool <type>`.
-        if words.first().is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "selwand" | "info" | "cycler" | "repl" | "floodfill" | "flood")) {
+        if words.first().is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "selwand" | "navwand" | "info" | "cycler" | "repl" | "floodfill" | "flood")) {
             words.insert(0, "tool");
         }
         let Some(first) = words.first() else { return Reply::err("No command".into()) };
@@ -2604,7 +2605,9 @@ impl Engine {
     /// the held item is not the navigation wand.
     pub fn nav_use(&mut self, world: &dyn World, actor: &Actor, now_ms: i64) -> Option<Reply> {
         self.now_ms = now_ms;
-        if actor.held.as_deref() != Some(self.config.nav_wand_item.as_str()) {
+        let held = actor.held.clone().unwrap_or_default();
+        let tool_bound = matches!(self.sessions.get(actor.uuid).tools.get(&held), Some(Tool::NavWand));
+        if !tool_bound && actor.held.as_deref() != Some(self.config.nav_wand_item.as_str()) {
             return None;
         }
         if let Err(e) = self.permitted(actor, Some("worldedit.navigation.jumpto.tool")).and(self.allowed(actor)) {

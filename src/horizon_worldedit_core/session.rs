@@ -55,6 +55,10 @@ pub enum Tool {
     SelWand,
     /// `/tool info`: right click tells what the block is.
     Info,
+    /// `/tool navwand`: right click jumps to the block in sight (`NavigationWand.actSecondary`). Handled by
+    /// `nav_use`, which also serves the configured navigation wand item; the left click (pass through walls)
+    /// is not ported.
+    NavWand,
     /// `/tool repl <pattern>`: right click places the pattern, left click takes the block as the pattern.
     Replacer { pattern: Pattern },
     /// `/tool cycler`: right click cycles the selected property of the block, left click selects the next.

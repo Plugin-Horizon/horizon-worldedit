@@ -3,9 +3,10 @@
 //! As in WorldEdit a tool is bound to an item type, and it is the right click that acts (`actPrimary`)
 //! and the left click that acts a second way (`actSecondary`). Not written, because each needs a hook
 //! this server lacks: `tree` and `deltree` (tree generation, tree detection), `stacker` (the clicked
-//! face), `navwand` (teleporting), `lrbuild` (the face of the clicked block, a left click in the air).
+//! face), `lrbuild` (the face of the clicked block, a left click in the air).
 //! `farwand` is written: a right click in the air is the one air click the server offers (`far_wand_air`);
-//! a left click in the air is not, so only the block corners are set that way.
+//! a left click in the air is not, so only the block corners are set that way. `navwand` is written for its
+//! right click (the jump); its left click, the pass through walls, is not.
 
 use super::*;
 use crate::horizon_worldedit_core::block::BlockState;
@@ -26,6 +27,7 @@ impl Engine {
                 (Tool::Replacer { pattern }, "Block replacer tool")
             }
             "farwand" => (Tool::FarWand, "Far wand tool"),
+            "navwand" | "/navwand" => (Tool::NavWand, "Navigation wand"),
             "floodfill" | "flood" => {
                 let pattern = self.need_pattern(world, actor, args, 1, "tool floodfill")?;
                 if args.get(2).is_none() {
@@ -37,11 +39,10 @@ impl Engine {
                 }
                 (Tool::FloodFill { pattern, range }, "Block flood fill tool")
             }
-            "tree" | "deltree" | "stacker" | "navwand" | "lrbuild" => {
+            "tree" | "deltree" | "stacker" | "lrbuild" => {
                 return Err(format!("The {kind} tool is not available on this server: it needs {}.", match kind.as_str() {
                     "tree" | "deltree" => "tree generation, which Horizon's server hooks do not offer yet",
                     "stacker" => "the face of the clicked block, which the click hook does not give",
-                    "navwand" => "a teleport hook",
                     _ => "a hook for a left click in the air",
                 }));
             }
@@ -60,7 +61,12 @@ impl Engine {
         self.now_ms = now_ms;
         let item = actor.held.clone()?;
         let tool = self.sessions.get(actor.uuid).tools.get(&item)?.clone();
+        // The navigation wand is taken by `nav_use` (after the brush), on either click.
+        if matches!(tool, Tool::NavWand) {
+            return None;
+        }
         let node = match tool {
+            Tool::NavWand => "worldedit.navigation.jumpto.tool",
             Tool::SelWand | Tool::FarWand => "worldedit.selection.pos",
             Tool::Info => "worldedit.tool.info",
             Tool::Cycler { .. } => "worldedit.tool.data-cycler",
@@ -105,6 +111,8 @@ impl Engine {
             }
             Tool::Cycler { property } => self.cycle(world, actor, &item, property, !left, pos),
             Tool::FloodFill { pattern, range } => self.flood_fill(world, actor, &pattern, range, pos),
+            // Returned before this match; nothing to do here.
+            Tool::NavWand => Ok(Vec::new()),
         };
         Some(match result {
             Ok(lines) => Reply::ok(lines),
