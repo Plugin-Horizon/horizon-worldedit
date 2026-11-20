@@ -6,6 +6,21 @@ use crate::horizon_worldedit_core::nbt::Tag;
 
 pub type Pos = [i32; 3];
 
+/// An entity as `//butcher` and `//remove` see it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityInfo {
+    pub id: u64,
+    /// `minecraft:cow`.
+    pub kind: String,
+    pub pos: [f64; 3],
+    /// A living entity (a mob, an armor stand, a player).
+    pub living: bool,
+    /// It has a custom name (a name tag).
+    pub named: bool,
+    /// It has an owner (a tamed pet).
+    pub tamed: bool,
+}
+
 /// A block state id, as the game's registry numbers them.
 pub type StateId = u32;
 
@@ -43,6 +58,14 @@ pub trait World {
     fn block_entity_at(&self, _p: Pos) -> Option<Tag> {
         None
     }
+    /// The entities whose box meets the box `min`..`max`. Empty where the game cannot say.
+    fn entities_in(&mut self, _min: [f64; 3], _max: [f64; 3]) -> Vec<EntityInfo> {
+        Vec::new()
+    }
+    /// Removes these entities (by `EntityInfo::id`) without drops; how many went.
+    fn remove_entities(&mut self, _ids: &[u64]) -> usize {
+        0
+    }
     /// Loads saved data into the block entities of blocks just written (`id`, `x`, `y`, `z` in it are ignored).
     fn set_block_entities(&mut self, _entities: &[(Pos, Tag)]) {}
     /// Block entity data saved at `data_version` (a schematic's) brought up to the game's version.
@@ -65,6 +88,8 @@ pub mod fake {
         pub unloaded: Vec<(i32, i32)>,
         /// Block entity data by position (a block written over loses its entry, as in the game).
         pub entities: HashMap<Pos, Tag>,
+        /// Entities for `//butcher` and `//remove`.
+        pub mobs: Vec<EntityInfo>,
         /// How many `write` calls there were, and how many blocks they carried.
         pub write_calls: usize,
         pub written: usize,
@@ -114,7 +139,7 @@ pub mod fake {
             for t in ["bottom", "top", "double"] {
                 states.push(BlockState::new("minecraft:stone_slab", &[("type", t), ("waterlogged", "false")]));
             }
-            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), entities: HashMap::new(), write_calls: 0, written: 0 }
+            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), entities: HashMap::new(), mobs: Vec::new(), write_calls: 0, written: 0 }
         }
         pub fn id(&self, spec: &str) -> StateId {
             self.resolve(&BlockState::parse(spec).unwrap()).unwrap_or_else(|| panic!("no state {spec}"))
@@ -186,6 +211,14 @@ pub mod fake {
         }
         fn block_entity_at(&self, p: Pos) -> Option<Tag> {
             self.entities.get(&p).cloned()
+        }
+        fn entities_in(&mut self, min: [f64; 3], max: [f64; 3]) -> Vec<EntityInfo> {
+            self.mobs.iter().filter(|m| (0..3).all(|a| m.pos[a] >= min[a] && m.pos[a] <= max[a])).cloned().collect()
+        }
+        fn remove_entities(&mut self, ids: &[u64]) -> usize {
+            let before = self.mobs.len();
+            self.mobs.retain(|m| !ids.contains(&m.id));
+            before - self.mobs.len()
         }
         fn set_block_entities(&mut self, entities: &[(Pos, Tag)]) {
             for (p, t) in entities {

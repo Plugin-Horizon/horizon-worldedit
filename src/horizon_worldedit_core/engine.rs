@@ -16,8 +16,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 mod calc;
+mod expr;
+mod extra;
 mod help;
 mod nav;
+mod select;
 mod tools;
 mod utility;
 
@@ -37,6 +40,18 @@ pub const NODES: &[&str] = &[
     "worldedit.brush.smooth",
     "worldedit.brush.sphere",
     "worldedit.calc",
+    "worldedit.butcher",
+    "worldedit.butcher.pets",
+    "worldedit.butcher.npcs",
+    "worldedit.butcher.golems",
+    "worldedit.butcher.animals",
+    "worldedit.butcher.ambient",
+    "worldedit.butcher.tagged",
+    "worldedit.butcher.armorstands",
+    "worldedit.butcher.water",
+    "worldedit.remove",
+    "worldedit.generation.shape",
+    "worldedit.region.deform",
     "worldedit.clipboard.clear",
     "worldedit.clipboard.copy",
     "worldedit.clipboard.cut",
@@ -314,6 +329,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("trim", "[mask:text]"),
     ("chunkinfo", ""),
     ("listchunks", "[flags:text]"),
+    ("generate", "<args:text>"),
+    ("gen", "<args:text>"),
+    ("g", "<args:text>"),
+    ("deform", "<expression:text>"),
+    ("butcher", "[args:text]"),
+    ("remove", "<args:text>"),
+    ("rem", "<args:text>"),
+    ("rement", "<args:text>"),
 ];
 
 /// The typed usages, one per sub-command path: the names a command answers to (aliases too), the flags
@@ -326,7 +349,7 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["wand"], "n", &["{flags}"]),
     (&["pos1", "pos2"], "", &["", "<x:word> <y:word> <z:word>"]),
     (&["hpos1", "hpos2"], "", &[""]),
-    (&["sel"], "", &["", "cuboid", "extend"]),
+    (&["sel"], "d", &["{flags}", "{flags} cuboid", "{flags} extend", "{flags} poly", "{flags} polyextend", "{flags} ellipsoid", "{flags} sphere", "{flags} cyl", "{flags} convex", "{flags} hull", "{flags} polyhedron"]),
     (&["desel", "deselect", "naturalize", "clearclipboard", "clearhistory", "none"], "", &[""]),
     (&["size"], "c", &["{flags}"]),
     (&["chunk"], "sc", &["{flags}", "{flags} <x:word> <y:word> <z:word>"]),
@@ -411,10 +434,14 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["selwand", "info", "cycler"], "", &[""]),
     (&["repl"], "", &["<pattern:pattern>"]),
     (&["floodfill", "flood"], "", &["<pattern:pattern> <range:integer>"]),
-    (&["trim"], "", &["", "<mask:mask>"]),
+    (&["trim"], "", &["", "<filter:mask>"]),
     (&["chunkinfo"], "", &[""]),
     (&["listchunks"], "p", &["{flags}"]),
     (&["placement"], "", &["pos1", "player", "here", "world", "min", "max", "pos1 <multiplier:integer>", "player <multiplier:integer>", "here <multiplier:integer>", "world <multiplier:integer>", "min <multiplier:integer>", "max <multiplier:integer>", "pos1 <multiplier:integer> {dir}", "player <multiplier:integer> {dir}", "here <multiplier:integer> {dir}", "world <multiplier:integer> {dir}", "min <multiplier:integer> {dir}", "max <multiplier:integer> {dir}"]),
+    (&["generate", "gen", "g"], "hroc", &["{flags} <block:pattern> <expression:text>"]),
+    (&["deform"], "roc", &["{flags} <expression:text>"]),
+    (&["butcher"], "pnagbtfrw", &["{flags}", "{flags} <radius:integer>"]),
+    (&["remove", "rem", "rement"], "", &["<type:word> <radius:integer>"]),
     (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
 ];
 
@@ -635,7 +662,11 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "distr" => ("cdpm", "cdpm"),
         "chunk" => ("sc", "sc"),
         "size" => ("c", "c"),
+        "generate" | "gen" | "g" => ("hroc", "hroc"),
+        "deform" => ("rocl", "roc"),
+        "butcher" => ("pnagbtfrw", "pnagbtfrw"),
         "wand" => ("n", "n"),
+        "sel" => ("d", "d"),
         "up" | "ceil" => ("fg", "fg"),
         "drain" => ("w", "w"),
         "snow" => ("s", "s"),
@@ -675,6 +706,11 @@ fn usage(name: &str) -> String {
         "flip" | "mirror" => "[direction]".into(),
         "pos1" | "pos2" => "[coordinates]".into(),
         "chunk" => "[coordinates]".into(),
+        "generate" | "gen" | "g" => "<pattern> <expression...>".into(),
+        "deform" => "<expression...>".into(),
+        "butcher" => "[radius]".into(),
+        "remove" | "rem" | "rement" => "<type> <radius>".into(),
+        "sel" => "[cuboid|extend|poly|polyextend|ellipsoid|sphere|cyl|convex]".into(),
         "brush" | "br" => "<sphere|cylinder|smooth|extinguish|none> ...".into(),
         "brush sphere" => "<pattern> [radius]".into(),
         "brush cylinder" => "<pattern> [radius] [height]".into(),
@@ -854,6 +890,8 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "ceil" => "worldedit.navigation.ceiling",
         "searchitem" => "worldedit.searchitem",
         "calc" => "worldedit.calc",
+        "generate" => "worldedit.generation.shape",
+        "deform" => "worldedit.region.deform",
         "mask" => "worldedit.brush.options.mask",
         "material" => "worldedit.brush.options.material",
         other => return Some(format!("worldedit.{other}")),
@@ -1050,6 +1088,8 @@ impl Engine {
             "asc" => "ascend".to_owned(),
             "desc" => "descend".to_owned(),
             "j" => "jumpto".to_owned(),
+            "gen" | "g" => "generate".to_owned(),
+            "rem" | "rement" => "remove".to_owned(),
             "!" => "unstuck".to_owned(),
             other => other.to_owned(),
         };
@@ -1068,7 +1108,7 @@ impl Engine {
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
         let writes = !matches!(
             name.as_str(),
-            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks"
+            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks" | "butcher" | "remove"
         );
         if writes && self.queue.busy(actor.uuid) {
             return Reply::err("Your last edit is still being written; wait a moment".into());
@@ -1101,6 +1141,10 @@ impl Engine {
             "listchunks" => self.list_chunks(actor, &args),
             "searchitem" => self.search_item(world, &args),
             "calc" => self.calc(&args),
+            "generate" => self.generate(world, actor, &args),
+            "deform" => self.deform(world, actor, &args),
+            "butcher" => self.butcher(world, actor, &args),
+            "remove" => self.remove_entities(world, actor, &args),
             "pos1" | "pos2" => self.pos(world, actor, name == "pos1", &args),
             "hpos1" | "hpos2" => self.hpos(world, actor, name == "hpos1"),
             "sel" | "desel" => self.sel(actor, &name, &args),
@@ -1304,8 +1348,13 @@ impl Engine {
             // Corners in two levels make no region: the other one goes.
             s.pos1 = None;
             s.pos2 = None;
+            s.shape = None;
             s.dimension = actor.dimension.clone();
         }
+        if s.kind.is_shape() {
+            return self.shape_corner(actor, first, p);
+        }
+        s.shape = None;
         let at = pt(p);
         if s.extend {
             let primary = first || s.pos1.is_none() || s.pos2.is_none();
@@ -1377,23 +1426,12 @@ impl Engine {
         if name != "sel" {
             return Ok(clear(self));
         }
-        match args.get(0).map(str::to_ascii_lowercase).as_deref() {
+        match args.get(0) {
             None => Ok(clear(self)),
-            Some("cuboid") => {
-                self.sessions.get(actor.uuid).extend = false;
-                Ok(vec!["Cuboid: left click for point 1, right click for point 2".into()])
-            }
-            Some("extend") => {
-                let s = self.sessions.get(actor.uuid);
-                if let (Some(a), Some(b)) = (s.pos1, s.pos2) {
-                    let c = Cuboid::new(a, b);
-                    s.pos1 = Some(c.min);
-                    s.pos2 = Some(c.max);
-                }
-                s.extend = true;
-                Ok(vec!["Cuboid: left click for a starting point, right click to extend".into()])
-            }
-            Some(other) => Err(format!("Only the cuboid and extend selectors are supported here, not `{other}`")),
+            Some(word) => match crate::horizon_worldedit_core::selector::SelKind::parse(word) {
+                Some(kind) => self.sel_type(actor, kind, args.flag('d')),
+                None => Err(usage("sel")),
+            },
         }
     }
 
@@ -1420,6 +1458,13 @@ impl Engine {
         let (a, b) = (s.pos1.unwrap_or(c.min), s.pos2.unwrap_or(c.max));
         let c = c.clamp_y(world.min_y(), world.max_y()).unwrap_or(c);
         let size = c.size();
+        if let Some(shape) = s.shape.clone() {
+            let mut out = Self::shape_info(&shape, s.kind);
+            out.push(format!("Size: {}", pt(size)));
+            out.push(format!("Cuboid distance: {}", java_double(distance(c.min, c.max))));
+            out.push(format!("# of blocks: {}", shape.volume()));
+            return Ok(out);
+        }
         Ok(vec![
             "Type: Cuboid".into(),
             format!("Position 1: {}", pt(a)),
@@ -1434,9 +1479,11 @@ impl Engine {
         let (lo, hi) = (world.min_y(), world.max_y());
         let fit = |c: Cuboid| c.clamp_y(lo, hi).unwrap_or(c);
         let c = fit(self.sessions.get(actor.uuid).selection(&actor.dimension)?);
+        let shape = self.sessions.get(actor.uuid).shape.clone();
         if name == "expand" && args.get(0) == Some("vert") {
             let next = Cuboid { min: [c.min[0], lo, c.min[2]], max: [c.max[0], hi, c.max[2]] };
             self.sessions.get(actor.uuid).set_selection(next, &actor.dimension);
+            self.keep_shape(actor, shape, next, None);
             return Ok(vec![format!("Region expanded {} blocks (top-to-bottom).", next.volume() as i64 - c.volume() as i64)]);
         }
         if args.get(0).is_none() {
@@ -1451,6 +1498,7 @@ impl Engine {
             },
         };
         let dir = Self::dir_arg(actor, args.get(dir_at))?;
+        Self::shape_resizable(shape.as_ref(), name, Some(dir))?;
         let next = match name {
             "expand" => c.expand(dir, amount).and_then(|c| c.expand(dir.opposite(), reverse)),
             "contract" => c.contract(dir, amount).and_then(|c| c.contract(dir.opposite(), reverse)),
@@ -1458,24 +1506,31 @@ impl Engine {
         };
         let next = fit(next.ok_or("The selection would be empty")?);
         self.sessions.get(actor.uuid).set_selection(next, &actor.dimension);
+        let moved = (name == "shift").then(|| crate::horizon_worldedit_core::region::scale(dir.vector(), amount));
+        let before = shape.as_ref().map_or(c.volume(), |sh| sh.volume());
+        self.keep_shape(actor, shape, next, moved);
+        let after = self.sessions.get(actor.uuid).shape.as_ref().map_or(next.volume(), |sh| sh.volume());
         Ok(vec![match name {
-            "expand" => format!("Region expanded {} blocks", next.volume() as i64 - c.volume() as i64),
-            "contract" => format!("Region contracted {} blocks.", c.volume() as i64 - next.volume() as i64),
+            "expand" => format!("Region expanded {} blocks", after as i64 - before as i64),
+            "contract" => format!("Region contracted {} blocks.", before as i64 - after as i64),
             _ => "Region shifted.".into(),
         }])
     }
 
     fn outset(&mut self, world: &dyn World, actor: &Actor, out: bool, args: &Args) -> R {
         let c = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
+        let shape = self.sessions.get(actor.uuid).shape.clone();
         if args.get(0).is_none() {
             return Err(usage(if out { "outset" } else { "inset" }));
         }
+        Self::shape_resizable(shape.as_ref(), if out { "expand" } else { "contract" }, None)?;
         let n = args.int(0, 0)?;
         // WorldEdit: `-h` leaves out up and down, `-v` leaves out the four sides; both leave nothing.
         let (h, v) = (!args.flag('v'), !args.flag('h'));
         let next = c.outset(if out { n } else { -n }, h, v).ok_or("The selection would be empty")?;
         let next = next.clamp_y(world.min_y(), world.max_y()).unwrap_or(next);
         self.sessions.get(actor.uuid).set_selection(next, &actor.dimension);
+        self.keep_shape(actor, shape, next, None);
         Ok(vec![if out { "Region outset." } else { "Region inset." }.to_owned()])
     }
 
@@ -1525,7 +1580,8 @@ impl Engine {
             return Err(usage("count"));
         }
         let mask = Mask::parse(world, &args.rest(0), actor.held.as_deref())?;
-        let n = c.positions().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).count();
+        let shape = self.shape_of(actor);
+        let n = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).count();
         Ok(vec![format!("Counted: {n}")])
     }
 
@@ -1554,7 +1610,8 @@ impl Engine {
                     None => None,
                 };
                 let mut counts: HashMap<String, u64> = HashMap::new();
-                for p in c.positions() {
+                let shape = self.shape_of(actor);
+                for p in Self::shape_positions(&shape, &c) {
                     if let Some(s) = world.get(p) {
                         if mask.as_ref().is_some_and(|m| !m.hits(world, s)) {
                             continue;
@@ -1615,10 +1672,17 @@ impl Engine {
         let c = self.region(world, actor)?;
         let pattern = self.need_pattern(world, actor, args, 0, name)?;
         let salt = self.salt(actor);
-        let ops: Vec<(Pos, StateId)> = match name {
-            "set" => c.positions().map(|p| (p, pattern.pick(salt, p))).collect(),
-            "walls" => c.positions().filter(|&p| c.is_wall(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
-            "faces" | "outline" => c.positions().filter(|&p| c.is_face(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
+        let shape = self.shape_of(actor);
+        let ops: Vec<(Pos, StateId)> = match (&shape, name) {
+            (None, "set") => c.positions().map(|p| (p, pattern.pick(salt, p))).collect(),
+            (None, "walls") => c.positions().filter(|&p| c.is_wall(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
+            (None, "faces" | "outline") => c.positions().filter(|&p| c.is_face(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
+            (Some(_), "set") => Self::shape_positions(&shape, &c).into_iter().map(|p| (p, pattern.pick(salt, p))).collect(),
+            // A shape's walls and faces: the blocks with a neighbour outside it (walls look at the four sides only).
+            (Some(sh), "walls" | "faces" | "outline") => {
+                let sides: &[Pos] = if name == "walls" { &[[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]] } else { &[[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]] };
+                Self::shape_positions(&shape, &c).into_iter().filter(|&p| sides.iter().any(|d| !sh.contains([p[0] + d[0], p[1] + d[1], p[2] + d[2]]))).map(|p| (p, pattern.pick(salt, p))).collect()
+            }
             _ => c.center().positions().map(|p| (p, pattern.pick(salt, p))).collect(),
         };
         let (n, note) = self.commit(world, actor, ops)?;
@@ -1639,7 +1703,8 @@ impl Engine {
         };
         let pattern = self.pattern(world, actor, Some(to))?;
         let salt = self.salt(actor);
-        let ops: Vec<(Pos, StateId)> = c.positions().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).map(|p| (p, pattern.pick(salt, p))).collect();
+        let shape = self.shape_of(actor);
+        let ops: Vec<(Pos, StateId)> = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).map(|p| (p, pattern.pick(salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been replaced.{note}")])
     }
@@ -1941,6 +2006,13 @@ impl Engine {
         let c = self.region(world, actor)?;
         let origin = self.placement(actor)?;
         let mut clip = Clipboard::copy(world, &c, origin, &actor.dimension)?;
+        let shape = self.shape_of(actor);
+        if let Some(sh) = &shape {
+            // Only the blocks inside a non-box selection are copied.
+            let inside = |rel: &Pos| sh.contains([rel[0] + origin[0], rel[1] + origin[1], rel[2] + origin[2]]);
+            clip.blocks.retain(|(rel, _)| inside(rel));
+            clip.entities.retain(|rel, _| inside(rel));
+        }
         let mut affected = clip.blocks.len();
         if let Some(text) = args.value('m') {
             let mask = Mask::parse(world, text, actor.held.as_deref())?;
@@ -1964,7 +2036,7 @@ impl Engine {
                 None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
             };
             let salt = self.salt(actor);
-            let ops = c.positions().map(|p| (p, leave.pick(salt, p))).collect();
+            let ops = Self::shape_positions(&shape, &c).into_iter().map(|p| (p, leave.pick(salt, p))).collect();
             note = self.commit(world, actor, ops)?.1;
         }
         Ok(vec![format!("{affected} blocks affected{note}"), "0 biomes affected".into(), "0 entities affected".into()])
@@ -2300,6 +2372,8 @@ impl Engine {
         let s = self.sessions.get(player);
         s.pos1 = Some(a);
         s.pos2 = Some(b);
+        s.shape = None;
+        s.kind = crate::horizon_worldedit_core::selector::SelKind::Cuboid;
         s.dimension = dimension.to_owned();
         if !self.outline_due.contains(&player) {
             self.outline_due.push(player);

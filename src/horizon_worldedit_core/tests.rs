@@ -826,7 +826,7 @@ fn limit_gmask_and_toggleplace() {
     assert_eq!(run(&mut e, &mut w, &a, "//limit -1"), "Block change limit set to -1. (Use //limit to go back to the default.)");
     assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (100 blocks affected)");
     run(&mut e, &mut w, &a, "//limit");
-    assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (100 blocks affected)");
+    assert_eq!(run(&mut e, &mut w, &a, "//set dirt"), "Operation completed (100 blocks affected)");
     // An operator of the node's level may lift it.
     let mut e = Engine::new(Config { max_blocks: 100, max_blocks_maximum: 100, node_levels: [("worldedit.limit.unrestricted".to_string(), 2u8)].into(), ..Config::default() });
     assert_eq!(run(&mut e, &mut w, &a, "//limit 5000"), "Block change limit set to 5000. (Use //limit to go back to the default.)");
@@ -931,7 +931,7 @@ fn searchitem_and_calc() {
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem st"), "Enter a longer search string (len > 2).");
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem -b -i stone"), "You cannot use both the 'b' and 'i' flags simultaneously.");
     let r = run(&mut e, &mut w, &a, "//searchitem stair");
-    assert!(r.starts_with("(Please wait... searching items.)\nSearch results for 'stair'") && r.contains("Oak Stairs (minecraft:oak_stairs)"), "{r}");
+    assert!(r.starts_with("(Please wait... searching items.)\n") && r.contains("Search results for 'stair'") && r.contains("Oak Stairs (minecraft:oak_stairs)"), "{r}");
     assert_eq!(run(&mut e, &mut w, &a, "//search zzzz"), "(Please wait... searching items.)\nNo results found.");
     // -i is the items that are not blocks, -b the blocks.
     assert!(run(&mut e, &mut w, &a, "//searchitem -i stick").contains("Stick (minecraft:stick)"));
@@ -1185,4 +1185,86 @@ fn a_command_runs_only_in_the_slash_form_it_is_defined_with() {
     // Both forms.
     assert!(form_allows("brush none", false) && form_allows("brush none", true));
     assert!(form_allows("undo", false) && form_allows("undo", true));
+}
+
+#[test]
+fn non_cuboid_selectors() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(7);
+    assert_eq!(run(&mut e, &mut w, &a, "//sel sphere"), "Sphere selector: left click=center, right click to set radius");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 0,64,0"), "Center position set to (0, 64, 0).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 3,64,0"), "Radius set to 3.0 (179).");
+    assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (179 blocks affected)");
+    assert_eq!(w.count("stone"), 179);
+    assert_eq!(w.name_at([3, 64, 0]), "minecraft:stone");
+    assert_eq!(w.name_at([3, 66, 2]), "minecraft:air");
+    assert_eq!(run(&mut e, &mut w, &a, "//count stone"), "Counted: 179");
+    // Cylinder: radius from the farther click, height from both.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel cyl"), "Cylindrical selector: Left click=center, right click to extend");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 20,70,20"), "Starting a new cylindrical selection at (20, 70, 20).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 22,72,20"), "Radius set to 2/0 blocks. (11)");
+    // Polygon: a triangle, walls only on its sides.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel poly"), "2D polygon selector: Left/right click to add a point.");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 40,64,40"), "Starting a new polygon at (40, 64, 40).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 44,64,40"), "Added point #2 at (44, 64, 40).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 40,64,44"), "Added point #3 at (40, 64, 44).");
+    assert_eq!(fails(&mut e, &mut w, &a, "//pos2 40,64,44"), "Position already set.");
+    assert_eq!(run(&mut e, &mut w, &a, "//set gold_block"), "Operation completed (15 blocks affected)");
+    assert_eq!(w.name_at([41, 64, 41]), "minecraft:gold_block");
+    assert_eq!(w.name_at([44, 64, 44]), "minecraft:air");
+    assert!(run(&mut e, &mut w, &a, "//size").starts_with("Type: Polygonal2DRegionSelector\n# points: 3"));
+    assert_eq!(fails(&mut e, &mut w, &a, "//expand 2 east"), "Polygons can only be expanded vertically.");
+    assert_eq!(run(&mut e, &mut w, &a, "//expand 2 up"), "Region expanded 30 blocks");
+    // Convex hull.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel convex"), "Convex polyhedral selector: Left click=First vertex, right click to add more.");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 60,64,60"), "Started new selection with vertex (60, 64, 60).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 68,64,60"), "Added vertex (68, 64, 60) to the selection.");
+    assert_eq!(fails(&mut e, &mut w, &a, "//expand 1 up"), "Cannot expand a convex polyhedral region.");
+    // Back to a box.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel cuboid"), "Cuboid: left click for point 1, right click for point 2");
+    assert!(run(&mut e, &mut w, &a, "//size").starts_with("Type: Cuboid"));
+}
+
+#[test]
+fn generate_and_deform_with_expressions() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(8);
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 8,72,8");
+    // A ball of radius 1 in unit coordinates fills the middle of the box.
+    let r = run(&mut e, &mut w, &a, "//generate stone x*x+y*y+z*z<1");
+    assert!(r.ends_with("blocks have been created."), "{r}");
+    assert_eq!(w.name_at([4, 68, 4]), "minecraft:stone");
+    assert_eq!(w.name_at([0, 64, 0]), "minecraft:air");
+    // Raw coordinates: the plane x == 2.
+    run(&mut e, &mut w, &a, "//generate -r gold_block x==2");
+    assert_eq!(w.name_at([2, 70, 5]), "minecraft:gold_block");
+    assert_eq!(fails(&mut e, &mut w, &a, "//generate stone foo>1"), "Variable 'foo' not found");
+    // Deform: shift every block's source one east (raw), so the gold plane moves west.
+    run(&mut e, &mut w, &a, "//deform -r x += 1");
+    assert_eq!(w.name_at([1, 70, 5]), "minecraft:gold_block");
+}
+
+#[test]
+fn butcher_and_remove() {
+    use crate::horizon_worldedit_core::EntityInfo;
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(9);
+    let mob = |id: u64, kind: &str, x: f64, living: bool, named: bool| EntityInfo { id, kind: kind.into(), pos: [x, 64.0, 0.5], living, named, tamed: false };
+    w.mobs = vec![
+        mob(1, "minecraft:zombie", 2.0, true, false),
+        mob(2, "minecraft:cow", 3.0, true, false),
+        mob(3, "minecraft:zombie", 4.0, true, true),
+        mob(4, "minecraft:item", 1.0, false, false),
+        mob(5, "minecraft:zombie", 90.0, true, false),
+        mob(6, "minecraft:villager", 3.0, true, false),
+    ];
+    assert_eq!(run(&mut e, &mut w, &a, "/butcher 10"), "1 mobs have been killed in a radius of 10.");
+    assert_eq!(run(&mut e, &mut w, &a, "/butcher -a -n 10"), "2 mobs have been killed in a radius of 10.");
+    assert_eq!(run(&mut e, &mut w, &a, "/remove items 10"), "1 entities have been marked for removal.");
+    assert_eq!(run(&mut e, &mut w, &a, "/butcher"), "1 mobs have been killed in a radius of -1.");
+    assert!(fails(&mut e, &mut w, &a, "/remove bogus 5").starts_with("Acceptable types"));
 }

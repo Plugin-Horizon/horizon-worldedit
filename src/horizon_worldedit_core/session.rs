@@ -82,6 +82,11 @@ pub struct Session {
     pub salt: u64,
     /// `//sel extend`: the second corner grows the box instead of replacing the first.
     pub extend: bool,
+    /// The selector chosen with `//sel` and the shape it has made (`pos1`/`pos2` then hold the shape's bounding box).
+    pub kind: crate::horizon_worldedit_core::selector::SelKind,
+    pub shape: Option<crate::horizon_worldedit_core::selector::Shape>,
+    /// `//sel -d`: the selector chosen as default (this session only).
+    pub default_kind: crate::horizon_worldedit_core::selector::SelKind,
     /// The last `//distr`: block name and count, most frequent first (`//distr -p <page>`).
     pub distribution: Option<Vec<(String, u64)>>,
     /// Tools by item id (`/tool ...`); an item has a brush or a tool, never both.
@@ -122,6 +127,7 @@ impl Session {
         }
     }
     pub fn set_selection(&mut self, c: Cuboid, dimension: &str) {
+        self.shape = None;
         self.pos1 = Some(c.min);
         self.pos2 = Some(c.max);
         self.dimension = dimension.to_owned();
@@ -129,6 +135,7 @@ impl Session {
     pub fn clear_selection(&mut self) {
         self.pos1 = None;
         self.pos2 = None;
+        self.shape = None;
     }
     /// Remembers an edit for `//undo`, the oldest dropped past `size`; a new edit ends the redos.
     pub fn remember(&mut self, change: Change, size: usize) {
