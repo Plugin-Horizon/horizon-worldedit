@@ -33,6 +33,7 @@ pub const SCAN_LIMIT: u64 = 10_000_000;
 pub const NODES: &[&str] = &[
     "worldedit.analysis.count",
     "worldedit.analysis.distr",
+    "worldedit.brush.clipboard",
     "worldedit.brush.cylinder",
     "worldedit.brush.ex",
     "worldedit.brush.options.mask",
@@ -436,6 +437,8 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
             "snowsmooth",
             "snowsmooth <radius:number>",
             "snowsmooth <radius:number> <iterations:integer>",
+            "clipboard",
+            "copy",
             "extinguish",
             "extinguish <radius:number>",
             "ex",
@@ -693,7 +696,7 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "move" => ("abesm", "asm"),
         "sphere" | "hsphere" => ("hr", "hr"),
         "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "cone" => ("h", "h"),
-        "brush" | "br" => ("hlm", "hlm"),
+        "brush" | "br" => ("hlmaovbe", "hlmaov"),
         "revolve" => ("mreb", "mr"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
@@ -755,7 +758,7 @@ fn usage(name: &str) -> String {
         "butcher" => "[radius]".into(),
         "remove" | "rem" | "rement" => "<type> <radius>".into(),
         "sel" => "[cuboid|extend|poly|polyextend|ellipsoid|sphere|cyl|convex]".into(),
-        "brush" | "br" => "<sphere|cylinder|smooth|snowsmooth|extinguish|none> ...".into(),
+        "brush" | "br" => "<sphere|cylinder|smooth|snowsmooth|clipboard|extinguish|none> ...".into(),
         "brush sphere" => "<pattern> [radius]".into(),
         "brush cylinder" => "<pattern> [radius] [height]".into(),
         "fill" | "fillr" => "<pattern> <radius> [depth]".into(),
@@ -914,6 +917,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("cylinder" | "cyl" | "c") => "worldedit.brush.cylinder",
             Some("smooth") => "worldedit.brush.smooth",
             Some("snowsmooth") => "worldedit.brush.snowsmooth",
+            Some("clipboard" | "copy") => "worldedit.brush.clipboard",
             Some("extinguish" | "ex") => "worldedit.brush.ex",
             _ => return None,
         },
@@ -2412,6 +2416,27 @@ impl Engine {
                 (BrushShape::Cylinder { radius: radius(2, 2.0)?, height: args.int(3, 1)?, hollow: args.flag('h') }, Some(p))
             }
             "smooth" => (BrushShape::Smooth { radius: radius(1, 2.0)?, iterations: args.int(2, 4)?.clamp(1, 50) as u32 }, None),
+            // ClipboardBrush: the clipboard as it is now (WorldEdit holds it from the equip on).
+            "clipboard" | "copy" => {
+                let Some(clip) = self.sessions.get(actor.uuid).clipboard.clone() else {
+                    return Err("Your clipboard is empty. Use //copy first.".into());
+                };
+                for d in clip.bounds.size() {
+                    // checkMaxBrushRadius(size / 2 - 1) on each axis.
+                    if f64::from(d) / 2.0 - 1.0 > self.config.max_brush_radius {
+                        return Err(format!("Maximum brush radius (in configuration): {}", self.config.max_brush_radius as i64));
+                    }
+                }
+                let mask = match args.value('m') {
+                    Some(text) => {
+                        Mask::parse(world, text, actor.held.as_deref())?;
+                        Some(text.to_owned())
+                    }
+                    None => None,
+                };
+                let shape = BrushShape::Paste { clip, ignore_air: args.flag('a'), use_origin: args.flag('o'), structure_void: args.flag('v'), mask };
+                (shape, None)
+            }
             // SnowSmoothBrush: `-l` snow blocks under the snow, `-m` the mask of the height map.
             "snowsmooth" => {
                 let layers = match args.value('l') {
@@ -2437,6 +2462,7 @@ impl Engine {
         };
         let (r, h) = match &shape {
             BrushShape::Sphere { radius, .. } | BrushShape::Smooth { radius, .. } | BrushShape::SnowSmooth { radius, .. } => (*radius, 0),
+            BrushShape::Paste { .. } => (0.0, 0),
             BrushShape::Cylinder { radius, height, .. } => (*radius, *height),
         };
         if r > self.config.max_brush_radius || f64::from(h) > self.config.max_brush_radius {
@@ -2455,6 +2481,7 @@ impl Engine {
             BrushShape::Smooth { radius, iterations } => {
                 format!("Smooth brush equipped ({} x {iterations}x using {}).", *radius as i64, if arg_mask.is_some() { "filter" } else { "any block" })
             }
+            BrushShape::Paste { .. } => "Clipboard brush shape equipped.".to_owned(),
             BrushShape::SnowSmooth { radius, iterations, layers, mask } => {
                 format!("SnowSmooth brush equipped ({} x {iterations}x using {}), {layers} snow blocks.", *radius as i64, if mask.is_some() { "filter" } else { "any block" })
             }
@@ -2633,6 +2660,7 @@ impl Engine {
             BrushShape::Cylinder { .. } => "worldedit.brush.cylinder",
             BrushShape::Smooth { .. } => "worldedit.brush.smooth",
             BrushShape::SnowSmooth { .. } => "worldedit.brush.snowsmooth",
+            BrushShape::Paste { .. } => "worldedit.brush.clipboard",
         };
         if let Err(e) = self.permitted(actor, Some(node)).and(self.allowed(actor)) {
             return Some(Reply::err(e));
@@ -2655,9 +2683,36 @@ impl Engine {
             Some(Err(e)) => return Some(Reply::err(e)),
             None => None,
         };
+        // ClipboardBrush.build: the copy's centre goes to the target (its origin with -o); air left out with -a,
+        // structure voids unless -v, and only the blocks the -m mask accepts are pasted.
+        if let BrushShape::Paste { clip, ignore_air, use_origin, structure_void, mask: source } = &brush.shape {
+            let source = match source.as_deref().map(|m| Mask::parse(world, m, None)) {
+                Some(Ok(m)) => Some(m),
+                Some(Err(e)) => return Some(Reply::err(e)),
+                None => None,
+            };
+            let b = clip.bounds;
+            // Region.getCenter() floored (toBlockPoint), minus the origin, which is zero in clipboard coordinates.
+            let centre = [0, 1, 2].map(|a| ((f64::from(b.min[a]) + f64::from(b.max[a])) / 2.0).floor() as i32);
+            let at = if *use_origin { target } else { sub(target, centre) };
+            let mut writes = clip.writes(world, at, *ignore_air);
+            if !*structure_void {
+                writes.retain(|(_, s)| world.describe(*s).name != "minecraft:structure_void");
+            }
+            if let Some(m) = &source {
+                let w: &dyn World = &*world;
+                writes.retain(|(_, s)| m.hits(w, *s));
+            }
+            let entities = clip.entities_for(at, &writes);
+            return Some(match self.commit_with(world, actor, writes, entities) {
+                Ok(_) => Reply::default(),
+                Err(e) if e.starts_with("Max blocks changed") => Reply::err("Max blocks change limit reached.".into()),
+                Err(e) => Reply::err(e),
+            });
+        }
         let salt = self.salt(actor);
         let (lo, hi) = (world.min_y(), world.max_y());
-        let keep = |p: &Pos, world: &dyn World| (lo..=hi).contains(&p[1]) && mask.as_ref().is_none_or(|m| world.get(*p).is_some_and(|s| m.hits(world, s)));
+        let keep =|p: &Pos, world: &dyn World| (lo..=hi).contains(&p[1]) && mask.as_ref().is_none_or(|m| world.get(*p).is_some_and(|s| m.hits(world, s)));
         let ops: Vec<(Pos, StateId)> = match (&brush.shape, &brush.pattern) {
             (BrushShape::Sphere { radius, hollow }, Some(p)) => shapes::sphere(target, [*radius; 3], *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),
             (BrushShape::Cylinder { radius, height, hollow }, Some(p)) => shapes::cylinder(target, [*radius; 2], *height, *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),

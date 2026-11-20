@@ -33,6 +33,9 @@ pub enum BrushShape {
     /// `/brush snowsmooth [radius] [iterations] [-l layers] [-m mask]`: `mask` is the height map's filter (`-m`),
     /// not the `/mask` of the brush.
     SnowSmooth { radius: f64, iterations: u32, layers: i32, mask: Option<String> },
+    /// `/brush clipboard [-a -v -o -m mask]`: the clipboard as it was when the brush was equipped (WorldEdit keeps
+    /// the holder, not a copy of it later). `structure_void`: `-v`, paste structure voids too.
+    Paste { clip: Clipboard, ignore_air: bool, use_origin: bool, structure_void: bool, mask: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
