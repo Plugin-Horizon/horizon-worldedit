@@ -3,10 +3,13 @@
 //! As in WorldEdit a tool is bound to an item type, and it is the right click that acts (`actPrimary`)
 //! and the left click that acts a second way (`actSecondary`). Not written, because each needs a hook
 //! this server lacks: `tree` and `deltree` (tree generation, tree detection), `stacker` (the clicked
-//! face), `navwand` (teleporting), `farwand` and `lrbuild` (a left click in the air).
+//! face), `lrbuild` (the face of the clicked block, a left click in the air).
+//! `farwand` is written: a right click in the air is the one air click the server offers (`far_wand_air`);
+//! a left click in the air is not, so only the block corners are set that way. `navwand` is written for its
+//! right click (the jump); its left click, the pass through walls, is not.
 
 use super::*;
-use crate::block::BlockState;
+use crate::horizon_worldedit_core::block::BlockState;
 
 impl Engine {
     /// `/tool <type> ...`: binds a tool to the item in the main hand, or unbinds it.
@@ -23,6 +26,8 @@ impl Engine {
                 let pattern = self.need_pattern(world, actor, args, 1, "tool repl")?;
                 (Tool::Replacer { pattern }, "Block replacer tool")
             }
+            "farwand" => (Tool::FarWand, "Far wand tool"),
+            "navwand" | "/navwand" => (Tool::NavWand, "Navigation wand"),
             "floodfill" | "flood" => {
                 let pattern = self.need_pattern(world, actor, args, 1, "tool floodfill")?;
                 if args.get(2).is_none() {
@@ -34,11 +39,10 @@ impl Engine {
                 }
                 (Tool::FloodFill { pattern, range }, "Block flood fill tool")
             }
-            "tree" | "deltree" | "stacker" | "navwand" | "farwand" | "lrbuild" => {
+            "tree" | "deltree" | "stacker" | "lrbuild" => {
                 return Err(format!("The {kind} tool is not available on this server: it needs {}.", match kind.as_str() {
                     "tree" | "deltree" => "tree generation, which Horizon's server hooks do not offer yet",
                     "stacker" => "the face of the clicked block, which the click hook does not give",
-                    "navwand" => "a teleport hook",
                     _ => "a hook for a left click in the air",
                 }));
             }
@@ -48,7 +52,7 @@ impl Engine {
         let s = self.sessions.get(actor.uuid);
         s.brushes.remove(&item);
         s.tools.insert(item.clone(), tool);
-        Ok(vec![format!("{key} bound to {}.", block_title(&item)), "Run /tool none while holding the item to unbind it.".into()])
+        Ok(vec![format!("{key} bound to {}.", block_title(&item))])
     }
 
     /// A left (`left`) or right click on the block at `pos` with an item that has a tool. `None` when
@@ -57,8 +61,13 @@ impl Engine {
         self.now_ms = now_ms;
         let item = actor.held.clone()?;
         let tool = self.sessions.get(actor.uuid).tools.get(&item)?.clone();
+        // The navigation wand is taken by `nav_use` (after the brush), on either click.
+        if matches!(tool, Tool::NavWand) {
+            return None;
+        }
         let node = match tool {
-            Tool::SelWand => "worldedit.selection.pos",
+            Tool::NavWand => "worldedit.navigation.jumpto.tool",
+            Tool::SelWand | Tool::FarWand => "worldedit.selection.pos",
             Tool::Info => "worldedit.tool.info",
             Tool::Cycler { .. } => "worldedit.tool.data-cycler",
             Tool::Replacer { .. } => "worldedit.tool.replacer",
@@ -76,7 +85,7 @@ impl Engine {
             return Some(Reply::default());
         }
         let result: R = match tool {
-            Tool::SelWand => match self.corner_set(world, actor, left, pos) {
+            Tool::SelWand | Tool::FarWand => match self.corner_set(world, actor, left, pos) {
                 Ok(lines) => Ok(lines),
                 Err(_) => Ok(Vec::new()),
             },
@@ -102,11 +111,37 @@ impl Engine {
             }
             Tool::Cycler { property } => self.cycle(world, actor, &item, property, !left, pos),
             Tool::FloodFill { pattern, range } => self.flood_fill(world, actor, &pattern, range, pos),
+            // Returned before this match; nothing to do here.
+            Tool::NavWand => Ok(Vec::new()),
         };
         Some(match result {
             Ok(lines) => Reply::ok(lines),
             Err(e) if e.starts_with("Max blocks changed") => Reply::err("Max blocks change limit reached.".into()),
             Err(e) => Reply::err(e),
+        })
+    }
+
+    /// A right click in the air with a far wand: the block the player looks at (`brush_range` away at most) is
+    /// position #2, as a right click on it would make it. `None` when the item is no far wand, or the player may
+    /// not use it (the click then goes to the game, as in `tool_click`).
+    pub fn far_wand_air(&mut self, world: &dyn World, actor: &Actor, now_ms: i64) -> Option<Reply> {
+        let item = actor.held.clone()?;
+        if !matches!(self.sessions.get(actor.uuid).tools.get(&item), Some(Tool::FarWand)) {
+            return None;
+        }
+        if self.permitted(actor, Some("worldedit.selection.pos")).is_err() || (self.config.creative_only && actor.game_mode != 1) {
+            return None;
+        }
+        self.now_ms = now_ms;
+        let Some(target) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.brush_range) else {
+            return Some(Reply::err("No block in sight!".into()));
+        };
+        if self.repeated(actor, target, false, now_ms) {
+            return Some(Reply::default());
+        }
+        Some(match self.corner_set(world, actor, false, target) {
+            Ok(lines) => Reply::ok(lines),
+            Err(_) => Reply::default(),
         })
     }
 

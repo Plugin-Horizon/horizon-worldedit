@@ -1,7 +1,8 @@
 //! Turning what a command wants into writes: what was there (for `//undo`), only blocks that change,
 //! and the column runs Horizon's bulk edit (`native_edit_blocks`) takes.
 
-use crate::world::{Pos, StateId, World};
+use crate::horizon_worldedit_core::nbt::Tag;
+use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::HashMap;
 
 /// One edit, as `//undo` and `//redo` replay it.
@@ -12,6 +13,10 @@ pub struct Change {
     pub blocks: Vec<(Pos, StateId, StateId)>,
     /// When the edit was made (ms, the server's clock); `history.expiration` reads it.
     pub at_ms: i64,
+    /// Block entity data of the blocks before the edit, by position (`//undo` puts it back).
+    pub entities_before: HashMap<Pos, Tag>,
+    /// Block entity data the edit brought (`//redo` puts it back).
+    pub entities_after: HashMap<Pos, Tag>,
 }
 
 impl Change {
@@ -29,11 +34,25 @@ impl Change {
     pub fn backward(&self) -> Vec<(Pos, StateId)> {
         self.blocks.iter().rev().map(|&(p, old, _)| (p, old)).collect()
     }
+    /// The block entity data that goes with [`Change::forward`].
+    pub fn forward_entities(&self) -> HashMap<Pos, Tag> {
+        self.entities_after.clone()
+    }
+    /// The block entity data that goes with [`Change::backward`].
+    pub fn backward_entities(&self) -> HashMap<Pos, Tag> {
+        self.entities_before.clone()
+    }
 }
 
 /// The edit `ops` make in `world`: a later op on the same position wins (`//move` clears, then
 /// places), unloaded positions and blocks already right are left out.
 pub fn plan(world: &dyn World, dimension: &str, ops: impl IntoIterator<Item = (Pos, StateId)>) -> Change {
+    plan_with(world, dimension, ops, HashMap::new())
+}
+
+/// [`plan`] for an edit that brings block entity data (`entities`, by position): a block already right is kept
+/// when it brings data, and the data the blocks held before is remembered.
+pub fn plan_with(world: &dyn World, dimension: &str, ops: impl IntoIterator<Item = (Pos, StateId)>, entities: HashMap<Pos, Tag>) -> Change {
     let mut index: HashMap<Pos, usize> = HashMap::new();
     let mut blocks: Vec<(Pos, StateId, StateId)> = Vec::new();
     for (p, new) in ops {
@@ -45,8 +64,19 @@ pub fn plan(world: &dyn World, dimension: &str, ops: impl IntoIterator<Item = (P
         index.insert(p, blocks.len());
         blocks.push((p, old, new));
     }
-    blocks.retain(|&(_, old, new)| old != new);
-    Change { dimension: dimension.to_owned(), blocks, at_ms: 0 }
+    blocks.retain(|&(p, old, new)| old != new || entities.contains_key(&p));
+    let mut air: HashMap<StateId, bool> = HashMap::new();
+    let mut entities_before = HashMap::new();
+    for &(p, old, _) in &blocks {
+        if *air.entry(old).or_insert_with(|| world.is_air(old)) {
+            continue;
+        }
+        if let Some(tag) = world.block_entity_at(p) {
+            entities_before.insert(p, tag);
+        }
+    }
+    let entities_after = entities.into_iter().filter(|(p, _)| index.contains_key(p)).collect();
+    Change { dimension: dimension.to_owned(), blocks, at_ms: 0, entities_before, entities_after }
 }
 
 /// A run of blocks up a column: `height` blocks from `y`, all palette entry `block`.
@@ -94,12 +124,17 @@ struct Job {
     player: u128,
     dimension: String,
     writes: Vec<(Pos, StateId)>,
+    /// Block entity data still to load, by position.
+    entities: HashMap<Pos, Tag>,
     done: usize,
 }
 
 impl Queue {
     pub fn push(&mut self, player: u128, dimension: &str, writes: Vec<(Pos, StateId)>) {
-        self.jobs.push(Job { player, dimension: dimension.to_owned(), writes, done: 0 });
+        self.push_with(player, dimension, writes, HashMap::new());
+    }
+    pub fn push_with(&mut self, player: u128, dimension: &str, writes: Vec<(Pos, StateId)>, entities: HashMap<Pos, Tag>) {
+        self.jobs.push(Job { player, dimension: dimension.to_owned(), writes, entities, done: 0 });
     }
     /// Whether an edit of `player` is still being written.
     pub fn busy(&self, player: u128) -> bool {
@@ -111,7 +146,13 @@ impl Queue {
     /// The next `budget` writes for `dimension`, oldest job first, and the players whose jobs that
     /// finished.
     pub fn take(&mut self, dimension: &str, budget: usize) -> (Vec<(Pos, StateId)>, Vec<u128>) {
+        let (out, _, finished) = self.take_with(dimension, budget);
+        (out, finished)
+    }
+    /// [`Queue::take`], and the block entity data of the blocks taken.
+    pub fn take_with(&mut self, dimension: &str, budget: usize) -> (Vec<(Pos, StateId)>, Vec<(Pos, Tag)>, Vec<u128>) {
         let mut out = Vec::new();
+        let mut entities = Vec::new();
         let mut finished = Vec::new();
         for job in self.jobs.iter_mut().filter(|j| j.dimension == dimension) {
             if out.len() >= budget {
@@ -119,13 +160,18 @@ impl Queue {
             }
             let n = (budget - out.len()).min(job.writes.len() - job.done);
             out.extend_from_slice(&job.writes[job.done..job.done + n]);
+            for &(p, _) in &job.writes[job.done..job.done + n] {
+                if let Some(tag) = job.entities.remove(&p) {
+                    entities.push((p, tag));
+                }
+            }
             job.done += n;
             if job.done == job.writes.len() {
                 finished.push(job.player);
             }
         }
         self.jobs.retain(|j| j.done < j.writes.len());
-        (out, finished)
+        (out, entities, finished)
     }
     /// Drops everything (the world closed).
     pub fn clear(&mut self) {
@@ -136,7 +182,7 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::fake::FakeWorld;
+    use crate::horizon_worldedit_core::world::fake::FakeWorld;
 
     #[test]
     fn plan_skips_unchanged_and_merges() {
@@ -149,6 +195,33 @@ mod tests {
         assert_eq!(c.backward(), vec![([2, 0, 0], 0)]);
         w.unloaded.push((0, 0));
         assert!(plan(&w, "d", vec![([5, 0, 5], stone)]).is_empty());
+    }
+
+    #[test]
+    fn plan_remembers_block_entities() {
+        let mut w = FakeWorld::new();
+        let stone = w.id("stone");
+        let dirt = w.id("dirt");
+        w.fill([0, 0, 0], [1, 0, 0], "stone");
+        let chest = Tag::Compound([("id".to_string(), Tag::String("minecraft:chest".into()))].into_iter().collect());
+        w.entities.insert([0, 0, 0], chest.clone());
+        // Position 0 loses its chest; position 1 is stone already but is given data.
+        let c = plan_with(&w, "d", vec![([0, 0, 0], dirt), ([1, 0, 0], stone)], HashMap::from([([1, 0, 0], chest.clone()), ([9, 9, 9], chest.clone())]));
+        assert_eq!(c.blocks.len(), 2);
+        assert_eq!(c.entities_before, HashMap::from([([0, 0, 0], chest.clone())]));
+        assert_eq!(c.forward_entities(), HashMap::from([([1, 0, 0], chest.clone())]));
+        assert_eq!(c.backward_entities(), HashMap::from([([0, 0, 0], chest)]));
+    }
+
+    #[test]
+    fn queue_hands_out_block_entities_with_their_blocks() {
+        let mut q = Queue::default();
+        let tag = Tag::Byte(1);
+        q.push_with(1, "a", (0..4).map(|i| ([i, 0, 0], 1)).collect(), HashMap::from([([0, 0, 0], tag.clone()), ([3, 0, 0], tag.clone())]));
+        let (w, e, done) = q.take_with("a", 2);
+        assert_eq!((w.len(), e, done), (2, vec![([0, 0, 0], tag.clone())], vec![]));
+        let (_, e, done) = q.take_with("a", 2);
+        assert_eq!((e, done), (vec![([3, 0, 0], tag)], vec![1]));
     }
 
     #[test]

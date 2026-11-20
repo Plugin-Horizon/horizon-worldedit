@@ -1,6 +1,6 @@
 //! Cuboid selections and the directions commands take.
 
-use crate::world::Pos;
+use crate::horizon_worldedit_core::world::Pos;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {

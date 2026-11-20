@@ -4,7 +4,7 @@
 //! `teleport` (feet position); the glass platform of `//up` and `/ceil` is written at once.
 
 use super::*;
-use crate::block::BlockState;
+use crate::horizon_worldedit_core::block::BlockState;
 
 /// Whether a player walks through the block at `p` (WorldEdit: not a movement blocker). Above the
 /// build height is open sky; an unloaded chunk or the void below the world stops a search.
@@ -245,7 +245,7 @@ impl Engine {
             },
             "jumpto" => {
                 let Some(hit) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), 300.0) else {
-                    return Err("No block in sight!".into());
+                    return Err("No block in sight (or too far away)!".into());
                 };
                 let mut r = Reply::default();
                 if let Some(feet) = find_free(world, hit) {

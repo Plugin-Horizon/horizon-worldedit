@@ -1,10 +1,10 @@
 //! The commands end to end, on a world in memory: what a builder types and what the world holds
 //! afterwards.
 
-use crate::engine::{Actor, Engine, Env};
-use crate::world::fake::FakeWorld;
-use crate::world::World;
-use crate::Config;
+use crate::horizon_worldedit_core::engine::{Actor, Engine, Env};
+use crate::horizon_worldedit_core::world::fake::FakeWorld;
+use crate::horizon_worldedit_core::world::World;
+use crate::horizon_worldedit_core::Config;
 use std::path::PathBuf;
 
 fn actor(uuid: u128) -> Actor {
@@ -76,7 +76,7 @@ fn wand_corners_and_set() {
     // A new place is said, left click first, right click second, and the corners are the clicked blocks.
     assert_eq!(e.wand_click(&w, &a, true, [5, 64, 5], 6000).unwrap().text(), "First position set to (5, 64, 5) (48).");
     assert_eq!(e.wand_click(&w, &a, false, [7, 64, 5], 6001).unwrap().text(), "Second position set to (7, 64, 5) (3).");
-    assert_eq!(e.outline_of(1).unwrap().1, crate::region::Cuboid::new([5, 64, 5], [7, 64, 5]));
+    assert_eq!(e.outline_of(1).unwrap().1, crate::horizon_worldedit_core::region::Cuboid::new([5, 64, 5], [7, 64, 5]));
 }
 
 #[test]
@@ -340,6 +340,41 @@ fn limit_and_big_edits_over_ticks() {
 }
 
 #[test]
+fn block_entities_survive_copy_paste_cut_undo_and_schematics() {
+    use crate::horizon_worldedit_core::nbt::Tag;
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    let env = env("schem_entities");
+    w.fill([0, 64, 0], [1, 64, 0], "stone");
+    let chest = Tag::Compound([("id".to_string(), Tag::String("minecraft:chest".into())), ("Lock".to_string(), Tag::String("key".into()))].into_iter().collect());
+    w.entities.insert([1, 64, 0], chest.clone());
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 1,64,0");
+    a.position = [0.5, 64.0, 0.5];
+    run(&mut e, &mut w, &a, "//copy");
+    a.position = [10.5, 70.0, 10.5];
+    run(&mut e, &mut w, &a, "//paste");
+    assert_eq!(w.entities.get(&[11, 70, 10]), Some(&chest));
+    run(&mut e, &mut w, &a, "//undo");
+    assert_eq!(w.entities.get(&[11, 70, 10]), None);
+    // Cut takes the chest away, undo brings it back with its data.
+    run(&mut e, &mut w, &a, "//cut");
+    assert_eq!(w.entities.get(&[1, 64, 0]), None);
+    run(&mut e, &mut w, &a, "//undo");
+    assert_eq!(w.entities.get(&[1, 64, 0]), Some(&chest));
+    // The same through a schematic file.
+    a.position = [0.5, 64.0, 0.5];
+    run(&mut e, &mut w, &a, "//copy");
+    assert_eq!(e.command(&mut w, &a, "/schem save chests", &env).text(), "(Please wait... saving schematic.)\nchests saved.");
+    run(&mut e, &mut w, &a, "/clearclipboard");
+    assert_eq!(e.command(&mut w, &a, "/schem load chests", &env).text(), "(Please wait... loading schematic.)\nchests loaded. Paste it with //paste");
+    a.position = [30.5, 70.0, 30.5];
+    run(&mut e, &mut w, &a, "//paste");
+    assert_eq!(w.entities.get(&[31, 70, 30]), Some(&chest));
+}
+
+#[test]
 fn schematics_round_trip_and_stay_in_their_folder() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();
@@ -352,10 +387,10 @@ fn schematics_round_trip_and_stay_in_their_folder() {
     a.position = [1.5, 64.0, -1.5];
     run(&mut e, &mut w, &a, "//copy");
     let r = e.command(&mut w, &a, "/schem save house", &env);
-    assert_eq!(r.text(), "house saved.");
+    assert_eq!(r.text(), "(Please wait... saving schematic.)\nhouse saved.");
     assert!(env.schematics_dir.join("house.schem").is_file());
     assert_eq!(e.command(&mut w, &a, "/schem save house", &env).text(), "That schematic already exists. Use the -f flag to overwrite it.");
-    assert_eq!(e.command(&mut w, &a, "/schem save house -f", &env).text(), "house saved (overwriting previous file).");
+    assert_eq!(e.command(&mut w, &a, "/schem save house -f", &env).text(), "(Please wait... saving schematic.)\nhouse saved (overwriting previous file).");
     let r = e.command(&mut w, &a, "/schem save sub/tower", &env);
     assert!(!r.lines[0].error, "{}", r.text());
     for bad in ["/schem load ../secret", "/schem load /etc/passwd", "/schem save a\\b", "/schem delete ./x"] {
@@ -365,7 +400,7 @@ fn schematics_round_trip_and_stay_in_their_folder() {
     assert!(list.starts_with("Available schematics") && list.contains("[L] house.schem") && list.contains("[L] sub/tower.schem"), "{list}");
     run(&mut e, &mut w, &a, "/clearclipboard");
     let r = e.command(&mut w, &a, "/schem load house", &env);
-    assert_eq!(r.text(), "house loaded. Paste it with //paste");
+    assert_eq!(r.text(), "(Please wait... loading schematic.)\nhouse loaded. Paste it with //paste");
     a.position = [50.5, 64.0, 49.5];
     run(&mut e, &mut w, &a, "//paste -a");
     assert_eq!(w.name_at([49, 64, 51]), "minecraft:stone");
@@ -399,16 +434,24 @@ fn brushes_paint_where_you_look() {
     assert_eq!(w.name_at([0, 60, 5]), "minecraft:stone");
     assert_eq!(w.name_at([0, 61, 5]), "minecraft:dirt");
     assert_eq!(run(&mut e, &mut w, &a, "/brush none"), "Brush unbound from your current item.");
+    // The extinguisher brush: air over fire only.
+    w.fill([0, 61, 8], [0, 61, 8], "fire");
+    w.fill([1, 61, 8], [1, 61, 8], "gold_block");
+    assert_eq!(run(&mut e, &mut w, &a, "/brush ex 3"), "Extinguisher equipped (3).\nRun /brush unbind while holding the item to unbind it.");
+    e.brush_use(&mut w, &a, Some([0, 60, 8]), 2000).unwrap();
+    assert_eq!(w.name_at([0, 61, 8]), "minecraft:air");
+    assert_eq!(w.name_at([1, 61, 8]), "minecraft:gold_block");
+    run(&mut e, &mut w, &a, "/brush none");
     assert!(e.brush_use(&mut w, &a, None, 2000).is_none());
     assert_eq!(run(&mut e, &mut w, &a, "/tool none"), "Your current item is not bound.");
 }
 
 #[test]
 fn rotate_is_ours_only_with_degrees() {
-    assert!(crate::is_rotate("rotate 90") && crate::is_rotate("//rotate -90"));
-    assert!(!crate::is_rotate("rotate @s 90") && !crate::is_rotate("rotate Steve 90 0"));
-    assert!(crate::is_command("//set stone") && crate::is_command("schem list") && !crate::is_command("give @s stone"));
-    for u in crate::usages() {
+    assert!(crate::horizon_worldedit_core::is_rotate("rotate 90") && crate::horizon_worldedit_core::is_rotate("//rotate -90"));
+    assert!(!crate::horizon_worldedit_core::is_rotate("rotate @s 90") && !crate::horizon_worldedit_core::is_rotate("rotate Steve 90 0"));
+    assert!(crate::horizon_worldedit_core::is_command("//set stone") && crate::horizon_worldedit_core::is_command("schem list") && !crate::horizon_worldedit_core::is_command("give @s stone"));
+    for u in crate::horizon_worldedit_core::usages() {
         let name = u.split(' ').next().unwrap();
         assert!(name.strip_prefix('/').unwrap_or(name).chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()), "{u}");
     }
@@ -421,9 +464,9 @@ fn outline_follows_the_corners() {
     let a = actor(7);
     assert!(e.outline_of(7).is_none());
     run(&mut e, &mut w, &a, "//pos1 1,2,3");
-    assert_eq!(e.outline_of(7).unwrap().1, crate::region::Cuboid::new([1, 2, 3], [1, 2, 3]));
+    assert_eq!(e.outline_of(7).unwrap().1, crate::horizon_worldedit_core::region::Cuboid::new([1, 2, 3], [1, 2, 3]));
     run(&mut e, &mut w, &a, "//pos2 4,5,6");
-    assert_eq!(e.outline_of(7).unwrap(), ("minecraft:overworld".to_string(), crate::region::Cuboid::new([1, 2, 3], [4, 5, 6])));
+    assert_eq!(e.outline_of(7).unwrap(), ("minecraft:overworld".to_string(), crate::horizon_worldedit_core::region::Cuboid::new([1, 2, 3], [4, 5, 6])));
     e.config.server_side_cui = false;
     assert!(e.outline_of(7).is_none());
 }
@@ -529,16 +572,16 @@ const VANILLA_ROOTS: &[&str] = &[
 
 #[test]
 fn every_usage_reaches_the_command_tree() {
-    let usages = crate::usages();
+    let usages = crate::horizon_worldedit_core::usages();
     let problems = tree_problems(&usages, VANILLA_ROOTS);
     assert!(problems.is_empty(), "{} usages would be left out of the tree:\n{}", problems.len(), problems.join("\n"));
     // Every command word has at least one usage, under the root WorldEdit registers it with.
-    for (name, _) in crate::engine::COMMANDS {
+    for (name, _) in crate::horizon_worldedit_core::engine::COMMANDS {
         let root = |r: &str| usages.iter().any(|u| u.split(' ').next() == Some(r));
         let slashed = format!("/{name}");
-        if crate::engine::SINGLE_SLASH.contains(name) {
+        if crate::horizon_worldedit_core::engine::SINGLE_SLASH.contains(name) {
             assert!(root(name) && !root(&slashed), "{name}");
-        } else if crate::engine::BOTH_FORMS.contains(name) {
+        } else if crate::horizon_worldedit_core::engine::BOTH_FORMS.contains(name) {
             assert!(root(name) && root(&slashed), "{name}");
         } else {
             assert!(root(&slashed) && !root(name), "{name}");
@@ -627,9 +670,9 @@ fn schematics_never_print_a_path() {
     say(&mut e, &mut w, "//pos1 0,64,0");
     say(&mut e, &mut w, "//pos2 2,66,2");
     say(&mut e, &mut w, "//copy");
-    assert_eq!(say(&mut e, &mut w, "//schem save house"), "house saved.");
+    assert_eq!(say(&mut e, &mut w, "//schem save house"), "(Please wait... saving schematic.)\nhouse saved.");
     assert!(say(&mut e, &mut w, "//schem list").contains("[L] house.schem"));
-    assert_eq!(say(&mut e, &mut w, "//schem load house"), "house loaded. Paste it with //paste");
+    assert_eq!(say(&mut e, &mut w, "//schem load house"), "(Please wait... loading schematic.)\nhouse loaded. Paste it with //paste");
     assert_eq!(say(&mut e, &mut w, "//schem delete house"), "house has been deleted.");
     assert_eq!(say(&mut e, &mut w, "//schem load nowhere"), "Schematic nowhere does not exist!");
 }
@@ -651,8 +694,8 @@ fn selection_is_shared_with_other_mods() {
     assert_eq!(e.take_outline_due(), vec![7]);
     assert!(e.take_outline_due().is_empty());
     // The same engine behind the module-level handle the `[api]` package calls.
-    crate::with(|e| e.select(9, "minecraft:overworld", [1, 2, 3], [4, 5, 6]));
-    assert_eq!(crate::with(|e| e.selection_of(9)), Some(("minecraft:overworld".to_owned(), [1, 2, 3], [4, 5, 6])));
+    crate::horizon_worldedit_core::with(|e| e.select(9, "minecraft:overworld", [1, 2, 3], [4, 5, 6]));
+    assert_eq!(crate::horizon_worldedit_core::with(|e| e.selection_of(9)), Some(("minecraft:overworld".to_owned(), [1, 2, 3], [4, 5, 6])));
 }
 
 // ---- the utility commands ----
@@ -687,12 +730,12 @@ fn fill_and_fillr_fill_holes() {
 #[test]
 fn vanilla_fill_is_left_alone() {
     // `//fill stone 5` reaches the hook as `fill stone 5`; vanilla's `/fill` has seven words or more.
-    assert!(crate::is_shadowed("fill stone 5"));
-    assert!(crate::is_shadowed("//fill stone 5 2"));
-    assert!(!crate::is_shadowed("fill 0 0 0 5 5 5 stone"));
-    assert!(!crate::is_shadowed("fill stone"));
-    assert!(crate::is_shadowed("help set") && crate::is_shadowed("help -p 2") && crate::is_shadowed("rotate 90"));
-    assert!(!crate::is_shadowed("help") && !crate::is_shadowed("help tp"));
+    assert!(crate::horizon_worldedit_core::is_shadowed("fill stone 5"));
+    assert!(crate::horizon_worldedit_core::is_shadowed("//fill stone 5 2"));
+    assert!(!crate::horizon_worldedit_core::is_shadowed("fill 0 0 0 5 5 5 stone"));
+    assert!(!crate::horizon_worldedit_core::is_shadowed("fill stone"));
+    assert!(crate::horizon_worldedit_core::is_shadowed("help set") && crate::horizon_worldedit_core::is_shadowed("help -p 2") && crate::horizon_worldedit_core::is_shadowed("rotate 90"));
+    assert!(!crate::horizon_worldedit_core::is_shadowed("help") && !crate::horizon_worldedit_core::is_shadowed("help tp"));
 }
 
 #[test]
@@ -769,7 +812,7 @@ fn snow_thaw_green_extinguish() {
 
 #[test]
 fn limit_gmask_and_toggleplace() {
-    let mut e = Engine::new(Config { max_blocks: 100, ..Config::default() });
+    let mut e = Engine::new(Config { max_blocks: 100, max_blocks_maximum: 100, ..Config::default() });
     let mut w = FakeWorld::new();
     let mut a = actor(1);
     a.permission = 2;
@@ -779,12 +822,21 @@ fn limit_gmask_and_toggleplace() {
     assert_eq!(run(&mut e, &mut w, &a, "//limit 50"), "Block change limit set to 50. (Use //limit to go back to the default.)");
     assert!(fails(&mut e, &mut w, &a, "//set stone").contains("(50)"));
     assert_eq!(fails(&mut e, &mut w, &a, "//limit 500"), "Your maximum allowable limit is 100.");
-    assert_eq!(fails(&mut e, &mut w, &a, "//limit -1"), "Your maximum allowable limit is 100.");
-    run(&mut e, &mut w, &a, "//limit");
-    assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (100 blocks affected)");
-    // An operator of the node's level may lift it.
-    let mut e = Engine::new(Config { max_blocks: 100, node_levels: [("worldedit.limit.unrestricted".to_string(), 2u8)].into(), ..Config::default() });
+    // -1 passes WorldEdit's check, but the maximum still holds for the edits themselves.
     assert_eq!(run(&mut e, &mut w, &a, "//limit -1"), "Block change limit set to -1. (Use //limit to go back to the default.)");
+    assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (100 blocks affected)");
+    run(&mut e, &mut w, &a, "//limit");
+    assert_eq!(run(&mut e, &mut w, &a, "//set dirt"), "Operation completed (100 blocks affected)");
+    // An operator of the node's level may lift it.
+    let mut e = Engine::new(Config { max_blocks: 100, max_blocks_maximum: 100, node_levels: [("worldedit.limit.unrestricted".to_string(), 2u8)].into(), ..Config::default() });
+    assert_eq!(run(&mut e, &mut w, &a, "//limit 5000"), "Block change limit set to 5000. (Use //limit to go back to the default.)");
+    // A grant of the permission system works the same as the level.
+    let mut e = Engine::new(Config { max_blocks: 100, max_blocks_maximum: 100, ..Config::default() });
+    a.permission = 0;
+    a.granted.insert("worldedit.limit".into());
+    a.granted.insert("worldedit.limit.unrestricted".into());
+    assert_eq!(run(&mut e, &mut w, &a, "//limit 5000"), "Block change limit set to 5000. (Use //limit to go back to the default.)");
+    a.permission = 2;
     // Global mask: only stone is changed, by every edit.
     let mut e = Engine::default();
     w.fill([0, 64, 0], [9, 64, 9], "dirt");
@@ -809,6 +861,69 @@ fn limit_gmask_and_toggleplace() {
 }
 
 #[test]
+fn navigation_wand_and_clipboard_distribution() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    let r = e.command(&mut w, &a, "wand -n", &env("none"));
+    assert_eq!(r.give, vec!["minecraft:compass".to_string()]);
+    assert_eq!(r.text(), "Left click: jump to location; Right click: pass through walls");
+    let mut nobody = actor(2);
+    nobody.permission = 0;
+    nobody.granted.insert("worldedit.wand".into());
+    assert_eq!(fails(&mut e, &mut w, &nobody, "wand -n"), "You are not permitted to do that. Are you in the right mode?");
+    assert_eq!(fails(&mut e, &mut w, &a, "//distr -c"), "Your clipboard is empty. Use //copy first.");
+    w.fill([0, 64, 0], [1, 64, 0], "stone");
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 2,64,0");
+    run(&mut e, &mut w, &a, "//copy");
+    w.blocks.clear();
+    let r = run(&mut e, &mut w, &a, "//distr -c");
+    assert!(r.contains("Total Block Count: 3") && r.contains("Stone") && r.contains("Air"), "{r}");
+}
+
+#[test]
+fn trim_chunkinfo_and_listchunks() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    w.fill([3, 65, 4], [5, 67, 4], "stone");
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 9,70,9");
+    assert_eq!(run(&mut e, &mut w, &a, "//trim"), "Region trimmed.");
+    assert_eq!(e.selection_of(1), Some(("minecraft:overworld".to_owned(), [3, 65, 4], [5, 67, 4])));
+    assert_eq!(fails(&mut e, &mut w, &a, "//trim gold_block"), "No blocks matched the trim mask.");
+    a.position = [-17.5, 64.0, 40.5];
+    assert_eq!(run(&mut e, &mut w, &a, "/chunkinfo"), "Chunk: -2, 2\nOld format: 1q/2/c.-2.2.dat\nMcRegion: region/r.-1.0.mca");
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 17,64,16");
+    let r = run(&mut e, &mut w, &a, "/listchunks");
+    assert!(r.starts_with("Listing chunks for: builder1\n") && r.contains("Selected Chunks") && r.ends_with("(0, 0)\n(0, 1)\n(1, 0)\n(1, 1)"), "{r}");
+}
+
+#[test]
+fn placement_types_and_offsets() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    run(&mut e, &mut w, &a, "//pos1 20,70,20");
+    run(&mut e, &mut w, &a, "//pos2 24,72,26");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement min"), "Now placing at the minimum of the current selection.");
+    run(&mut e, &mut w, &a, "//pyramid sand 1");
+    assert_eq!(w.name_at([20, 70, 20]), "minecraft:sand");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement max 2 up"), "Now placing at an offset of (0, 2, 0) from the maximum of the current selection.");
+    run(&mut e, &mut w, &a, "//pyramid gravel 1");
+    assert_eq!(w.name_at([24, 74, 26]), "minecraft:gravel");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement world 1 5,6,7"), "Now placing at (5, 6, 7).");
+    run(&mut e, &mut w, &a, "//pyramid dirt 1");
+    assert_eq!(w.name_at([5, 6, 7]), "minecraft:dirt");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement here"), "Now placing at (0, 64, 0).");
+    assert_eq!(run(&mut e, &mut w, &a, "/placement pos1 1 1,0,0"), "Now placing at an offset of (1, 0, 0) from pos #1.");
+    assert_eq!(run(&mut e, &mut w, &a, "//toggleplace"), "Now placing at the block you stand in.");
+    assert_eq!(run(&mut e, &mut w, &a, "//toggleplace"), "Now placing at pos #1.");
+}
+
+#[test]
 fn searchitem_and_calc() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();
@@ -816,8 +931,11 @@ fn searchitem_and_calc() {
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem st"), "Enter a longer search string (len > 2).");
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem -b -i stone"), "You cannot use both the 'b' and 'i' flags simultaneously.");
     let r = run(&mut e, &mut w, &a, "//searchitem stair");
-    assert!(r.contains("Search results for 'stair'") && r.contains("Oak Stairs (minecraft:oak_stairs)"), "{r}");
-    assert_eq!(run(&mut e, &mut w, &a, "//search zzzz"), "No results found.");
+    assert!(r.starts_with("(Please wait... searching items.)\n") && r.contains("Search results for 'stair'") && r.contains("Oak Stairs (minecraft:oak_stairs)"), "{r}");
+    assert_eq!(run(&mut e, &mut w, &a, "//search zzzz"), "(Please wait... searching items.)\nNo results found.");
+    // -i is the items that are not blocks, -b the blocks.
+    assert!(run(&mut e, &mut w, &a, "//searchitem -i stick").contains("Stick (minecraft:stick)"));
+    assert_eq!(run(&mut e, &mut w, &a, "//searchitem -b stick"), "(Please wait... searching items.)\nNo results found.");
     assert_eq!(fails(&mut e, &mut w, &a, "//searchitem -p 9 stone"), "Invalid page number");
     // Two plus two, printed as WorldEdit does (the words as a list).
     assert_eq!(run(&mut e, &mut w, &a, "//calc 2+2"), "[2+2] = 4");
@@ -871,8 +989,8 @@ fn help_and_worldedit_subcommands() {
 #[test]
 fn every_help_entry_is_a_command_of_ours() {
     // The help lists only what this server answers: each entry's names register a usage.
-    let usages = crate::usages();
-    for e in crate::engine::help_entries() {
+    let usages = crate::horizon_worldedit_core::usages();
+    for e in crate::horizon_worldedit_core::engine::help_entries() {
         let name = e.name.trim_start_matches('/');
         // `//fill`, `//help` and `//rotate` share their names with vanilla's: heard by `is_shadowed`.
         if matches!(name, "fill" | "help" | "rotate") {
@@ -891,7 +1009,7 @@ fn tools_bind_and_click() {
     let mut w = FakeWorld::new();
     let mut a = actor(1);
     a.held = Some("minecraft:stick".into());
-    assert_eq!(run(&mut e, &mut w, &a, "/tool selwand"), "Selection wand bound to Stick.\nRun /tool none while holding the item to unbind it.");
+    assert_eq!(run(&mut e, &mut w, &a, "/tool selwand"), "Selection wand bound to Stick.");
     // Left click is position 1, right click position 2, on any item.
     assert_eq!(e.tool_click(&mut w, &a, true, [1, 64, 1], 0).unwrap().text(), "First position set to (1, 64, 1).");
     assert_eq!(e.tool_click(&mut w, &a, false, [3, 64, 3], 1000).unwrap().text(), "Second position set to (3, 64, 3) (9).");
@@ -1054,7 +1172,7 @@ fn ascend_and_ceil_find_the_floor_and_the_ceiling() {
 
 #[test]
 fn a_command_runs_only_in_the_slash_form_it_is_defined_with() {
-    use crate::form_allows;
+    use crate::horizon_worldedit_core::form_allows;
     // `//set`-style commands: two slashes only.
     assert!(form_allows("set stone", true) && !form_allows("set stone", false));
     assert!(form_allows("pos1", true) && !form_allows("pos1", false));
@@ -1067,4 +1185,116 @@ fn a_command_runs_only_in_the_slash_form_it_is_defined_with() {
     // Both forms.
     assert!(form_allows("brush none", false) && form_allows("brush none", true));
     assert!(form_allows("undo", false) && form_allows("undo", true));
+}
+
+#[test]
+fn non_cuboid_selectors() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(7);
+    assert_eq!(run(&mut e, &mut w, &a, "//sel sphere"), "Sphere selector: left click=center, right click to set radius");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 0,64,0"), "Center position set to (0, 64, 0).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 3,64,0"), "Radius set to 3.0 (179).");
+    assert_eq!(run(&mut e, &mut w, &a, "//set stone"), "Operation completed (179 blocks affected)");
+    assert_eq!(w.count("stone"), 179);
+    assert_eq!(w.name_at([3, 64, 0]), "minecraft:stone");
+    assert_eq!(w.name_at([3, 66, 2]), "minecraft:air");
+    assert_eq!(run(&mut e, &mut w, &a, "//count stone"), "Counted: 179");
+    // Cylinder: radius from the farther click, height from both.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel cyl"), "Cylindrical selector: Left click=center, right click to extend");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 20,70,20"), "Starting a new cylindrical selection at (20, 70, 20).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 22,72,20"), "Radius set to 2/0 blocks. (11)");
+    // Polygon: a triangle, walls only on its sides.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel poly"), "2D polygon selector: Left/right click to add a point.");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 40,64,40"), "Starting a new polygon at (40, 64, 40).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 44,64,40"), "Added point #2 at (44, 64, 40).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 40,64,44"), "Added point #3 at (40, 64, 44).");
+    assert_eq!(fails(&mut e, &mut w, &a, "//pos2 40,64,44"), "Position already set.");
+    assert_eq!(run(&mut e, &mut w, &a, "//set gold_block"), "Operation completed (15 blocks affected)");
+    assert_eq!(w.name_at([41, 64, 41]), "minecraft:gold_block");
+    assert_eq!(w.name_at([44, 64, 44]), "minecraft:air");
+    assert!(run(&mut e, &mut w, &a, "//size").starts_with("Type: Polygonal2DRegionSelector\n# points: 3"));
+    assert_eq!(fails(&mut e, &mut w, &a, "//expand 2 east"), "Polygons can only be expanded vertically.");
+    assert_eq!(run(&mut e, &mut w, &a, "//expand 2 up"), "Region expanded 30 blocks");
+    // Convex hull.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel convex"), "Convex polyhedral selector: Left click=First vertex, right click to add more.");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos1 60,64,60"), "Started new selection with vertex (60, 64, 60).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos2 68,64,60"), "Added vertex (68, 64, 60) to the selection.");
+    assert_eq!(fails(&mut e, &mut w, &a, "//expand 1 up"), "Cannot expand a convex polyhedral region.");
+    // Back to a box.
+    assert_eq!(run(&mut e, &mut w, &a, "//sel cuboid"), "Cuboid: left click for point 1, right click for point 2");
+    assert!(run(&mut e, &mut w, &a, "//size").starts_with("Type: Cuboid"));
+}
+
+#[test]
+fn generate_and_deform_with_expressions() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(8);
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    run(&mut e, &mut w, &a, "//pos2 8,72,8");
+    // A ball of radius 1 in unit coordinates fills the middle of the box.
+    let r = run(&mut e, &mut w, &a, "//generate stone x*x+y*y+z*z<1");
+    assert!(r.ends_with("blocks have been created."), "{r}");
+    assert_eq!(w.name_at([4, 68, 4]), "minecraft:stone");
+    assert_eq!(w.name_at([0, 64, 0]), "minecraft:air");
+    // Raw coordinates: the plane x == 2.
+    run(&mut e, &mut w, &a, "//generate -r gold_block x==2");
+    assert_eq!(w.name_at([2, 70, 5]), "minecraft:gold_block");
+    assert_eq!(fails(&mut e, &mut w, &a, "//generate stone foo>1"), "Variable 'foo' not found");
+    // Deform: shift every block's source one east (raw), so the gold plane moves west.
+    run(&mut e, &mut w, &a, "//deform -r x += 1");
+    assert_eq!(w.name_at([1, 70, 5]), "minecraft:gold_block");
+}
+
+#[test]
+fn butcher_and_remove() {
+    use crate::horizon_worldedit_core::EntityInfo;
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(9);
+    let mob = |id: u64, kind: &str, x: f64, living: bool, named: bool| EntityInfo { id, kind: kind.into(), pos: [x, 64.0, 0.5], living, named, tamed: false };
+    w.mobs = vec![
+        mob(1, "minecraft:zombie", 2.0, true, false),
+        mob(2, "minecraft:cow", 3.0, true, false),
+        mob(3, "minecraft:zombie", 4.0, true, true),
+        mob(4, "minecraft:item", 1.0, false, false),
+        mob(5, "minecraft:zombie", 90.0, true, false),
+        mob(6, "minecraft:villager", 3.0, true, false),
+    ];
+    assert_eq!(run(&mut e, &mut w, &a, "/butcher 10"), "1 mobs have been killed in a radius of 10.");
+    assert_eq!(run(&mut e, &mut w, &a, "/butcher -a -n 10"), "2 mobs have been killed in a radius of 10.");
+    assert_eq!(run(&mut e, &mut w, &a, "/remove items 10"), "1 entities have been marked for removal.");
+    assert_eq!(run(&mut e, &mut w, &a, "/butcher"), "1 mobs have been killed in a radius of -1.");
+    assert!(fails(&mut e, &mut w, &a, "/remove bogus 5").starts_with("Acceptable types"));
+}
+
+#[test]
+fn session_options_say_what_worldedit_says() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(7);
+    assert_eq!(run(&mut e, &mut w, &a, "//timeout"), "Timeout time set to 100ms.");
+    assert_eq!(run(&mut e, &mut w, &a, "//timeout 250"), "Timeout time set to 250ms. (Use //timeout to go back to the default.)");
+    assert_eq!(
+        run(&mut e, &mut w, &a, "//fast"),
+        "Fast mode enabled. Lighting in the affected chunks may be wrong and/or you may need to rejoin to see changes."
+    );
+    assert_eq!(fails(&mut e, &mut w, &a, "//fast on"), "Fast mode already enabled.");
+    assert_eq!(run(&mut e, &mut w, &a, "//fast off"), "Fast mode disabled.");
+    assert_eq!(run(&mut e, &mut w, &a, "//perf lighting"), "Side effect \"Lighting\" is set to On");
+    assert_eq!(run(&mut e, &mut w, &a, "//perf neighbors off"), "Side effect \"Neighbors\" set to Off");
+    assert_eq!(fails(&mut e, &mut w, &a, "//perf neighbors off"), "Side effect \"Neighbors\" is already Off");
+    assert!(run(&mut e, &mut w, &a, "//perf").contains("Entity AI: Off"));
+    assert_eq!(run(&mut e, &mut w, &a, "//reorder"), "The reorder mode is multi");
+    assert_eq!(run(&mut e, &mut w, &a, "//reorder fast"), "The reorder mode is now fast");
+    assert_eq!(fails(&mut e, &mut w, &a, "//reorder sideways"), "Usage: //reorder [mode]");
+    assert_eq!(fails(&mut e, &mut w, &a, "//watchdog"), "This platform has no watchdog hook.");
+    assert_eq!(run(&mut e, &mut w, &a, "//drawsel off"), "Server CUI disabled.");
+    assert_eq!(fails(&mut e, &mut w, &a, "//drawsel off"), "Server CUI already disabled.");
+    assert!(run(&mut e, &mut w, &a, "//registry block zzzq").contains("No results found."));
+    // The far wand is bound like the other tools; its binding takes the item in hand.
+    a.held = Some("minecraft:stick".into());
+    assert!(run(&mut e, &mut w, &a, "//tool farwand").starts_with("Far wand tool bound to"));
+    a.held = None;
 }

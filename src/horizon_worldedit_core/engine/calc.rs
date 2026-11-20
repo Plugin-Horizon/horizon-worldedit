@@ -178,7 +178,7 @@ impl Parser<'_> {
     }
 }
 
-fn call(name: &str, a: &[f64]) -> Result<f64, String> {
+pub(super) fn call(name: &str, a: &[f64]) -> Result<f64, String> {
     let one = |f: fn(f64) -> f64| -> Result<f64, String> {
         match a {
             [x] => Ok(f(*x)),

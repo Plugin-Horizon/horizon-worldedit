@@ -1,22 +1,26 @@
 //! The commands, the wand and the brushes, for every player of a server: what a typed `//command`,
 //! a click with the wand or a brush does to the player's session and to the world.
 
-use crate::clipboard::Clipboard;
-use crate::config::Config;
-use crate::edit::{plan, Change, Queue};
-use crate::ops;
-use crate::pattern::{next_salt, Mask, Pattern};
-use crate::region::{sub, Cuboid, Dir};
-use crate::schem;
-use crate::session::{Brush, BrushShape, Sessions, Tool};
-use crate::shapes;
-use crate::world::{Pos, StateId, World};
+use crate::horizon_worldedit_core::clipboard::Clipboard;
+use crate::horizon_worldedit_core::config::Config;
+use crate::horizon_worldedit_core::edit::{plan_with, Change, Queue};
+use crate::horizon_worldedit_core::nbt::Tag;
+use crate::horizon_worldedit_core::ops;
+use crate::horizon_worldedit_core::pattern::{next_salt, Mask, Pattern};
+use crate::horizon_worldedit_core::region::{sub, Cuboid, Dir};
+use crate::horizon_worldedit_core::schem;
+use crate::horizon_worldedit_core::session::{Brush, BrushShape, PlaceKind, Sessions, Tool};
+use crate::horizon_worldedit_core::shapes;
+use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 mod calc;
+mod expr;
+mod extra;
 mod help;
 mod nav;
+mod select;
 mod tools;
 mod utility;
 
@@ -29,12 +33,27 @@ pub const SCAN_LIMIT: u64 = 10_000_000;
 pub const NODES: &[&str] = &[
     "worldedit.analysis.count",
     "worldedit.analysis.distr",
+    "worldedit.brush.clipboard",
     "worldedit.brush.cylinder",
+    "worldedit.brush.ex",
     "worldedit.brush.options.mask",
     "worldedit.brush.options.material",
     "worldedit.brush.smooth",
+    "worldedit.brush.snowsmooth",
     "worldedit.brush.sphere",
     "worldedit.calc",
+    "worldedit.butcher",
+    "worldedit.butcher.pets",
+    "worldedit.butcher.npcs",
+    "worldedit.butcher.golems",
+    "worldedit.butcher.animals",
+    "worldedit.butcher.ambient",
+    "worldedit.butcher.tagged",
+    "worldedit.butcher.armorstands",
+    "worldedit.butcher.water",
+    "worldedit.remove",
+    "worldedit.generation.shape",
+    "worldedit.region.deform",
     "worldedit.clipboard.clear",
     "worldedit.clipboard.copy",
     "worldedit.clipboard.cut",
@@ -64,6 +83,12 @@ pub const NODES: &[&str] = &[
     "worldedit.history.undo.other",
     "worldedit.history.undo.self",
     "worldedit.limit",
+    "worldedit.placement",
+    "worldedit.limit.unrestricted",
+    "worldedit.chunkinfo",
+    "worldedit.listchunks",
+    "worldedit.selection.trim",
+    "worldedit.anyblock",
     "worldedit.navigation.ascend",
     "worldedit.navigation.ceiling",
     "worldedit.navigation.descend",
@@ -77,6 +102,9 @@ pub const NODES: &[&str] = &[
     "worldedit.region.faces",
     "worldedit.region.hollow",
     "worldedit.region.line",
+    "worldedit.region.curve",
+    "worldedit.region.snowsmooth",
+    "worldedit.revolve",
     "worldedit.region.move",
     "worldedit.region.naturalize",
     "worldedit.region.overlay",
@@ -110,7 +138,19 @@ pub const NODES: &[&str] = &[
     "worldedit.tool.info",
     "worldedit.tool.replacer",
     "worldedit.wand",
+    "worldedit.timeout",
+    "worldedit.fast",
+    "worldedit.perf",
+    "worldedit.reorder",
+    "worldedit.drawsel",
+    "worldedit.watchdog",
+    "worldedit.registry",
+    "worldedit.tool.farwand",
 ];
+
+/// Nodes that lift a limit and need operator level 4 where `node_levels` names no other level (the original's `default: op`
+/// would give them to level 2; a server whose operators are trusted that far can set the level in `node_levels`).
+pub const FULL_OPERATOR_NODES: &[&str] = &["worldedit.limit.unrestricted", "worldedit.anyblock"];
 
 /// The player a command, a click or a brush belongs to, as the server sees them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -228,7 +268,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("middle", "<pattern:text>"),
     ("naturalize", ""),
     ("smooth", "[args:text]"),
+    ("snowsmooth", "[args:text]"),
     ("line", "<args:text>"),
+    ("curve", "<args:text>"),
+    ("revolve", "<args:text>"),
     ("stack", "[args:text]"),
     ("move", "[args:text]"),
     ("sphere", "<args:text>"),
@@ -299,6 +342,24 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("floodfill", "<args:text>"),
     ("flood", "<args:text>"),
     ("placement", "<args:text>"),
+    ("trim", "[mask:text]"),
+    ("chunkinfo", ""),
+    ("listchunks", "[flags:text]"),
+    ("generate", "<args:text>"),
+    ("gen", "<args:text>"),
+    ("g", "<args:text>"),
+    ("deform", "<expression:text>"),
+    ("butcher", "[args:text]"),
+    ("remove", "<args:text>"),
+    ("rem", "<args:text>"),
+    ("rement", "<args:text>"),
+    ("timeout", "[limit:integer]"),
+    ("fast", "[mode:word]"),
+    ("perf", "[sideeffect:word] [state:word]"),
+    ("reorder", "[mode:word]"),
+    ("drawsel", "[state:word]"),
+    ("watchdog", "[mode:word]"),
+    ("registry", "<registry:word> [query:text]"),
 ];
 
 /// The typed usages, one per sub-command path: the names a command answers to (aliases too), the flags
@@ -308,14 +369,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
 /// without a space), `text` (the rest of the line, always last). Literals are the fixed choices.
 const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["we", "worldedit"], "", &["", "version", "help"]),
-    (&["wand"], "", &[""]),
+    (&["wand"], "n", &["{flags}"]),
     (&["pos1", "pos2"], "", &["", "<x:word> <y:word> <z:word>"]),
     (&["hpos1", "hpos2"], "", &[""]),
-    (&["sel"], "", &["", "cuboid", "extend"]),
+    (&["sel"], "d", &["{flags}", "{flags} cuboid", "{flags} extend", "{flags} poly", "{flags} polyextend", "{flags} ellipsoid", "{flags} sphere", "{flags} cyl", "{flags} convex", "{flags} hull", "{flags} polyhedron"]),
     (&["desel", "deselect", "naturalize", "clearclipboard", "clearhistory", "none"], "", &[""]),
     (&["size"], "c", &["{flags}"]),
     (&["chunk"], "sc", &["{flags}", "{flags} <x:word> <y:word> <z:word>"]),
-    (&["distr"], "dmp", &["{flags}"]),
+    (&["distr"], "cdmp", &["{flags}"]),
     (
         &["expand"],
         "",
@@ -329,7 +390,10 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["replace", "re", "rep"], "", &["<to:pattern>", "<from:mask> <to:pattern>"]),
     (&["hollow"], "", &["", "<thickness:integer>", "<thickness:integer> <block:pattern>"]),
     (&["smooth"], "", &["", "<iterations:integer>", "<iterations:integer> <filter:mask>"]),
+    (&["snowsmooth"], "lm", &["{flags}", "<iterations:integer> {flags}"]),
     (&["line"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
+    (&["curve"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
+    (&["revolve"], "r", &["<count:integer>", "{flags} <count:integer>"]),
     (&["stack"], "asr", &["{flags}", "<count:integer> {flags}", "<count:integer> {dir} {flags}"]),
     (
         &["move"],
@@ -370,12 +434,21 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
             "smooth <radius:number>",
             "smooth <radius:number> <iterations:integer>",
             "smooth <radius:number> <iterations:integer> <filter:mask>",
+            "snowsmooth",
+            "snowsmooth <radius:number>",
+            "snowsmooth <radius:number> <iterations:integer>",
+            "clipboard",
+            "copy",
+            "extinguish",
+            "extinguish <radius:number>",
+            "ex",
+            "ex <radius:number>",
         ],
     ),
     (&["mask"], "", &["", "<filter:mask>"]),
     (&["gmask"], "", &["", "<filter:mask>"]),
     (&["material"], "", &["<block:pattern>"]),
-    (&["tool"], "", &["none", "unbind", "selwand", "info", "cycler", "repl <pattern:pattern>", "floodfill <pattern:pattern> <range:integer>", "flood <pattern:pattern> <range:integer>"]),
+    (&["tool"], "", &["none", "unbind", "selwand", "info", "navwand", "cycler", "repl <pattern:pattern>", "floodfill <pattern:pattern> <range:integer>", "flood <pattern:pattern> <range:integer>"]),
     (&["we", "worldedit"], "", &["reload", "report", "trace", "cui", "ver", "version", "tz <timezone:word>", "help", "help <command:command>"]),
     (&["fixwater", "fixlava"], "", &["<radius:number>"]),
     (&["drain"], "w", &["{flags} <radius:number>"]),
@@ -392,8 +465,22 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["selwand", "info", "cycler"], "", &[""]),
     (&["repl"], "", &["<pattern:pattern>"]),
     (&["floodfill", "flood"], "", &["<pattern:pattern> <range:integer>"]),
-    (&["placement"], "", &["pos1", "player"]),
+    (&["trim"], "", &["", "<filter:mask>"]),
+    (&["chunkinfo"], "", &[""]),
+    (&["listchunks"], "p", &["{flags}"]),
+    (&["placement"], "", &["pos1", "player", "here", "world", "min", "max", "pos1 <multiplier:integer>", "player <multiplier:integer>", "here <multiplier:integer>", "world <multiplier:integer>", "min <multiplier:integer>", "max <multiplier:integer>", "pos1 <multiplier:integer> {dir}", "player <multiplier:integer> {dir}", "here <multiplier:integer> {dir}", "world <multiplier:integer> {dir}", "min <multiplier:integer> {dir}", "max <multiplier:integer> {dir}"]),
+    (&["generate", "gen", "g"], "hroc", &["{flags} <block:pattern> <expression:text>"]),
+    (&["deform"], "roc", &["{flags} <expression:text>"]),
+    (&["butcher"], "pnagbtfrw", &["{flags}", "{flags} <radius:integer>"]),
+    (&["remove", "rem", "rement"], "", &["<type:word> <radius:integer>"]),
     (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
+    (&["timeout"], "", &["", "<limit:integer>"]),
+    (&["fast"], "", &["", "on", "off"]),
+    (&["perf"], "h", &["{flags}", "{flags} <sideeffect:word>", "{flags} <sideeffect:word> <state:word>"]),
+    (&["reorder"], "", &["", "multi", "fast", "none"]),
+    (&["drawsel"], "", &["", "on", "off"]),
+    (&["watchdog"], "", &["", "active", "inactive"]),
+    (&["registry"], "p", &["{flags} <registry:word> <query:text>"]),
 ];
 
 /// The direction words the usages list. The short forms (`n`, `u`, `f`...) are accepted too; the
@@ -483,7 +570,7 @@ fn qualify(rest: &str, mid: &BTreeSet<String>) -> String {
 /// names in `BOTH_FORMS` it registers both ways (`/brush` and `//brush`); every other command is
 /// registered with a leading `/` in its name (`@Command(name = "/set")`), which the player types as
 /// `//set`.
-pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard", "selwand", "info", "cycler", "repl", "floodfill", "flood", "placement"];
+pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "clearclipboard", "selwand", "navwand", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks"];
 pub const BOTH_FORMS: &[&str] = &[
     "brush", "br", "schem", "schematic", "undo", "redo", "clearhistory", "material", "removeabove", "removebelow", "removenear", "replacenear", "fixwater", "fixlava", "snow", "thaw", "green", "extinguish", "ex", "ext", "gmask",
     "toggleplace", "searchitem", "ascend", "asc", "descend", "desc", "thru", "jumpto", "j", "unstuck", "ceil",
@@ -551,6 +638,7 @@ fn flag_sets(letters: &str) -> Vec<String> {
                 .map(|(_, &c)| match c {
                     'm' => "-m <maskarg:mask>".to_owned(),
                     'p' => "-p <page:integer>".to_owned(),
+                    'l' => "-l <layers:integer>".to_owned(),
                     _ => format!("-{c}"),
                 })
                 .collect::<Vec<_>>()
@@ -607,18 +695,28 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "stack" => ("abersm", "asrm"),
         "move" => ("abesm", "asm"),
         "sphere" | "hsphere" => ("hr", "hr"),
-        "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "brush" | "br" | "cone" => ("h", "h"),
+        "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "cone" => ("h", "h"),
+        "brush" | "br" => ("hlmaovbe", "hlmaov"),
+        "revolve" => ("mreb", "mr"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
-        "distr" => ("cdpm", "dpm"),
+        "distr" => ("cdpm", "cdpm"),
+        "snowsmooth" => ("lm", "lm"),
         "chunk" => ("sc", "sc"),
         "size" => ("c", "c"),
-        "wand" => ("n", ""),
+        "generate" | "gen" | "g" => ("hroc", "hroc"),
+        "deform" => ("rocl", "roc"),
+        "butcher" => ("pnagbtfrw", "pnagbtfrw"),
+        "wand" => ("n", "n"),
+        "sel" => ("d", "d"),
         "up" | "ceil" => ("fg", "fg"),
         "drain" => ("w", "w"),
         "snow" => ("s", "s"),
         "green" => ("f", "f"),
         "searchitem" => ("bip", "bip"),
+        "listchunks" => ("p", "p"),
+        "perf" => ("h", "h"),
+        "registry" => ("p", "p"),
         "help" => ("sp", "sp"),
         "report" => ("p", ""),
         _ => ("", ""),
@@ -637,7 +735,10 @@ fn usage(name: &str) -> String {
         "count" => "<mask>".into(),
         "hollow" => "[thickness] [pattern]".into(),
         "smooth" => "[iterations] [mask]".into(),
+        "snowsmooth" => "[iterations]".into(),
         "line" => "<pattern> [thickness]".into(),
+        "curve" => "<pattern> [thickness]".into(),
+        "revolve" => "<count> [-m mask] [-r]".into(),
         "stack" => "[count] [offset]".into(),
         "move" => "[multiplier] [offset] [replace]".into(),
         "sphere" | "hsphere" => "<pattern> <radii>".into(),
@@ -652,7 +753,12 @@ fn usage(name: &str) -> String {
         "flip" | "mirror" => "[direction]".into(),
         "pos1" | "pos2" => "[coordinates]".into(),
         "chunk" => "[coordinates]".into(),
-        "brush" | "br" => "<sphere|cylinder|smooth|none> ...".into(),
+        "generate" | "gen" | "g" => "<pattern> <expression...>".into(),
+        "deform" => "<expression...>".into(),
+        "butcher" => "[radius]".into(),
+        "remove" | "rem" | "rement" => "<type> <radius>".into(),
+        "sel" => "[cuboid|extend|poly|polyextend|ellipsoid|sphere|cyl|convex]".into(),
+        "brush" | "br" => "<sphere|cylinder|smooth|snowsmooth|clipboard|extinguish|none> ...".into(),
         "brush sphere" => "<pattern> [radius]".into(),
         "brush cylinder" => "<pattern> [radius] [height]".into(),
         "fill" | "fillr" => "<pattern> <radius> [depth]".into(),
@@ -664,9 +770,10 @@ fn usage(name: &str) -> String {
         "up" => "<distance>".into(),
         "ceil" => "[clearance]".into(),
         "ascend" | "descend" => "[levels]".into(),
-        "placement" => "<pos1|player>".into(),
+        "placement" => "<pos1|player|here|world|min|max> [multiplier] [offset]".into(),
         "gmask" => "[mask]".into(),
         "searchitem" => "<query>".into(),
+        "trim" => "[mask]".into(),
         "calc" => "<expression>".into(),
         "help" => "[command...]".into(),
         "tool" => "<none|selwand|info|repl|cycler|floodfill> ...".into(),
@@ -686,7 +793,7 @@ fn usage(name: &str) -> String {
 
 /// Whether flag `c` of command `name` is followed by a value.
 fn takes_value(name: &str, c: char) -> bool {
-    c == 'm' || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help"))
+    c == 'm' || (c == 'l' && matches!(name, "snowsmooth" | "brush" | "br")) || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "registry"))
 }
 
 /// Splits a command's words from its flags. Unknown flags and flags this server does not implement
@@ -749,11 +856,14 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("repl") => "worldedit.tool.replacer",
             Some("cycler") => "worldedit.tool.data-cycler",
             Some("floodfill" | "flood") => "worldedit.tool.flood-fill",
+            Some("farwand") => "worldedit.tool.farwand",
+            Some("navwand" | "/navwand") => "worldedit.navigation.jumpto.tool",
             _ => return None,
         },
         "none" => return None,
         "sel" | "desel" | "deselect" => "worldedit.selection.sel",
         "version" | "ver" => return None,
+        "trim" => "worldedit.selection.trim",
         "help" => "worldedit.help",
         "wand" => "worldedit.wand",
         "pos1" | "pos2" => "worldedit.selection.pos",
@@ -769,6 +879,8 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "distr" => "worldedit.analysis.distr",
         "set" => "worldedit.region.set",
         "line" => "worldedit.region.line",
+        "curve" => "worldedit.region.curve",
+        "revolve" => "worldedit.revolve",
         "replace" | "re" | "rep" => "worldedit.region.replace",
         "overlay" => "worldedit.region.overlay",
         "center" | "middle" => "worldedit.region.center",
@@ -776,6 +888,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "walls" => "worldedit.region.walls",
         "faces" | "outline" => "worldedit.region.faces",
         "smooth" => "worldedit.region.smooth",
+        "snowsmooth" => "worldedit.region.snowsmooth",
         "move" => "worldedit.region.move",
         "stack" => "worldedit.region.stack",
         "hollow" => "worldedit.region.hollow",
@@ -804,6 +917,9 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("sphere" | "s") => "worldedit.brush.sphere",
             Some("cylinder" | "cyl" | "c") => "worldedit.brush.cylinder",
             Some("smooth") => "worldedit.brush.smooth",
+            Some("snowsmooth") => "worldedit.brush.snowsmooth",
+            Some("clipboard" | "copy") => "worldedit.brush.clipboard",
+            Some("extinguish" | "ex") => "worldedit.brush.ex",
             _ => return None,
         },
         "fill" => "worldedit.fill",
@@ -817,7 +933,8 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "extinguish" => "worldedit.extinguish",
         "limit" => "worldedit.limit",
         "gmask" => "worldedit.global-mask",
-        "toggleplace" | "placement" => return None,
+        "toggleplace" => return None,
+        "placement" => "worldedit.placement",
         "up" => "worldedit.navigation.up",
         "ascend" => "worldedit.navigation.ascend",
         "descend" => "worldedit.navigation.descend",
@@ -827,6 +944,8 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "ceil" => "worldedit.navigation.ceiling",
         "searchitem" => "worldedit.searchitem",
         "calc" => "worldedit.calc",
+        "generate" => "worldedit.generation.shape",
+        "deform" => "worldedit.region.deform",
         "mask" => "worldedit.brush.options.mask",
         "material" => "worldedit.brush.options.material",
         other => return Some(format!("worldedit.{other}")),
@@ -956,11 +1075,23 @@ impl Engine {
     /// by the permission system (`Actor::granted`). No other player gets WorldEdit.
     fn permitted(&self, actor: &Actor, node: Option<&str>) -> Result<(), String> {
         let nodes: Vec<&str> = node.map(|n| n.split('|').collect()).unwrap_or_default();
-        let level = nodes.iter().map(|n| self.config.node_levels.get(*n).copied().unwrap_or(self.config.permission_level)).min().unwrap_or(self.config.permission_level);
+        let level = nodes.iter().map(|n| self.node_level(n)).min().unwrap_or(self.config.permission_level);
         if actor.permission >= level || nodes.iter().any(|n| actor.granted.contains(*n)) {
             return Ok(());
         }
         Err("You are not permitted to do that. Are you in the right mode?".into())
+    }
+
+    /// The operator level that holds `node` without the permission system: `node_levels`, else 4 for the nodes that lift
+    /// a limit (`FULL_OPERATOR_NODES`), else `permission_level`.
+    fn node_level(&self, node: &str) -> u8 {
+        let fallback = if FULL_OPERATOR_NODES.contains(&node) { 4 } else { self.config.permission_level };
+        self.config.node_levels.get(node).copied().unwrap_or(fallback)
+    }
+
+    /// Whether the actor holds `node` (a grant of the permission system, or the operator level of `node_level`).
+    fn holds(&self, actor: &Actor, node: &str) -> bool {
+        self.permitted(actor, Some(node)).is_ok()
     }
 
     /// The checks every command and click has besides its node: WorldEdit's creative-only mode.
@@ -994,7 +1125,7 @@ impl Engine {
             words.insert(0, "schem");
         }
         // The deprecated tool commands are `/tool <type>`.
-        if words.first().is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "selwand" | "info" | "cycler" | "repl" | "floodfill" | "flood")) {
+        if words.first().is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "selwand" | "navwand" | "info" | "cycler" | "repl" | "floodfill" | "flood")) {
             words.insert(0, "tool");
         }
         let Some(first) = words.first() else { return Reply::err("No command".into()) };
@@ -1011,6 +1142,8 @@ impl Engine {
             "asc" => "ascend".to_owned(),
             "desc" => "descend".to_owned(),
             "j" => "jumpto".to_owned(),
+            "gen" | "g" => "generate".to_owned(),
+            "rem" | "rement" => "remove".to_owned(),
             "!" => "unstuck".to_owned(),
             other => other.to_owned(),
         };
@@ -1029,13 +1162,13 @@ impl Engine {
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
         let writes = !matches!(
             name.as_str(),
-            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc"
+            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks" | "butcher" | "remove" | "timeout" | "fast" | "perf" | "reorder" | "drawsel" | "watchdog" | "registry"
         );
         if writes && self.queue.busy(actor.uuid) {
             return Reply::err("Your last edit is still being written; wait a moment".into());
         }
         if name == "wand" {
-            return self.wand(actor);
+            return self.wand(actor, args.flag('n'));
         }
         if matches!(name.as_str(), "up" | "ascend" | "descend" | "thru" | "jumpto" | "unstuck" | "ceil") {
             return match self.navigate(world, actor, &name, &args) {
@@ -1057,8 +1190,15 @@ impl Engine {
             "gmask" => self.gmask(world, actor, &args),
             "toggleplace" => self.toggle_place(actor),
             "placement" => self.placement_type(actor, &args),
+            "trim" => self.trim(world, actor, &args),
+            "chunkinfo" => self.chunk_info(actor),
+            "listchunks" => self.list_chunks(actor, &args),
             "searchitem" => self.search_item(world, &args),
             "calc" => self.calc(&args),
+            "generate" => self.generate(world, actor, &args),
+            "deform" => self.deform(world, actor, &args),
+            "butcher" => self.butcher(world, actor, &args),
+            "remove" => self.remove_entities(world, actor, &args),
             "pos1" | "pos2" => self.pos(world, actor, name == "pos1", &args),
             "hpos1" | "hpos2" => self.hpos(world, actor, name == "hpos1"),
             "sel" | "desel" => self.sel(actor, &name, &args),
@@ -1074,7 +1214,10 @@ impl Engine {
             "overlay" => self.overlay(world, actor, &args),
             "naturalize" => self.naturalize(world, actor),
             "smooth" => self.smooth(world, actor, &args),
+            "snowsmooth" => self.snow_smooth(world, actor, &args),
             "line" => self.line(world, actor, &args),
+            "curve" => self.curve(world, actor, &args),
+            "revolve" => self.revolve(world, actor, &args),
             "stack" => self.stack(world, actor, &args),
             "move" => self.move_(world, actor, &args),
             "sphere" | "hsphere" => self.sphere(world, actor, name == "hsphere", &args),
@@ -1103,6 +1246,13 @@ impl Engine {
             "material" => self.material(world, actor, &args),
             "none" => self.unbind(actor, false),
             "tool" => self.tool(world, actor, &args),
+            "timeout" => self.timeout(actor, &args),
+            "fast" => self.fast(actor, &args),
+            "perf" => self.perf(actor, &args),
+            "reorder" => self.reorder(actor, &args),
+            "drawsel" => self.drawsel(actor, &args),
+            "watchdog" => self.watchdog(&args),
+            "registry" => self.registry(world, &args),
             _ => Err(format!("The command '{name}' could not be found.")),
         };
         match result {
@@ -1115,35 +1265,43 @@ impl Engine {
 
     /// Writes `writes` now, or the first tick's worth now and the rest over the next ticks; the
     /// note for the report.
-    fn write(&mut self, world: &mut dyn World, actor: &Actor, writes: Vec<(Pos, StateId)>) -> String {
+    fn write(&mut self, world: &mut dyn World, actor: &Actor, writes: Vec<(Pos, StateId)>, mut entities: HashMap<Pos, Tag>) -> String {
         let budget = self.config.blocks_per_tick.max(1);
         if writes.len() <= budget {
             world.write(&writes);
+            load_entities(world, entities);
             return String::new();
         }
         world.write(&writes[..budget]);
+        let now: HashMap<Pos, Tag> = writes[..budget].iter().filter_map(|&(p, _)| entities.remove(&p).map(|t| (p, t))).collect();
+        load_entities(world, now);
         let rest = writes[budget..].to_vec();
         let ticks = rest.len().div_ceil(budget);
-        self.queue.push(actor.uuid, &actor.dimension, rest);
+        self.queue.push_with(actor.uuid, &actor.dimension, rest, entities);
         format!(" (finishing over the next {ticks} tick{})", if ticks == 1 { "" } else { "s" })
     }
 
     /// Plans `ops`, checks the limit, writes it and remembers it for `//undo`: how many blocks
     /// changed, and the note on the ticks still to come.
-    fn commit(&mut self, world: &mut dyn World, actor: &Actor, mut ops: Vec<(Pos, StateId)>) -> Result<(usize, String), String> {
+    fn commit(&mut self, world: &mut dyn World, actor: &Actor, ops: Vec<(Pos, StateId)>) -> Result<(usize, String), String> {
+        self.commit_with(world, actor, ops, HashMap::new())
+    }
+
+    /// [`Engine::commit`] for blocks that bring block entity data (`entities`, by world position).
+    fn commit_with(&mut self, world: &mut dyn World, actor: &Actor, mut ops: Vec<(Pos, StateId)>, entities: HashMap<Pos, Tag>) -> Result<(usize, String), String> {
         // `//gmask`: only blocks the player's global mask accepts are changed.
         if let Some(text) = self.sessions.get(actor.uuid).global_mask.clone() {
             let mask = Mask::parse(world, &text, None)?;
             let w: &dyn World = &*world;
             ops.retain(|&(p, _)| w.get(p).is_some_and(|s| mask.hits(w, s)));
         }
-        let mut change = plan(world, &actor.dimension, ops);
+        let mut change = plan_with(world, &actor.dimension, ops, entities);
         change.at_ms = self.now_ms;
         if !self.allows(actor, change.len() as u64) {
             return Err(format!("Max blocks changed in an operation reached ({}).", self.max_blocks(actor)));
         }
         let n = change.len();
-        let note = self.write(world, actor, change.forward());
+        let note = self.write(world, actor, change.forward(), change.forward_entities());
         let size = self.config.history_size;
         self.sessions.get(actor.uuid).remember(change, size);
         Ok((n, note))
@@ -1151,7 +1309,13 @@ impl Engine {
 
     /// The most blocks one operation of this player may change: their `//limit`, else the server's.
     fn max_blocks(&mut self, actor: &Actor) -> i64 {
-        self.sessions.get(actor.uuid).block_limit.unwrap_or(self.config.max_blocks)
+        let limit = self.sessions.get(actor.uuid).block_limit.unwrap_or(self.config.max_blocks);
+        let maximum = self.config.max_blocks_maximum;
+        // `//limit -1` is let through by WorldEdit's own check, but the maximum still holds for anyone not unrestricted.
+        if maximum > -1 && (limit < 0 || limit > maximum) && !self.holds(actor, "worldedit.limit.unrestricted") {
+            return maximum;
+        }
+        limit
     }
 
     fn allows(&mut self, actor: &Actor, blocks: u64) -> bool {
@@ -1163,10 +1327,14 @@ impl Engine {
     /// position 1 after `//toggleplace`.
     fn placement(&mut self, actor: &Actor) -> Result<Pos, String> {
         let s = self.sessions.get(actor.uuid);
-        if s.place_at_pos1 {
-            return s.pos1.ok_or_else(|| "Make a region selection first.".to_owned());
-        }
-        Ok(actor.block())
+        let base = match s.place_kind {
+            PlaceKind::Player => actor.block(),
+            PlaceKind::World => [0; 3],
+            PlaceKind::Pos1 => s.pos1.ok_or_else(|| "Make a region selection first.".to_owned())?,
+            PlaceKind::Min => s.selection(&actor.dimension)?.min,
+            PlaceKind::Max => s.selection(&actor.dimension)?.max,
+        };
+        Ok(crate::horizon_worldedit_core::region::add(base, s.place_offset))
     }
 
     /// The writes still queued for `dimension`, this tick's share; the players whose edits finished.
@@ -1174,9 +1342,10 @@ impl Engine {
         if self.queue.is_empty() {
             return Vec::new();
         }
-        let (writes, done) = self.queue.take(dimension, self.config.blocks_per_tick.max(1));
+        let (writes, entities, done) = self.queue.take_with(dimension, self.config.blocks_per_tick.max(1));
         if !writes.is_empty() {
             world.write(&writes);
+            world.set_block_entities(&entities);
         }
         done
     }
@@ -1204,7 +1373,7 @@ impl Engine {
     fn pattern(&self, world: &dyn World, actor: &Actor, spec: Option<&str>) -> Result<Pattern, String> {
         let spec = spec.ok_or("A pattern is needed: a block such as stone, or a list such as 70%stone,30%gravel")?;
         let p = Pattern::parse(world, spec, actor.held.as_deref())?;
-        if actor.permission < 4 && !self.config.disallowed_blocks.is_empty() {
+        if !self.config.disallowed_blocks.is_empty() && !self.holds(actor, "worldedit.anyblock") {
             for &(_, s) in &p.entries {
                 let name = world.describe(s).name;
                 if self.config.disallowed_blocks.iter().any(|d| *d == name) {
@@ -1217,9 +1386,18 @@ impl Engine {
 
     // ---- selection ----
 
-    fn wand(&mut self, actor: &Actor) -> Reply {
+    fn wand(&mut self, actor: &Actor, navigation: bool) -> Reply {
         if let Err(e) = self.allowed(actor) {
             return Reply::err(e);
+        }
+        if navigation {
+            // WorldEdit's `NavigationWand.canUse`: the item is only worth giving to someone who may jump.
+            if let Err(e) = self.permitted(actor, Some("worldedit.navigation.jumpto.tool")) {
+                return Reply::err(e);
+            }
+            let mut r = Reply::ok(vec!["Left click: jump to location; Right click: pass through walls".into()]);
+            r.give.push(self.config.nav_wand_item.clone());
+            return r;
         }
         let mut r = Reply::ok(vec!["Left click: select pos #1; Right click: select pos #2".into()]);
         r.give.push(self.config.wand_item.clone());
@@ -1234,8 +1412,13 @@ impl Engine {
             // Corners in two levels make no region: the other one goes.
             s.pos1 = None;
             s.pos2 = None;
+            s.shape = None;
             s.dimension = actor.dimension.clone();
         }
+        if s.kind.is_shape() {
+            return self.shape_corner(actor, first, p);
+        }
+        s.shape = None;
         let at = pt(p);
         if s.extend {
             let primary = first || s.pos1.is_none() || s.pos2.is_none();
@@ -1307,23 +1490,12 @@ impl Engine {
         if name != "sel" {
             return Ok(clear(self));
         }
-        match args.get(0).map(str::to_ascii_lowercase).as_deref() {
+        match args.get(0) {
             None => Ok(clear(self)),
-            Some("cuboid") => {
-                self.sessions.get(actor.uuid).extend = false;
-                Ok(vec!["Cuboid: left click for point 1, right click for point 2".into()])
-            }
-            Some("extend") => {
-                let s = self.sessions.get(actor.uuid);
-                if let (Some(a), Some(b)) = (s.pos1, s.pos2) {
-                    let c = Cuboid::new(a, b);
-                    s.pos1 = Some(c.min);
-                    s.pos2 = Some(c.max);
-                }
-                s.extend = true;
-                Ok(vec!["Cuboid: left click for a starting point, right click to extend".into()])
-            }
-            Some(other) => Err(format!("Only the cuboid and extend selectors are supported here, not `{other}`")),
+            Some(word) => match crate::horizon_worldedit_core::selector::SelKind::parse(word) {
+                Some(kind) => self.sel_type(actor, kind, args.flag('d')),
+                None => Err(usage("sel")),
+            },
         }
     }
 
@@ -1350,6 +1522,13 @@ impl Engine {
         let (a, b) = (s.pos1.unwrap_or(c.min), s.pos2.unwrap_or(c.max));
         let c = c.clamp_y(world.min_y(), world.max_y()).unwrap_or(c);
         let size = c.size();
+        if let Some(shape) = s.shape.clone() {
+            let mut out = Self::shape_info(&shape, s.kind);
+            out.push(format!("Size: {}", pt(size)));
+            out.push(format!("Cuboid distance: {}", java_double(distance(c.min, c.max))));
+            out.push(format!("# of blocks: {}", shape.volume()));
+            return Ok(out);
+        }
         Ok(vec![
             "Type: Cuboid".into(),
             format!("Position 1: {}", pt(a)),
@@ -1364,9 +1543,11 @@ impl Engine {
         let (lo, hi) = (world.min_y(), world.max_y());
         let fit = |c: Cuboid| c.clamp_y(lo, hi).unwrap_or(c);
         let c = fit(self.sessions.get(actor.uuid).selection(&actor.dimension)?);
+        let shape = self.sessions.get(actor.uuid).shape.clone();
         if name == "expand" && args.get(0) == Some("vert") {
             let next = Cuboid { min: [c.min[0], lo, c.min[2]], max: [c.max[0], hi, c.max[2]] };
             self.sessions.get(actor.uuid).set_selection(next, &actor.dimension);
+            self.keep_shape(actor, shape, next, None);
             return Ok(vec![format!("Region expanded {} blocks (top-to-bottom).", next.volume() as i64 - c.volume() as i64)]);
         }
         if args.get(0).is_none() {
@@ -1381,31 +1562,39 @@ impl Engine {
             },
         };
         let dir = Self::dir_arg(actor, args.get(dir_at))?;
+        Self::shape_resizable(shape.as_ref(), name, Some(dir))?;
         let next = match name {
             "expand" => c.expand(dir, amount).and_then(|c| c.expand(dir.opposite(), reverse)),
             "contract" => c.contract(dir, amount).and_then(|c| c.contract(dir.opposite(), reverse)),
-            _ => Some(c.shifted(crate::region::scale(dir.vector(), amount))),
+            _ => Some(c.shifted(crate::horizon_worldedit_core::region::scale(dir.vector(), amount))),
         };
         let next = fit(next.ok_or("The selection would be empty")?);
         self.sessions.get(actor.uuid).set_selection(next, &actor.dimension);
+        let moved = (name == "shift").then(|| crate::horizon_worldedit_core::region::scale(dir.vector(), amount));
+        let before = shape.as_ref().map_or(c.volume(), |sh| sh.volume());
+        self.keep_shape(actor, shape, next, moved);
+        let after = self.sessions.get(actor.uuid).shape.as_ref().map_or(next.volume(), |sh| sh.volume());
         Ok(vec![match name {
-            "expand" => format!("Region expanded {} blocks", next.volume() as i64 - c.volume() as i64),
-            "contract" => format!("Region contracted {} blocks.", c.volume() as i64 - next.volume() as i64),
+            "expand" => format!("Region expanded {} blocks", after as i64 - before as i64),
+            "contract" => format!("Region contracted {} blocks.", before as i64 - after as i64),
             _ => "Region shifted.".into(),
         }])
     }
 
     fn outset(&mut self, world: &dyn World, actor: &Actor, out: bool, args: &Args) -> R {
         let c = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
+        let shape = self.sessions.get(actor.uuid).shape.clone();
         if args.get(0).is_none() {
             return Err(usage(if out { "outset" } else { "inset" }));
         }
+        Self::shape_resizable(shape.as_ref(), if out { "expand" } else { "contract" }, None)?;
         let n = args.int(0, 0)?;
         // WorldEdit: `-h` leaves out up and down, `-v` leaves out the four sides; both leave nothing.
         let (h, v) = (!args.flag('v'), !args.flag('h'));
         let next = c.outset(if out { n } else { -n }, h, v).ok_or("The selection would be empty")?;
         let next = next.clamp_y(world.min_y(), world.max_y()).unwrap_or(next);
         self.sessions.get(actor.uuid).set_selection(next, &actor.dimension);
+        self.keep_shape(actor, shape, next, None);
         Ok(vec![if out { "Region outset." } else { "Region inset." }.to_owned()])
     }
 
@@ -1455,7 +1644,8 @@ impl Engine {
             return Err(usage("count"));
         }
         let mask = Mask::parse(world, &args.rest(0), actor.held.as_deref())?;
-        let n = c.positions().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).count();
+        let shape = self.shape_of(actor);
+        let n = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).count();
         Ok(vec![format!("Counted: {n}")])
     }
 
@@ -1463,6 +1653,20 @@ impl Engine {
     fn distr(&mut self, world: &dyn World, actor: &Actor, args: &Args) -> R {
         let rows: Vec<(String, u64)> = match args.value('p') {
             Some(_) => self.sessions.get(actor.uuid).distribution.clone().ok_or("No previous distribution.")?,
+            None if args.flag('c') => {
+                // `-c`: what the clipboard holds, not the selection.
+                let clip = self.sessions.get(actor.uuid).clipboard.as_ref().ok_or("Your clipboard is empty. Use //copy first.")?;
+                let mut counts: HashMap<String, u64> = HashMap::new();
+                for (_, s) in &clip.blocks {
+                    let state = world.describe(*s);
+                    let key = if args.flag('d') { state.to_string_full() } else { state.name.clone() };
+                    *counts.entry(key).or_default() += 1;
+                }
+                let mut rows: Vec<(String, u64)> = counts.into_iter().collect();
+                rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                self.sessions.get(actor.uuid).distribution = Some(rows.clone());
+                rows
+            }
             None => {
                 let c = self.region(world, actor)?;
                 let mask = match args.value('m') {
@@ -1470,7 +1674,8 @@ impl Engine {
                     None => None,
                 };
                 let mut counts: HashMap<String, u64> = HashMap::new();
-                for p in c.positions() {
+                let shape = self.shape_of(actor);
+                for p in Self::shape_positions(&shape, &c) {
                     if let Some(s) = world.get(p) {
                         if mask.as_ref().is_some_and(|m| !m.hits(world, s)) {
                             continue;
@@ -1531,10 +1736,17 @@ impl Engine {
         let c = self.region(world, actor)?;
         let pattern = self.need_pattern(world, actor, args, 0, name)?;
         let salt = self.salt(actor);
-        let ops: Vec<(Pos, StateId)> = match name {
-            "set" => c.positions().map(|p| (p, pattern.pick(salt, p))).collect(),
-            "walls" => c.positions().filter(|&p| c.is_wall(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
-            "faces" | "outline" => c.positions().filter(|&p| c.is_face(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
+        let shape = self.shape_of(actor);
+        let ops: Vec<(Pos, StateId)> = match (&shape, name) {
+            (None, "set") => c.positions().map(|p| (p, pattern.pick(salt, p))).collect(),
+            (None, "walls") => c.positions().filter(|&p| c.is_wall(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
+            (None, "faces" | "outline") => c.positions().filter(|&p| c.is_face(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
+            (Some(_), "set") => Self::shape_positions(&shape, &c).into_iter().map(|p| (p, pattern.pick(salt, p))).collect(),
+            // A shape's walls and faces: the blocks with a neighbour outside it (walls look at the four sides only).
+            (Some(sh), "walls" | "faces" | "outline") => {
+                let sides: &[Pos] = if name == "walls" { &[[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]] } else { &[[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]] };
+                Self::shape_positions(&shape, &c).into_iter().filter(|&p| sides.iter().any(|d| !sh.contains([p[0] + d[0], p[1] + d[1], p[2] + d[2]]))).map(|p| (p, pattern.pick(salt, p))).collect()
+            }
             _ => c.center().positions().map(|p| (p, pattern.pick(salt, p))).collect(),
         };
         let (n, note) = self.commit(world, actor, ops)?;
@@ -1555,7 +1767,8 @@ impl Engine {
         };
         let pattern = self.pattern(world, actor, Some(to))?;
         let salt = self.salt(actor);
-        let ops: Vec<(Pos, StateId)> = c.positions().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).map(|p| (p, pattern.pick(salt, p))).collect();
+        let shape = self.shape_of(actor);
+        let ops: Vec<(Pos, StateId)> = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).map(|p| (p, pattern.pick(salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been replaced.{note}")])
     }
@@ -1568,7 +1781,7 @@ impl Engine {
         }
         let pattern = match args.get(1) {
             Some(p) => self.pattern(world, actor, Some(p))?,
-            None => Pattern::single(world.resolve(&crate::block::BlockState::air()).unwrap_or(0), "air"),
+            None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
         };
         let salt = self.salt(actor);
         let ops = ops::hollow(world, &c, thickness, &pattern, salt);
@@ -1587,7 +1800,7 @@ impl Engine {
 
     fn naturalize(&mut self, world: &mut dyn World, actor: &Actor) -> R {
         let c = self.region(world, actor)?;
-        let id = |n: &str| world.resolve(&crate::block::BlockState::new(n, &[])).ok_or_else(|| format!("Block name '{n}' was not recognized."));
+        let id = |n: &str| world.resolve(&crate::horizon_worldedit_core::block::BlockState::new(n, &[])).ok_or_else(|| format!("Block name '{n}' was not recognized."));
         let ids = [id("minecraft:grass_block")?, id("minecraft:dirt")?, id("minecraft:stone")?];
         let ops = ops::naturalize(world, &c, ids);
         let (n, note) = self.commit(world, actor, ops)?;
@@ -1604,6 +1817,23 @@ impl Engine {
         let ops = ops::smooth(world, &c, iterations, mask.as_ref());
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("Terrain's height map smoothed. {n} blocks changed.{note}")])
+    }
+
+    /// `//snowsmooth [iterations] [-l layers] [-m mask]` (`RegionCommands.snowSmooth`).
+    fn snow_smooth(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let c = self.region(world, actor)?;
+        let iterations = args.int(0, 1)?.clamp(0, 50) as u32;
+        let layers = match args.value('l') {
+            Some(v) => v.parse::<i32>().map_err(|_| number_error(v))?,
+            None => 1,
+        };
+        let mask = match args.value('m') {
+            Some(m) => Some(Mask::parse(world, m, actor.held.as_deref())?),
+            None => None,
+        };
+        let ops = ops::snow_smooth(world, &c, iterations, layers, mask.as_ref(), 5);
+        let (n, note) = self.commit(world, actor, ops)?;
+        Ok(vec![format!("Snow's height map smoothed. {n} blocks changed.{note}")])
     }
 
     fn line(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
@@ -1625,6 +1855,73 @@ impl Engine {
         let ops = points.into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been changed.{note}")])
+    }
+
+    /// `//curve`: a spline through the vertices of the convex polyhedral selection (`EditSession.drawSpline`).
+    fn curve(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let points = match self.sessions.get(actor.uuid).shape.clone() {
+            Some(crate::horizon_worldedit_core::selector::Shape::Convex { points }) => points,
+            _ => return Err("//curve only works with convex polyhedral selections".into()),
+        };
+        let pattern = self.need_pattern(world, actor, args, 0, "curve")?;
+        let thickness = match args.get(1) {
+            Some(w) => w.parse::<f64>().map_err(|_| number_error(w))?,
+            None => 0.0,
+        };
+        if !(thickness >= 0.0) {
+            return Err("Thickness must be >= 0".into());
+        }
+        self.check_radius(&[thickness])?;
+        let salt = self.salt(actor);
+        let (lo, hi) = (world.min_y(), world.max_y());
+        let ops = shapes::spline(&points, thickness, !args.flag('h')).into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
+        let (n, note) = self.commit(world, actor, ops)?;
+        Ok(vec![format!("{n} blocks have been changed.{note}")])
+    }
+
+    /// `//revolve <count> [-m mask] [-r]` (`ClipboardCommands.revolve`): the selection is copied around the
+    /// placement point, then pasted `count - 1` more times, each copy turned a further 360 / count degrees
+    /// round that point (the other way with `-r`). Air is never pasted, so a later copy only overwrites what it
+    /// fills. `-m` leaves out the blocks it does not match.
+    fn revolve(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let c = self.region(world, actor)?;
+        let count = match args.get(0) {
+            Some(w) => w.parse::<i32>().map_err(|_| number_error(w))?,
+            None => return Err(usage("revolve")),
+        };
+        if count < 2 {
+            return Err("Paste count must be at least 2.".into());
+        }
+        let origin = self.placement(actor)?;
+        let mut clip = Clipboard::copy(world, &c, origin, &actor.dimension)?;
+        if let Some(text) = args.value('m') {
+            let mask = Mask::parse(world, text, actor.held.as_deref())?;
+            let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
+            let w: &dyn World = &*world;
+            for (p, s) in clip.blocks.iter_mut() {
+                if !mask.hits(w, *s) {
+                    *s = air;
+                    clip.entities.remove(&*p);
+                }
+            }
+        }
+        let sign = if args.flag('r') { 1.0 } else { -1.0 };
+        let mut writes: Vec<(Pos, StateId)> = Vec::new();
+        let mut entities: HashMap<Pos, Tag> = HashMap::new();
+        for i in 1..count {
+            let (turned, block_entities) = clip.turned(world, sign * 360.0 * f64::from(i) / f64::from(count));
+            writes.extend(turned);
+            entities.extend(block_entities);
+        }
+        // Later copies overwrite earlier ones where they overlap.
+        let mut last: HashMap<Pos, StateId> = HashMap::new();
+        for (p, s) in writes {
+            last.insert(p, s);
+        }
+        let writes: Vec<(Pos, StateId)> = last.into_iter().map(|(p, s)| (crate::horizon_worldedit_core::region::add(origin, p), s)).collect();
+        let entities: HashMap<Pos, Tag> = entities.into_iter().map(|(p, t)| (crate::horizon_worldedit_core::region::add(origin, p), t)).collect();
+        let (n, note) = self.commit_with(world, actor, writes, entities)?;
+        Ok(vec![format!("The selection has been pasted {count} times."), format!("{n} blocks changed.{note}")])
     }
 
     fn dir_arg(actor: &Actor, word: Option<&str>) -> Result<Dir, String> {
@@ -1677,9 +1974,11 @@ impl Engine {
             None => None,
         };
         let (ops, copied) = ops::stack(world, &c, step, count, args.flag('a'), mask.as_ref())?;
-        let (_, note) = self.commit(world, actor, ops)?;
+        let shifts: Vec<Pos> = (1..=count).map(|n| crate::horizon_worldedit_core::region::scale(step, n)).collect();
+        let entities = ops::carried_entities(world, &c, &shifts, mask.as_ref());
+        let (_, note) = self.commit_with(world, actor, ops, entities)?;
         if args.flag('s') {
-            self.sessions.get(actor.uuid).set_selection(c.shifted(crate::region::scale(step, count)), &actor.dimension);
+            self.sessions.get(actor.uuid).set_selection(c.shifted(crate::horizon_worldedit_core::region::scale(step, count)), &actor.dimension);
         }
         Ok(vec![format!("{copied} blocks changed. Undo with //undo{note}")])
     }
@@ -1693,16 +1992,17 @@ impl Engine {
         let offset = Self::offset_arg(actor, args.get(1))?;
         let leave = match args.get(2) {
             Some(p) => self.pattern(world, actor, Some(p))?,
-            None => Pattern::single(world.resolve(&crate::block::BlockState::air()).unwrap_or(0), "air"),
+            None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
         };
         let mask = match args.value('m') {
             Some(m) => Some(Mask::parse(world, m, actor.held.as_deref())?),
             None => None,
         };
-        let by = crate::region::scale(offset, multiplier);
+        let by = crate::horizon_worldedit_core::region::scale(offset, multiplier);
         let salt = self.salt(actor);
         let (ops, moved) = ops::move_region(world, &c, by, &leave, salt, args.flag('a'), mask.as_ref())?;
-        let (_, note) = self.commit(world, actor, ops)?;
+        let entities = ops::carried_entities(world, &c, &[by], mask.as_ref());
+        let (_, note) = self.commit_with(world, actor, ops, entities)?;
         if args.flag('s') {
             self.sessions.get(actor.uuid).set_selection(c.shifted(by), &actor.dimension);
         }
@@ -1831,7 +2131,7 @@ impl Engine {
             }
         };
         let cube = cube.clamp_y(world.min_y(), world.max_y());
-        let air = world.resolve(&crate::block::BlockState::air()).unwrap_or(0);
+        let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
         let salt = self.salt(actor);
         let mut ops = Vec::new();
         if let Some(cube) = cube {
@@ -1854,17 +2154,25 @@ impl Engine {
         let c = self.region(world, actor)?;
         let origin = self.placement(actor)?;
         let mut clip = Clipboard::copy(world, &c, origin, &actor.dimension)?;
+        let shape = self.shape_of(actor);
+        if let Some(sh) = &shape {
+            // Only the blocks inside a non-box selection are copied.
+            let inside = |rel: &Pos| sh.contains([rel[0] + origin[0], rel[1] + origin[1], rel[2] + origin[2]]);
+            clip.blocks.retain(|(rel, _)| inside(rel));
+            clip.entities.retain(|rel, _| inside(rel));
+        }
         let mut affected = clip.blocks.len();
         if let Some(text) = args.value('m') {
             let mask = Mask::parse(world, text, actor.held.as_deref())?;
-            let air = world.resolve(&crate::block::BlockState::air()).unwrap_or(0);
+            let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
             let w: &dyn World = &*world;
             affected = 0;
-            for (_, s) in clip.blocks.iter_mut() {
+            for (p, s) in clip.blocks.iter_mut() {
                 if mask.hits(w, *s) {
                     affected += 1;
                 } else {
                     *s = air;
+                    clip.entities.remove(&*p);
                 }
             }
         }
@@ -1873,10 +2181,10 @@ impl Engine {
         if cut {
             let leave = match args.get(0) {
                 Some(p) => self.pattern(world, actor, Some(p))?,
-                None => Pattern::single(world.resolve(&crate::block::BlockState::air()).unwrap_or(0), "air"),
+                None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
             };
             let salt = self.salt(actor);
-            let ops = c.positions().map(|p| (p, leave.pick(salt, p))).collect();
+            let ops = Self::shape_positions(&shape, &c).into_iter().map(|p| (p, leave.pick(salt, p))).collect();
             note = self.commit(world, actor, ops)?.1;
         }
         Ok(vec![format!("{affected} blocks affected{note}"), "0 biomes affected".into(), "0 entities affected".into()])
@@ -1901,7 +2209,8 @@ impl Engine {
                 writes.retain(|(_, s)| mask.hits(w, *s));
             }
             let affected = writes.len();
-            let note = self.commit(world, actor, writes)?.1;
+            let entities = clip.entities_for(at, &writes);
+            let note = self.commit_with(world, actor, writes, entities)?.1;
             lines.push(format!("The clipboard has been pasted at {}{note}", pt(at)));
             lines.push(format!("{affected} blocks affected"));
             lines.push("0 biomes affected".into());
@@ -1965,9 +2274,9 @@ impl Engine {
                 }
                 break;
             }
-            let writes = if undo { change.backward() } else { change.forward() };
+            let (writes, entities) = if undo { (change.backward(), change.backward_entities()) } else { (change.forward(), change.forward_entities()) };
             edits += 1;
-            note = self.write(world, actor, writes);
+            note = self.write(world, actor, writes, entities);
             let s = self.sessions.get(owner);
             if undo {
                 s.redo.push(change);
@@ -2002,7 +2311,6 @@ impl Engine {
                 "sponge_v3: sponge, sponge.3, schem3 (write and read)".into(),
                 "sponge_v1, sponge_v2: sponge.1, sponge.2 (read)".into(),
                 "litematica: litematic (read)".into(),
-                "mce: mcedit, schematic (read)".into(),
                 "minecraft_structure: structure, nbt (read)".into(),
             ]),
             Some("load") => {
@@ -2029,8 +2337,13 @@ impl Engine {
                     })
                     .collect();
                 let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone());
-                let clip = Clipboard::from_blocks(blocks, format!("{file} ({})", loaded.format));
-                let mut out = vec![format!("{name} loaded. Paste it with //paste")];
+                let mut clip = Clipboard::from_blocks(blocks, format!("{file} ({})", loaded.format));
+                clip.entities = loaded
+                    .block_entities
+                    .iter()
+                    .map(|(p, t)| (*p, if loaded.data_version > 0 { world.upgrade_block_entity(loaded.data_version, t.clone()) } else { t.clone() }))
+                    .collect();
+                let mut out = vec!["(Please wait... loading schematic.)".to_owned(), format!("{name} loaded. Paste it with //paste")];
                 if unknown > 0 {
                     out.push(format!("{unknown} blocks of it have no match in this game and were left out"));
                 }
@@ -2053,7 +2366,7 @@ impl Engine {
                     std::fs::create_dir_all(parent).map_err(|_| "Could not create folder for schematics!".to_string())?;
                 }
                 std::fs::write(&path, bytes).map_err(|e| format!("Failed to save schematic: {e}"))?;
-                Ok(vec![format!("{name} saved{}", if overwrite { " (overwriting previous file)." } else { "." })])
+                Ok(vec!["(Please wait... saving schematic.)".to_owned(), format!("{name} saved{}", if overwrite { " (overwriting previous file)." } else { "." })])
             }
             Some("delete" | "d" | "remove") => {
                 let name = args.rest(1);
@@ -2104,10 +2417,53 @@ impl Engine {
                 (BrushShape::Cylinder { radius: radius(2, 2.0)?, height: args.int(3, 1)?, hollow: args.flag('h') }, Some(p))
             }
             "smooth" => (BrushShape::Smooth { radius: radius(1, 2.0)?, iterations: args.int(2, 4)?.clamp(1, 50) as u32 }, None),
+            // ClipboardBrush: the clipboard as it is now (WorldEdit holds it from the equip on).
+            "clipboard" | "copy" => {
+                let Some(clip) = self.sessions.get(actor.uuid).clipboard.clone() else {
+                    return Err("Your clipboard is empty. Use //copy first.".into());
+                };
+                for d in clip.bounds.size() {
+                    // checkMaxBrushRadius(size / 2 - 1) on each axis.
+                    if f64::from(d) / 2.0 - 1.0 > self.config.max_brush_radius {
+                        return Err(format!("Maximum brush radius (in configuration): {}", self.config.max_brush_radius as i64));
+                    }
+                }
+                let mask = match args.value('m') {
+                    Some(text) => {
+                        Mask::parse(world, text, actor.held.as_deref())?;
+                        Some(text.to_owned())
+                    }
+                    None => None,
+                };
+                let shape = BrushShape::Paste { clip, ignore_air: args.flag('a'), use_origin: args.flag('o'), structure_void: args.flag('v'), mask };
+                (shape, None)
+            }
+            // SnowSmoothBrush: `-l` snow blocks under the snow, `-m` the mask of the height map.
+            "snowsmooth" => {
+                let layers = match args.value('l') {
+                    Some(v) => v.parse::<i32>().map_err(|_| number_error(v))?,
+                    None => 1,
+                };
+                let mask = match args.value('m') {
+                    Some(text) => {
+                        Mask::parse(world, text, actor.held.as_deref())?;
+                        Some(text.to_owned())
+                    }
+                    None => None,
+                };
+                let shape = BrushShape::SnowSmooth { radius: radius(1, 2.0)?, iterations: args.int(2, 4)?.clamp(0, 50) as u32, layers, mask };
+                (shape, None)
+            }
+            // The fire extinguisher: a sphere of air over the fire it finds.
+            "extinguish" | "ex" => {
+                let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
+                (BrushShape::Sphere { radius: radius(1, 5.0)?, hollow: false }, Some(Pattern::single(air, "air")))
+            }
             other => return Err(format!("The sub-command '{other}' under 'brush' could not be found.")),
         };
         let (r, h) = match &shape {
-            BrushShape::Sphere { radius, .. } | BrushShape::Smooth { radius, .. } => (*radius, 0),
+            BrushShape::Sphere { radius, .. } | BrushShape::Smooth { radius, .. } | BrushShape::SnowSmooth { radius, .. } => (*radius, 0),
+            BrushShape::Paste { .. } => (0.0, 0),
             BrushShape::Cylinder { radius, height, .. } => (*radius, *height),
         };
         if r > self.config.max_brush_radius || f64::from(h) > self.config.max_brush_radius {
@@ -2117,16 +2473,22 @@ impl Engine {
         if let Some(text) = &arg_mask {
             Mask::parse(world, text, actor.held.as_deref())?;
         }
+        let extinguisher = matches!(kind.as_str(), "extinguish" | "ex");
         // `String.format("%.0f")` for the sphere, a truncation for the others.
         let msg = match &shape {
+            BrushShape::Sphere { radius, .. } if extinguisher => format!("Extinguisher equipped ({}).", *radius as i64),
             BrushShape::Sphere { radius, .. } => format!("Sphere brush shape equipped ({}).", (radius + 0.0).round() as i64),
             BrushShape::Cylinder { radius, height, .. } => format!("Cylinder brush shape equipped ({} by {height}).", *radius as i64),
             BrushShape::Smooth { radius, iterations } => {
                 format!("Smooth brush equipped ({} x {iterations}x using {}).", *radius as i64, if arg_mask.is_some() { "filter" } else { "any block" })
             }
+            BrushShape::Paste { .. } => "Clipboard brush shape equipped.".to_owned(),
+            BrushShape::SnowSmooth { radius, iterations, layers, mask } => {
+                format!("SnowSmooth brush equipped ({} x {iterations}x using {}), {layers} snow blocks.", *radius as i64, if mask.is_some() { "filter" } else { "any block" })
+            }
         };
         let s = self.sessions.get(actor.uuid);
-        let mask = arg_mask.or_else(|| s.brushes.get(&item).and_then(|b| b.mask.clone()));
+        let mask = if extinguisher { Some("minecraft:fire".to_owned()) } else { arg_mask.or_else(|| s.brushes.get(&item).and_then(|b| b.mask.clone())) };
         s.tools.remove(&item);
         s.brushes.insert(item.clone(), Brush { shape, pattern, mask });
         Ok(vec![msg, Self::unbind_hint()])
@@ -2200,6 +2562,8 @@ impl Engine {
         let s = self.sessions.get(player);
         s.pos1 = Some(a);
         s.pos2 = Some(b);
+        s.shape = None;
+        s.kind = crate::horizon_worldedit_core::selector::SelKind::Cuboid;
         s.dimension = dimension.to_owned();
         if !self.outline_due.contains(&player) {
             self.outline_due.push(player);
@@ -2241,14 +2605,16 @@ impl Engine {
     /// the held item is not the navigation wand.
     pub fn nav_use(&mut self, world: &dyn World, actor: &Actor, now_ms: i64) -> Option<Reply> {
         self.now_ms = now_ms;
-        if actor.held.as_deref() != Some(self.config.nav_wand_item.as_str()) {
+        let held = actor.held.clone().unwrap_or_default();
+        let tool_bound = matches!(self.sessions.get(actor.uuid).tools.get(&held), Some(Tool::NavWand));
+        if !tool_bound && actor.held.as_deref() != Some(self.config.nav_wand_item.as_str()) {
             return None;
         }
         if let Err(e) = self.permitted(actor, Some("worldedit.navigation.jumpto.tool")).and(self.allowed(actor)) {
             return Some(Reply::err(e));
         }
         let Some(target) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.nav_wand_max_distance) else {
-            return Some(Reply::err("No block in sight!".into()));
+            return Some(Reply::err("No block in sight (or too far away)!".into()));
         };
         // WorldEdit's findFreePosition: the first spot above the block with two free blocks, feet and head.
         let free = |p: Pos| world.get(p).is_some_and(|s| world.is_air(s));
@@ -2296,6 +2662,8 @@ impl Engine {
             BrushShape::Sphere { .. } => "worldedit.brush.sphere",
             BrushShape::Cylinder { .. } => "worldedit.brush.cylinder",
             BrushShape::Smooth { .. } => "worldedit.brush.smooth",
+            BrushShape::SnowSmooth { .. } => "worldedit.brush.snowsmooth",
+            BrushShape::Paste { .. } => "worldedit.brush.clipboard",
         };
         if let Err(e) = self.permitted(actor, Some(node)).and(self.allowed(actor)) {
             return Some(Reply::err(e));
@@ -2307,7 +2675,7 @@ impl Engine {
             Some(p) => p,
             None => match ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.brush_range) {
                 Some(p) => p,
-                None => return Some(Reply::err("No block in sight!".into())),
+                None => return Some(Reply::err("No block in sight (or too far away)!".into())),
             },
         };
         if self.repeated(actor, target, false, now_ms) {
@@ -2318,6 +2686,33 @@ impl Engine {
             Some(Err(e)) => return Some(Reply::err(e)),
             None => None,
         };
+        // ClipboardBrush.build: the copy's centre goes to the target (its origin with -o); air left out with -a,
+        // structure voids unless -v, and only the blocks the -m mask accepts are pasted.
+        if let BrushShape::Paste { clip, ignore_air, use_origin, structure_void, mask: source } = &brush.shape {
+            let source = match source.as_deref().map(|m| Mask::parse(world, m, None)) {
+                Some(Ok(m)) => Some(m),
+                Some(Err(e)) => return Some(Reply::err(e)),
+                None => None,
+            };
+            let b = clip.bounds;
+            // Region.getCenter() floored (toBlockPoint), minus the origin, which is zero in clipboard coordinates.
+            let centre = [0, 1, 2].map(|a| ((f64::from(b.min[a]) + f64::from(b.max[a])) / 2.0).floor() as i32);
+            let at = if *use_origin { target } else { sub(target, centre) };
+            let mut writes = clip.writes(world, at, *ignore_air);
+            if !*structure_void {
+                writes.retain(|(_, s)| world.describe(*s).name != "minecraft:structure_void");
+            }
+            if let Some(m) = &source {
+                let w: &dyn World = &*world;
+                writes.retain(|(_, s)| m.hits(w, *s));
+            }
+            let entities = clip.entities_for(at, &writes);
+            return Some(match self.commit_with(world, actor, writes, entities) {
+                Ok(_) => Reply::default(),
+                Err(e) if e.starts_with("Max blocks changed") => Reply::err("Max blocks change limit reached.".into()),
+                Err(e) => Reply::err(e),
+            });
+        }
         let salt = self.salt(actor);
         let (lo, hi) = (world.min_y(), world.max_y());
         let keep = |p: &Pos, world: &dyn World| (lo..=hi).contains(&p[1]) && mask.as_ref().is_none_or(|m| world.get(*p).is_some_and(|s| m.hits(world, s)));
@@ -2329,6 +2724,15 @@ impl Engine {
                 let region = Cuboid::new(sub(target, [r, r, r]), [target[0] + r, target[1] + r, target[2] + r]);
                 ops::smooth(world, &region, *iterations, mask.as_ref())
             }
+            (BrushShape::SnowSmooth { radius, iterations, layers, mask: heights }, _) => {
+                let region = ops::snow_brush_box(target, *radius);
+                let heights = match heights.as_deref().map(|m| Mask::parse(world, m, None)) {
+                    Some(Ok(m)) => Some(m),
+                    Some(Err(e)) => return Some(Reply::err(e)),
+                    None => None,
+                };
+                ops::snow_smooth(world, &region, *iterations, *layers, heights.as_ref(), 10)
+            }
             _ => Vec::new(),
         };
         match self.commit(world, actor, ops) {
@@ -2339,7 +2743,7 @@ impl Engine {
     }
 }
 
-const EXTENSIONS: [&str; 4] = [".schem", ".litematic", ".schematic", ".nbt"];
+const EXTENSIONS: [&str; 3] = [".schem", ".litematic", ".nbt"];
 
 /// A name inside the schematics folder: no absolute path, no `..`, no backslash.
 fn safe_name(name: &str) -> Result<&str, String> {
@@ -2419,11 +2823,19 @@ fn list_schematics(dir: &Path, page: usize, oldest_first: bool, newest_first: bo
     Ok(out)
 }
 
+/// Loads block entity data into the blocks just written.
+fn load_entities(world: &mut dyn World, entities: HashMap<Pos, Tag>) {
+    if !entities.is_empty() {
+        let list: Vec<(Pos, Tag)> = entities.into_iter().collect();
+        world.set_block_entities(&list);
+    }
+}
+
 /// The clipboard as a Sponge v3 file.
 fn encode(world: &dyn World, clip: &Clipboard, env: &Env) -> Result<Vec<u8>, String> {
     let size = clip.bounds.size();
     let volume = size.iter().map(|&v| v as usize).product::<usize>();
-    let air = world.resolve(&crate::block::BlockState::air()).unwrap_or(0);
+    let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
     let mut palette: Vec<String> = vec![world.describe(air).to_string_full()];
     let mut slot: HashMap<StateId, u32> = HashMap::from([(air, 0)]);
     let mut cells = vec![0u32; volume];
@@ -2440,7 +2852,8 @@ fn encode(world: &dyn World, clip: &Clipboard, env: &Env) -> Result<Vec<u8>, Str
         }
     }
     let origin = clip.origin.as_ref().map_or([0; 3], |o| o.1);
-    schem::write_sponge3(size, clip.bounds.min, origin, env.data_version, &palette, &cells, env.now_ms)
+    let entities: Vec<(Pos, Tag)> = clip.entities.iter().map(|(p, t)| (sub(*p, clip.bounds.min), t.clone())).collect();
+    schem::write_sponge3(size, clip.bounds.min, origin, env.data_version, &palette, &cells, env.now_ms, &entities)
 }
 
 #[cfg(test)]

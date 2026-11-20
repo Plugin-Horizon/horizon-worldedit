@@ -4,8 +4,9 @@
 //! (`fillXZ`, `drainArea`, `fixLiquid`, `simulateSnow`, `thaw`, `green`) and its visitors.
 
 use super::*;
-use crate::block::BlockState;
-use crate::region::add;
+use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::region::add;
+use crate::horizon_worldedit_core::session::{SideState, SIDE_EFFECTS};
 use std::collections::{HashSet, VecDeque};
 
 /// A breadth-first search's six steps, and the five `DownwardVisitor` and `NonRisingVisitor` take.
@@ -50,7 +51,7 @@ fn name_at(world: &dyn World, p: Pos) -> Option<String> {
 }
 
 fn is_solid_name_block(name: &str) -> bool {
-    crate::pattern::is_solid_name(name)
+    crate::horizon_worldedit_core::pattern::is_solid_name(name)
 }
 
 /// Whether a snow layer survives on top of this block (the game's rule needs the block's shape;
@@ -328,10 +329,10 @@ impl Engine {
             None => default,
         };
         // Lifting the limit is for full operators, unless `node_levels` gives that node another level.
-        let may_disable = actor.permission >= self.config.node_levels.get("worldedit.limit.unrestricted").copied().unwrap_or(4);
-        // WorldEdit lets a `-1` (no limit) through its own maximum check; here it is above any maximum.
-        if !may_disable && default > -1 && (limit > default || limit < 0) {
-            return Err(format!("Your maximum allowable limit is {default}."));
+        let may_disable = self.holds(actor, "worldedit.limit.unrestricted");
+        let maximum = self.config.max_blocks_maximum;
+        if !may_disable && maximum > -1 && limit > maximum {
+            return Err(format!("Your maximum allowable limit is {maximum}."));
         }
         self.sessions.get(actor.uuid).block_limit = Some(limit);
         let mut line = format!("Block change limit set to {limit}.");
@@ -353,22 +354,94 @@ impl Engine {
         Ok(vec!["Global mask set.".into()])
     }
 
+    /// `//trim [mask]`: the selection shrinks to the box round the blocks that match (non-air by default).
+    pub(super) fn trim(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let selection = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
+        let c = selection.clamp_y(world.min_y(), world.max_y()).ok_or("The selection is outside the build height")?;
+        if c.volume() > SCAN_LIMIT {
+            return Err(format!("The selection is {} blocks; one edit handles at most {SCAN_LIMIT}", c.volume()));
+        }
+        let text = args.rest(0);
+        let mask = Mask::parse(world, if text.is_empty() { "#existing" } else { &text }, actor.held.as_deref())?;
+        let mut found: Option<(Pos, Pos)> = None;
+        for p in c.positions() {
+            if world.get(p).is_some_and(|s| mask.hits(world, s)) {
+                found = Some(match found {
+                    None => (p, p),
+                    Some((lo, hi)) => (std::array::from_fn(|a| lo[a].min(p[a])), std::array::from_fn(|a| hi[a].max(p[a]))),
+                });
+            }
+        }
+        let (lo, hi) = found.ok_or("No blocks matched the trim mask.")?;
+        self.sessions.get(actor.uuid).set_selection(Cuboid::new(lo, hi), &actor.dimension);
+        Ok(vec!["Region trimmed.".into()])
+    }
+
+    /// `/chunkinfo`: the chunk you stand in and the names of its files in the old save formats.
+    pub(super) fn chunk_info(&mut self, actor: &Actor) -> R {
+        let p = actor.block();
+        let (x, z) = (p[0] >> 4, p[2] >> 4);
+        let modulo = |n: i32| ((n % 64) + 64) % 64;
+        Ok(vec![
+            format!("Chunk: {x}, {z}"),
+            format!("Old format: {}/{}/c.{}.{}.dat", base36(modulo(x)), base36(modulo(z)), base36(x), base36(z)),
+            format!("McRegion: region/r.{}.{}.mca", x >> 5, z >> 5),
+        ])
+    }
+
+    /// `/listchunks [-p page]`: the chunks the selection reaches.
+    pub(super) fn list_chunks(&mut self, actor: &Actor, args: &Args) -> R {
+        let c = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
+        let page: usize = match args.value('p') {
+            Some(p) => p.parse().map_err(|_| number_error(p))?,
+            None => 1,
+        };
+        let mut chunks = Vec::new();
+        for x in (c.min[0] >> 4)..=(c.max[0] >> 4) {
+            for z in (c.min[2] >> 4)..=(c.max[2] >> 4) {
+                chunks.push(format!("({x}, {z})"));
+            }
+        }
+        let mut out = vec![format!("Listing chunks for: {}", actor.name)];
+        out.extend(help::paged("Selected Chunks", &chunks, page)?);
+        Ok(out)
+    }
+
     /// `//toggleplace`: shapes and fills are made at position 1 instead of at your feet, and back.
     pub(super) fn toggle_place(&mut self, actor: &Actor) -> R {
         let s = self.sessions.get(actor.uuid);
-        s.place_at_pos1 = !s.place_at_pos1;
-        Ok(vec![if s.place_at_pos1 { "Now placing at pos #1." } else { "Now placing at the block you stand in." }.into()])
+        s.place_kind = if s.place_kind == PlaceKind::Pos1 { PlaceKind::Player } else { PlaceKind::Pos1 };
+        s.place_offset = [0; 3];
+        Ok(vec![place_info(s.place_kind, s.place_offset)])
     }
 
-    /// `//placement <pos1|player>`: what `//toggleplace` flips, set directly.
+    /// `//placement <pos1|player|here|world|min|max> [multiplier] [offset]`: where shapes and pastes are made.
     pub(super) fn placement_type(&mut self, actor: &Actor, args: &Args) -> R {
-        let s = self.sessions.get(actor.uuid);
-        match args.get(0).map(str::to_ascii_lowercase).as_deref() {
-            Some("pos1") => s.place_at_pos1 = true,
-            Some("player") => s.place_at_pos1 = false,
+        let kind = args.get(0).map(str::to_ascii_lowercase);
+        let multiplier = args.int(1, 1)?;
+        let offset = match args.get(2) {
+            Some(w) => Self::offset_arg(actor, Some(w))?,
+            None => [0; 3],
+        };
+        let mut offset = offset.map(|v| v.saturating_mul(multiplier));
+        let kind = match kind.as_deref() {
+            Some("world") => PlaceKind::World,
+            Some("player") => PlaceKind::Player,
+            Some("pos1") => PlaceKind::Pos1,
+            Some("min") => PlaceKind::Min,
+            Some("max") => PlaceKind::Max,
+            // `here` is the world with the block the player stands in added to the offset.
+            Some("here") => {
+                let b = actor.block();
+                offset = [offset[0] + b[0], offset[1] + b[1], offset[2] + b[2]];
+                PlaceKind::World
+            }
             _ => return Err(usage("placement")),
-        }
-        Ok(vec![if s.place_at_pos1 { "Now placing at pos #1." } else { "Now placing at the block you stand in." }.into()])
+        };
+        let s = self.sessions.get(actor.uuid);
+        s.place_kind = kind;
+        s.place_offset = offset;
+        Ok(vec![place_info(kind, offset)])
     }
 
     /// `//searchitem [-b] [-i] [-p page] <query>`. Only blocks can be searched: the game's item list
@@ -381,20 +454,282 @@ impl Engine {
         if args.flag('b') && args.flag('i') {
             return Err("You cannot use both the 'b' and 'i' flags simultaneously.".into());
         }
-        if args.flag('i') {
-            return Err("Items that are not blocks cannot be searched on this server.".into());
-        }
         let page: usize = match args.value('p') {
             Some(p) => p.parse().map_err(|_| number_error(p))?,
             None => 1,
         };
         let wanted = search.replace(' ', "_");
-        let mut names = world.block_names();
-        names.sort();
-        let hits: Vec<String> = names.into_iter().filter(|id| id.contains(&wanted)).map(|id| format!("{} ({id})", block_title(&id))).collect();
-        if hits.is_empty() {
-            return Ok(vec!["No results found.".into()]);
+        let blocks: HashSet<String> = world.block_names().into_iter().collect();
+        let mut names = world.item_names();
+        if names.is_empty() {
+            // The game's item list is not offered: the blocks are what can be searched.
+            if args.flag('i') {
+                return Err("Items that are not blocks cannot be searched on this server.".into());
+            }
+            names = blocks.iter().cloned().collect();
         }
-        Ok(help::paged(&format!("Search results for '{search}'"), &hits, page)?)
+        names.sort();
+        names.dedup();
+        let hits: Vec<String> = names
+            .into_iter()
+            .filter(|id| id.contains(&wanted) && (!args.flag('b') || blocks.contains(id)) && (!args.flag('i') || !blocks.contains(id)))
+            .map(|id| format!("{} ({id})", block_title(&id)))
+            .collect();
+        let mut out = vec!["(Please wait... searching items.)".to_owned()];
+        if hits.is_empty() {
+            out.push("No results found.".into());
+            return Ok(out);
+        }
+        out.extend(help::paged(&format!("Search results for '{search}'"), &hits, page)?);
+        Ok(out)
     }
+
+    /// `//timeout [ms]`: the evaluation timeout (`calculation.timeout`, 100 ms). Recorded only: the calculator
+    /// here has no timeout to apply it to.
+    pub(super) fn timeout(&mut self, actor: &Actor, args: &Args) -> R {
+        let limit = match args.get(0) {
+            Some(w) => w.parse::<i64>().map_err(|_| number_error(w))?.max(-1),
+            None => DEFAULT_TIMEOUT_MS,
+        };
+        self.sessions.get(actor.uuid).timeout_ms = Some(limit);
+        let mut line = format!("Timeout time set to {limit}ms.");
+        if limit != DEFAULT_TIMEOUT_MS {
+            line.push_str(" (Use //timeout to go back to the default.)");
+        }
+        Ok(vec![line])
+    }
+
+    /// `//fast [on|off]`: WorldEdit's fast mode, a flag kept per player (see `Session::fast`).
+    pub(super) fn fast(&mut self, actor: &Actor, args: &Args) -> R {
+        let on = self.sessions.get(actor.uuid).fast;
+        let wanted = match args.get(0) {
+            Some(w) => Some(switch_arg(w).ok_or_else(|| usage("fast"))?),
+            None => None,
+        };
+        if wanted == Some(on) {
+            let text: &str = if on { "Fast mode already enabled." } else { "Fast mode already disabled." };
+            return Err(text.into());
+        }
+        self.sessions.get(actor.uuid).fast = !on;
+        let text: &str = if on {
+            "Fast mode disabled."
+        } else {
+            "Fast mode enabled. Lighting in the affected chunks may be wrong and/or you may need to rejoin to see changes."
+        };
+        Ok(vec![text.to_owned()])
+    }
+
+    /// `//perf [sideeffect] [state] [-h]`: the side effects of a player's edits. The state is recorded; the
+    /// writes here do not run side effects, so nothing else changes. Without a side effect, or with `-h`, the
+    /// list of all of them is printed as text (WorldEdit prints an info box).
+    pub(super) fn perf(&mut self, actor: &Actor, args: &Args) -> R {
+        let show_all = args.flag('h');
+        let mut out = Vec::new();
+        if let Some(word) = args.get(0) {
+            let (key, label, default) = side_effect(word).ok_or_else(|| usage("perf"))?;
+            let state = match args.get(1) {
+                Some(w) => Some(SideState::parse(w).ok_or_else(|| usage("perf"))?),
+                None => None,
+            };
+            let current = self.sessions.get(actor.uuid).side_effects.get(key).copied().unwrap_or(default);
+            match state {
+                Some(new) if new == current => {
+                    if !show_all {
+                        return Err(format!("Side effect \"{label}\" is already {}", new.word()));
+                    }
+                }
+                Some(new) => {
+                    self.sessions.get(actor.uuid).side_effects.insert(key.to_owned(), new);
+                    if !show_all {
+                        out.push(format!("Side effect \"{label}\" set to {}", new.word()));
+                    }
+                }
+                None => out.push(format!("Side effect \"{label}\" is set to {}", current.word())),
+            }
+        }
+        if args.get(0).is_none() || show_all {
+            let s = self.sessions.get(actor.uuid);
+            for (key, label, default) in SIDE_EFFECTS {
+                let state = s.side_effects.get(key).copied().unwrap_or(default);
+                out.push(format!("{label}: {}", state.word()));
+            }
+        }
+        Ok(out)
+    }
+
+    /// `//reorder [multi|fast|none]`: the reorder mode, recorded per player. Nothing reorders here.
+    pub(super) fn reorder(&mut self, actor: &Actor, args: &Args) -> R {
+        match args.get(0) {
+            None => {
+                let current = self.sessions.get(actor.uuid).reorder.unwrap_or("multi");
+                Ok(vec![format!("The reorder mode is {current}")])
+            }
+            Some(w) => {
+                let mode = match w.to_ascii_lowercase().as_str() {
+                    "multi" => "multi",
+                    "fast" => "fast",
+                    "none" => "none",
+                    _ => return Err(usage("reorder")),
+                };
+                self.sessions.get(actor.uuid).reorder = Some(mode);
+                Ok(vec![format!("The reorder mode is now {mode}")])
+            }
+        }
+    }
+
+    /// `//drawsel [on|off]`: whether this player gets the selection outline (`server_side_cui`). Off puts the
+    /// player in the same list as a `useServerCUI: false` session file.
+    pub(super) fn drawsel(&mut self, actor: &Actor, args: &Args) -> R {
+        if !self.config.server_side_cui {
+            return Err("This functionality is disabled (see WorldEdit configuration).".into());
+        }
+        let drawing = !self.cui_off.contains(&actor.uuid);
+        let wanted = match args.get(0) {
+            Some(w) => Some(switch_arg(w).ok_or_else(|| usage("drawsel"))?),
+            None => None,
+        };
+        if wanted == Some(drawing) {
+            let text: &str = if drawing { "Server CUI already enabled." } else { "Server CUI already disabled." };
+            return Err(text.into());
+        }
+        if drawing {
+            self.cui_off.insert(actor.uuid);
+            Ok(vec!["Server CUI disabled.".to_owned()])
+        } else {
+            self.cui_off.remove(&actor.uuid);
+            Ok(vec!["Server CUI enabled. This only supports cuboid regions, with a maximum size of 48x48x48.".to_owned()])
+        }
+    }
+
+    /// `//watchdog [active|inactive]`: WorldEdit's watchdog hook. Horizon has no watchdog to hook, so the answer
+    /// is WorldEdit's own answer for such a platform.
+    pub(super) fn watchdog(&mut self, args: &Args) -> R {
+        if let Some(w) = args.get(0) {
+            if !matches!(w.to_ascii_lowercase().as_str(), "active" | "inactive") {
+                return Err(usage("watchdog"));
+            }
+        }
+        Err("This platform has no watchdog hook.".into())
+    }
+
+    /// `//registry <registry> [-p page] [query]`: searches the block or item registry by id. A query without
+    /// `*` or `?` matches anywhere in the id; `*` and `?` are the usual wildcards.
+    pub(super) fn registry(&mut self, world: &mut dyn World, args: &Args) -> R {
+        let name = args.get(0).ok_or_else(|| usage("registry"))?.to_ascii_lowercase();
+        let page: usize = match args.value('p') {
+            Some(p) => p.parse().map_err(|_| number_error(p))?,
+            None => 1,
+        };
+        let mut query = args.words.iter().skip(1).copied().collect::<Vec<&str>>().join("_");
+        if query.is_empty() {
+            query = "*".to_owned();
+        }
+        if !query.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | ':' | '?' | '*' | '/')) {
+            // WorldEdit prints its message with the placeholder unfilled; kept as it is.
+            return Err("Invalid registry key: {0}".into());
+        }
+        let mut ids = match name.as_str() {
+            "block" => world.block_names(),
+            "item" => world.item_names(),
+            _ => return Err(format!("Unknown registry: {name}")),
+        };
+        ids.sort();
+        ids.dedup();
+        let pattern: Vec<char> = if query.contains('*') || query.contains('?') { query.chars().collect() } else { format!("*{query}*").chars().collect() };
+        let hits: Vec<String> = ids.into_iter().filter(|id| glob_match(&pattern, &id.chars().collect::<Vec<char>>())).collect();
+        let title = if query == "*" { "Registry contents".to_owned() } else { format!("Search results for '{query}'") };
+        let mut out = vec!["(Please wait... searching registry...)".to_owned()];
+        if hits.is_empty() {
+            out.push("No results found.".into());
+            return Ok(out);
+        }
+        out.extend(help::paged(&title, &hits, page)?);
+        Ok(out)
+    }
+}
+
+/// `//timeout`'s default, `calculation.timeout`, in milliseconds.
+const DEFAULT_TIMEOUT_MS: i64 = 100;
+
+/// `on`/`true` and `off`/`false`, any case: the switch words of `//fast` and `//drawsel`.
+fn switch_arg(word: &str) -> Option<bool> {
+    match word.to_ascii_lowercase().as_str() {
+        "on" | "true" => Some(true),
+        "off" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// The side effect a `//perf` argument names: its key, its printed name and its default.
+fn side_effect(word: &str) -> Option<(&'static str, &'static str, SideState)> {
+    let w = word.to_ascii_lowercase();
+    SIDE_EFFECTS.iter().find(|e| e.0 == w.as_str()).copied()
+}
+
+/// `*` matches any run of characters and `?` one character, the rest matches itself.
+pub(super) fn glob_match(pattern: &[char], text: &[char]) -> bool {
+    let (p, t) = (pattern.first().copied(), text.first().copied());
+    match (p, t) {
+        (None, None) => true,
+        (Some('*'), _) => glob_match(&pattern[1..], text) || (t.is_some() && glob_match(pattern, &text[1..])),
+        (Some('?'), Some(_)) => glob_match(&pattern[1..], &text[1..]),
+        (Some(a), Some(b)) if a == b => glob_match(&pattern[1..], &text[1..]),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_match;
+
+    fn m(pattern: &str, text: &str) -> bool {
+        let p: Vec<char> = pattern.chars().collect();
+        let t: Vec<char> = text.chars().collect();
+        glob_match(&p, &t)
+    }
+
+    #[test]
+    fn globs_follow_the_registry_search() {
+        assert!(m("*stone*", "minecraft:stone_bricks"));
+        assert!(m("minecraft:st?ne", "minecraft:stone"));
+        assert!(!m("minecraft:st?ne", "minecraft:stne"));
+        assert!(m("*", ""));
+        assert!(!m("a*", "b"));
+        assert!(m("*_wall", "minecraft:oak_wall"));
+    }
+}
+
+/// WorldEdit's `worldedit.toggleplace.*` lines.
+fn place_info(kind: PlaceKind, offset: Pos) -> String {
+    let (plain, from) = match kind {
+        PlaceKind::World => ("Now placing at world origin.", ""),
+        PlaceKind::Player => ("Now placing at the block you stand in.", "the block you stand in"),
+        PlaceKind::Pos1 => ("Now placing at pos #1.", "pos #1"),
+        PlaceKind::Min => ("Now placing at the minimum of the current selection.", "the minimum of the current selection"),
+        PlaceKind::Max => ("Now placing at the maximum of the current selection.", "the maximum of the current selection"),
+    };
+    if offset == [0; 3] {
+        plain.to_owned()
+    } else if kind == PlaceKind::World {
+        format!("Now placing at ({}, {}, {}).", offset[0], offset[1], offset[2])
+    } else {
+        format!("Now placing at an offset of ({}, {}, {}) from {from}.", offset[0], offset[1], offset[2])
+    }
+}
+
+/// `Integer.toString(n, 36)`.
+fn base36(n: i32) -> String {
+    let mut v = i64::from(n).unsigned_abs();
+    if v == 0 {
+        return "0".into();
+    }
+    let mut digits = Vec::new();
+    while v > 0 {
+        digits.push(char::from_digit((v % 36) as u32, 36).unwrap_or('0'));
+        v /= 36;
+    }
+    if n < 0 {
+        digits.push('-');
+    }
+    digits.iter().rev().collect()
 }

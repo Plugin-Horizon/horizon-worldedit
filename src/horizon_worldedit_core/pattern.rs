@@ -4,8 +4,8 @@
 //! `runtime.rs` (XnotCykoX/WorldEdit-Horizon, MIT). Added: `!` and `#existing` masks, masks that
 //! match named properties only, `0` for air and `hand` for the held block, as WorldEdit has them.
 
-use crate::block::BlockState;
-use crate::world::{Pos, StateId, World};
+use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -293,7 +293,7 @@ impl Mask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::fake::FakeWorld;
+    use crate::horizon_worldedit_core::world::fake::FakeWorld;
 
     #[test]
     fn lists_and_weights() {

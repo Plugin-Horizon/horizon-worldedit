@@ -1,5 +1,9 @@
 # WorldEdit for Horizon
 
+## Port status
+
+Compared with WorldEdit 7.4.7-SNAPSHOT (349ea51): **56 %** of the original's commands, permissions, config keys, messages and features work today; **56 %** once our open Horizon PRs are merged; **56 %** with the engine changes we are writing; **56 %** with the newest Horizon SDK. Counted on 490/880 items (see HMOD_PORT.md). Status: not yet compiled after the 2026-11-20 round.
+
 > **Unofficial Rust port of WorldEdit for the Horizon server (https://github.com/arismoko/horizon). Not affiliated with or endorsed by the WorldEdit authors.**
 
 In-game world editing for [Horizon](https://github.com/arismoko/horizon) (the Rust Minecraft 26.3) as a native
@@ -39,16 +43,16 @@ WorldEdit there. Nothing is needed on the client.
 | Area | Commands |
 |---|---|
 | Selection | `//wand` `//pos1` `//pos2 [x,y,z]` `//hpos1` `//hpos2` `//sel [cuboid\|extend]` `//desel` (`//deselect`) `//size [-c]` `//expand <n> [reverse] [dir]` `//expand vert` `//contract <n> [reverse] [dir]` `//shift <n> [dir]` `//outset` `//inset [-h] [-v] <n>` `//chunk [-s] [-c] [x,y,z]` `//count <mask>` `//distr [-d] [-m mask] [-p page]` |
-| Region | `//set` `//replace [from] <to>` (`//re`, `//rep`) `//walls` `//faces` (`//outline`) `//center` (`//middle`) `//hollow [thickness] [pattern]` `//overlay` `//naturalize` `//smooth [n] [mask]` `//line <pattern> [thickness] [-h]` `//stack [n] [offset] [-a] [-s] [-r] [-m mask]` `//move [n] [offset] [leave] [-a] [-s] [-m mask]` |
+| Region | `//set` `//replace [from] <to>` (`//re`, `//rep`) `//walls` `//faces` (`//outline`) `//center` (`//middle`) `//hollow [thickness] [pattern]` `//overlay` `//naturalize` `//smooth [n] [mask]` `//line <pattern> [thickness] [-h]` `//stack [n] [offset] [-a] [-s] [-r] [-m mask]` `//move [n] [offset] [leave] [-a] [-s] [-m mask]` `//revolve <count> [-m mask] [-r]` |
 | Shapes | `//sphere` `//hsphere <pattern> <r>[,y,z] [-r]` `//cyl` `//hcyl <pattern> <r>[,z] [height]` `//cone <pattern> <r>[,z] [height] [thickness] [-h]` `//pyramid` `//hpyramid <pattern> <size>` |
 | Around you | `//removeabove [size] [height]` `//removebelow [size] [height]` `//removenear <mask> [radius]` `//replacenear <radius> [from] <to>` |
 | Clipboard | `//copy [-m mask]` `//cut [leave] [-m mask]` `//paste [-a] [-o] [-s] [-n] [-m mask]` `//rotate <degrees>` (or `//rot`) `//flip [dir]` (`//mirror`) `/clearclipboard` |
 | History | `//undo [n] [player]` `//redo [n] [player]` `//clearhistory` |
 | Schematics | `/schem list [-p page] [-d\|-n]` `/schem load <name>` `/schem save <name> [-f]` `/schem delete <name>` `/schem formats` |
-| Brushes | `/brush sphere [-h] <pattern> [r]` `/brush cylinder [-h] <pattern> [r] [height]` `/brush smooth [r] [n] [mask]` `/mask [mask]` `/material <pattern>` `/brush none` (`/brush unbind`) (`/br` for `/brush`) `/tool none` (`/tool unbind`) |
+| Brushes | `/brush sphere [-h] <pattern> [r]` `/brush cylinder [-h] <pattern> [r] [height]` `/brush smooth [r] [n] [mask]` `/brush snowsmooth [r] [n] [-l layers] [-m mask]` `/brush clipboard [-a] [-o] [-v] [-m mask]` `/mask [mask]` `/material <pattern>` `/brush none` (`/brush unbind`) (`/br` for `/brush`) `/tool none` (`/tool unbind`) |
 | Utility | `//fill <pattern> <radius> [depth]` `//fillr <pattern> <radius> [depth]` `//drain [-w] <radius>` `//fixwater <radius>` `//fixlava <radius>` `//snow [-s] [size] [height]` `//thaw [size] [height]` `//green [-f] [size] [height]` `//extinguish [radius]` (`//ex`, `//ext`) |
-| Session | `//limit [n]` `//gmask [mask]` `//toggleplace` `//searchitem [-b] [-p page] <query>` (`//search`, `//l`) `//calc <expression>` (`//eval`, `//solve`) |
-| Tools | `/tool selwand` `/tool info` `/tool repl <pattern>` `/tool cycler` `/tool floodfill <pattern> <range>` `/tool none` |
+| Session | `//limit [n]` `//gmask [mask]` `//toggleplace` `//searchitem [-b] [-p page] <query>` (`//search`, `//l`) `//calc <expression>` (`//eval`, `//solve`) `//timeout [ms]` `//fast [on\|off]` `//perf [sideeffect] [state] [-h]` `//reorder [multi\|fast\|none]` `//drawsel [on\|off]` `//watchdog [active\|inactive]` `//registry [-p page] <block\|item> [query]` |
+| Tools | `/tool selwand` `/tool info` `/tool repl <pattern>` `/tool cycler` `/tool floodfill <pattern> <range>` `/tool farwand` `/tool navwand` (right click jumps) `/tool none` |
 | Help | `/we` `/we version` `/we help [-s] [-p page] [command]` `/we reload` `/we report` `/we trace [active\|inactive]` `/we tz <offset>` `/we cui` |
 
 An offset is a direction word or `x,y,z`. Patterns: `stone`, `70%stone,30%gravel` (weights may be fractional),
@@ -91,7 +95,7 @@ Written with comments on first start, read again whenever it is saved:
 | `history_size` | 15 | `history.size` |
 | `wand_item` | `minecraft:wooden_axe` | `wand-item` |
 | `max_brush_radius` / `brush_range` | 5 / 300 | `limits.max-brush-radius` |
-| `max_radius` | -1 | `limits.max-radius` |
+| `max_radius` | 128 (the original: -1) | `limits.max-radius` |
 | `schematics_dir` | `worldedit/schematics` (inside `config/`) | `saving.dir` |
 | `disallowed_blocks` | WorldEdit's list | `limits.disallowed-blocks` (applies below operator level 4) |
 | `creative_only` | false | |
@@ -99,8 +103,9 @@ Written with comments on first start, read again whenever it is saved:
 
 Point `schematics_dir` at a Paper server's `plugins/WorldEdit/schematics` and both servers share the files:
 `/schem save` writes Sponge v3, the format WorldEdit 7.3+ writes, with the copy's origin in
-`Metadata.WorldEdit.Origin`; loading reads Sponge v1 to v3 (with v2's `WEOffset` metadata), Litematica,
-MCEdit/legacy `.schematic` and vanilla structure `.nbt`.
+`Metadata.WorldEdit.Origin`; loading reads Sponge v1 to v3 (with v2's `WEOffset` metadata), Litematica
+and vanilla structure `.nbt`. Old MCEdit `.schematic` files (1.12 block ids) are not read: that needs a table of
+Mojang's pre-1.13 block ids, which the registry policy keeps out of mods.
 
 One command looks at no more than 10,000,000 positions, whatever `max_blocks` says.
 
@@ -116,10 +121,19 @@ horizon-launcher native-build <path to this folder> --server-output <dir> --vers
 
 ## Known gaps
 
+- Round 100 (blind, not compiled): the smoothing kernel is WorldEdit's 11 x 11 (radius 5) with its centre-cell edge rule, `//revolve` (any angle, `-m`, `-r`), `/brush snowsmooth` (`-l`, `-m`), `/brush clipboard` (`-a`, `-o`, `-v`, `-m`) and `/tool navwand` (right click only) are ported. Still open: the other brushes (splatter, gravity, butcher, set, raise, lower, snow, morph, erode, dilate, heightmap, forest, feature, biome), `/tool mask|material|range|size|tracemask`, `/brush` `-e` and `-b`, `//revolve -e -b`, `/delchunks`, `//regen`, `//forest`, `//flora`, super pickaxe, tree/stacker/lrbuild tools, snapshots, biome commands (no engine API for some, see HMOD_PORT.md).
+- Round 5: `//curve` (convex polyhedral selection, Catmull-Rom spline as `drawSpline` with zero tension, bias and continuity) and `//snowsmooth` (command with `-l` and `-m`) are ported, written blind.
+- Round 4: `//timeout`, `//fast`, `//perf`, `//reorder`, `//drawsel`, `//watchdog`, `//registry` and `/tool farwand` are ported. `//fast`, `//perf` and `//reorder` record their state only, and `//timeout` is recorded without a calculator to apply it to (see HMOD_PORT.md).
+- Round 3: polygon, ellipsoid, sphere, cylinder and convex selectors, `//generate`, `//deform`, `/butcher`, `/remove` are ported. Still open: `//regen`, `//curve`, `//snowsmooth`, `//revolve`, `//forest`, `//flora`, super pickaxe, tree/stack/lrbuild tools, snapshots, biome commands (no engine API, see HMOD_PORT.md).
+
 What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: ...)` in `src/lib.rs`):
 
 - The selection outline (WorldEdit CUI) is not drawn.
 - No selection API for other mods yet (WorldGuard on arismoko reports that it has no selection).
+- Not ported yet: `//regen`, `//forest`, `//flora`, the navwand left click (pass through walls), the super pickaxe, tree/deltree/stacker/lrbuild tools, snapshots, biome commands, `//world` (needs a level by name), `/delchunks` and CraftScript.
+- Entities (`-e`) and biomes (`-b`) are not copied: the host API has no entity spawn from saved data and no biome write for this mod.
+- Block entities (chest contents, signs, spawners...) are copied, cut, pasted, stacked, moved, undone and saved in schematics
+  (Sponge v3 `BlockEntities`; read from Sponge v2/v3, structure `.nbt` and Litematica files).
 
 ## Licence and sources
 

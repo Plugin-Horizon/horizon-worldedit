@@ -2,12 +2,12 @@
 //! brushes bound to items. Kept by UUID, so builders on one server never share a selection, a
 //! clipboard or an `//undo`.
 
-use crate::clipboard::Clipboard;
-use crate::edit::Change;
-use crate::pattern::Pattern;
-use crate::region::Cuboid;
-use crate::world::Pos;
-use std::collections::{HashMap, VecDeque};
+use crate::horizon_worldedit_core::clipboard::Clipboard;
+use crate::horizon_worldedit_core::edit::Change;
+use crate::horizon_worldedit_core::pattern::Pattern;
+use crate::horizon_worldedit_core::region::Cuboid;
+use crate::horizon_worldedit_core::world::Pos;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 /// A player's UUID from a file name, as WorldEdit writes it (`8-4-4-4-12` hex digits, dashes optional).
 pub fn uuid_from_stem(stem: &str) -> Option<u128> {
@@ -30,6 +30,12 @@ pub enum BrushShape {
     Sphere { radius: f64, hollow: bool },
     Cylinder { radius: f64, height: i32, hollow: bool },
     Smooth { radius: f64, iterations: u32 },
+    /// `/brush snowsmooth [radius] [iterations] [-l layers] [-m mask]`: `mask` is the height map's filter (`-m`),
+    /// not the `/mask` of the brush.
+    SnowSmooth { radius: f64, iterations: u32, layers: i32, mask: Option<String> },
+    /// `/brush clipboard [-a -v -o -m mask]`: the clipboard as it was when the brush was equipped (WorldEdit keeps
+    /// the holder, not a copy of it later). `structure_void`: `-v`, paste structure voids too.
+    Paste { clip: Clipboard, ignore_air: bool, use_origin: bool, structure_void: bool, mask: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,12 +55,69 @@ pub enum Tool {
     SelWand,
     /// `/tool info`: right click tells what the block is.
     Info,
+    /// `/tool navwand`: right click jumps to the block in sight (`NavigationWand.actSecondary`). Handled by
+    /// `nav_use`, which also serves the configured navigation wand item; the left click (pass through walls)
+    /// is not ported.
+    NavWand,
     /// `/tool repl <pattern>`: right click places the pattern, left click takes the block as the pattern.
     Replacer { pattern: Pattern },
     /// `/tool cycler`: right click cycles the selected property of the block, left click selects the next.
     Cycler { property: Option<String> },
     /// `/tool floodfill <pattern> <range>`: right click replaces the connected blocks of that type.
     FloodFill { pattern: Pattern, range: i32 },
+    /// `/tool farwand`: the wand's corners, taken from the block the player looks at (WorldEdit's `DistanceWand`).
+    /// Left click is position #1, right click position #2, as with the wand; a right click in the air works too.
+    FarWand,
+}
+
+/// The state of one side effect (`//perf`): WorldEdit's `SideEffect.State`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideState {
+    Off,
+    On,
+    Delayed,
+}
+
+impl SideState {
+    /// The word WorldEdit prints for the state.
+    pub fn word(self) -> &'static str {
+        match self {
+            SideState::Off => "Off",
+            SideState::On => "On",
+            SideState::Delayed => "Delayed",
+        }
+    }
+
+    /// The state a `//perf` argument names (`on`, `off`, `delayed`), any case.
+    pub fn parse(word: &str) -> Option<SideState> {
+        match word.to_ascii_lowercase().as_str() {
+            "on" => Some(SideState::On),
+            "off" => Some(SideState::Off),
+            "delayed" => Some(SideState::Delayed),
+            _ => None,
+        }
+    }
+}
+
+/// WorldEdit's exposed side effects: the name `//perf` takes, the name it prints and the default state.
+pub const SIDE_EFFECTS: [(&str, &str, SideState); 6] = [
+    ("lighting", "Lighting", SideState::On),
+    ("neighbors", "Neighbors", SideState::On),
+    ("update", "Update", SideState::On),
+    ("validation", "Validation", SideState::Off),
+    ("entity_ai", "Entity AI", SideState::Off),
+    ("events", "Mod/Plugin Events", SideState::Off),
+];
+
+/// What the placement point is counted from (WorldEdit's `PlacementType`, `HERE` being `World` plus the player's block).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaceKind {
+    World,
+    #[default]
+    Player,
+    Pos1,
+    Min,
+    Max,
 }
 
 #[derive(Debug, Default)]
@@ -71,12 +134,18 @@ pub struct Session {
     pub salt: u64,
     /// `//sel extend`: the second corner grows the box instead of replacing the first.
     pub extend: bool,
+    /// The selector chosen with `//sel` and the shape it has made (`pos1`/`pos2` then hold the shape's bounding box).
+    pub kind: crate::horizon_worldedit_core::selector::SelKind,
+    pub shape: Option<crate::horizon_worldedit_core::selector::Shape>,
+    /// `//sel -d`: the selector chosen as default (this session only).
+    pub default_kind: crate::horizon_worldedit_core::selector::SelKind,
     /// The last `//distr`: block name and count, most frequent first (`//distr -p <page>`).
     pub distribution: Option<Vec<(String, u64)>>,
     /// Tools by item id (`/tool ...`); an item has a brush or a tool, never both.
     pub tools: HashMap<String, Tool>,
-    /// `//toggleplace`: shapes and the like are made at position 1 instead of at the player.
-    pub place_at_pos1: bool,
+    /// `//placement`, `//toggleplace`: where shapes and the like are made, and the offset from it.
+    pub place_kind: PlaceKind,
+    pub place_offset: Pos,
     /// `//limit`: this player's most blocks changed in one operation (`None`: the server's).
     pub block_limit: Option<i64>,
     /// `//gmask`: only blocks this accepts are changed, by every edit.
@@ -85,6 +154,14 @@ pub struct Session {
     pub trace: bool,
     /// `/we tz`: the offset from UTC in minutes, and how the player wrote it.
     pub timezone: Option<(i32, String)>,
+    /// `//timeout`: the evaluation timeout in milliseconds (`None`: the server's default).
+    pub timeout_ms: Option<i64>,
+    /// `//fast`: WorldEdit's fast mode flag. Recorded only: writes here already skip neighbour updates.
+    pub fast: bool,
+    /// `//perf`: the side effects this player changed, by their `//perf` name (the others keep `SIDE_EFFECTS`).
+    pub side_effects: BTreeMap<String, SideState>,
+    /// `//reorder`: `multi`, `fast` or `none` (`None`: `multi`). Recorded only.
+    pub reorder: Option<&'static str>,
 }
 
 impl Session {
@@ -110,6 +187,7 @@ impl Session {
         }
     }
     pub fn set_selection(&mut self, c: Cuboid, dimension: &str) {
+        self.shape = None;
         self.pos1 = Some(c.min);
         self.pos2 = Some(c.max);
         self.dimension = dimension.to_owned();
@@ -117,6 +195,7 @@ impl Session {
     pub fn clear_selection(&mut self) {
         self.pos1 = None;
         self.pos2 = None;
+        self.shape = None;
     }
     /// Remembers an edit for `//undo`, the oldest dropped past `size`; a new edit ends the redos.
     pub fn remember(&mut self, change: Change, size: usize) {

@@ -1,36 +1,48 @@
-//! Schematic files: Sponge `.schem` (v1 to v3, WorldEdit's own), Litematica `.litematic`, MCEdit
-//! `.schematic` (1.12 block ids) and vanilla structure `.nbt`, read; Sponge v3 written, the format
+//! Schematic files: Sponge `.schem` (v1 to v3, WorldEdit's own), Litematica `.litematic` and vanilla
+//! structure `.nbt`, read; Sponge v3 written, the format
 //! WorldEdit 7.3 and later writes, so files go back and forth with a Paper server's WorldEdit.
 //!
-//! The Sponge, Litematica and MCEdit readers and the 1.12 table (`legacy_ids.rs`) come from the
+//! The Sponge and Litematica readers come from the
 //! upstream bundle's `schematic.rs` (XnotCykoX/WorldEdit-Horizon, MIT), moved onto horizonmatica's
-//! NBT (`crate::nbt`). Changed here: where a paste lands. WorldEdit keeps the point the player stood
+//! NBT (`crate::horizon_worldedit_core::nbt`). Changed here: where a paste lands. WorldEdit keeps the point the player stood
 //! on when copying (the clipboard's origin): a v3 file's `Offset` is the box's corner relative to it,
-//! a v2 file keeps it in `Metadata.WEOffsetX/Y/Z`, a `.schematic` in `WEOffsetX/Y/Z`, and a paste
+//! a v2 file keeps it in `Metadata.WEOffsetX/Y/Z`, and a paste
 //! puts the origin at the player, as `//paste` in WorldEdit does.
 
-mod legacy_ids;
 
-use crate::block::BlockState;
-use crate::nbt::{self, Tag};
-use crate::world::Pos;
+use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::nbt::{self, Tag};
+use crate::horizon_worldedit_core::world::Pos;
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 
 /// A file's blocks: positions relative to the paste origin, each an index into `palette`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loaded {
-    /// `Sponge v3`, `Litematica v6`, `MCEdit`, `Structure`.
+    /// `Sponge v3`, `Litematica v6`, `Structure`.
     pub format: String,
     pub size: Pos,
     pub palette: Vec<BlockState>,
     pub blocks: Vec<(Pos, u32)>,
+    /// The game's DataVersion the file was saved at (0 when it says none).
+    pub data_version: i32,
+    /// Block entity data (chest contents, sign text...) by position, positioned like `blocks`, each with its `id`.
+    pub block_entities: Vec<(Pos, Tag)>,
+}
+
+/// A block entity's saved data as a compound with its type in `id`: the fields of `data` (a map with `skip` keys
+/// left out) and `id` when the file names one.
+fn entity_data(id: Option<&str>, data: &BTreeMap<String, Tag>, skip: &[&str]) -> Tag {
+    let mut out: BTreeMap<String, Tag> = data.iter().filter(|(k, _)| !skip.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    if let Some(id) = id {
+        out.insert("id".into(), Tag::String(id.to_owned()));
+    }
+    Tag::Compound(out)
 }
 
 /// The most a file may unpack to (bytes).
 const MAX_UNPACKED: usize = 1 << 30;
 
-/// Reads a schematic from its bytes, whatever of the four formats it is (the contents decide,
+/// Reads a schematic from its bytes, whatever of the three formats it is (the contents decide,
 /// not the name); refuses one of more than `max_blocks` blocks.
 pub fn read(bytes: &[u8], max_blocks: u64) -> Result<Loaded, String> {
     let root = if bytes.starts_with(&[0x78]) {
@@ -46,8 +58,6 @@ pub fn read(bytes: &[u8], max_blocks: u64) -> Result<Loaded, String> {
     };
     if root.get("Regions").is_some() {
         read_litematic(&root, max_blocks)
-    } else if matches!(root.get("Blocks"), Some(Tag::ByteArray(_))) {
-        read_mcedit(&root, max_blocks)
     } else if root.get("palette").is_some() || root.get("palettes").is_some() {
         read_structure(&root, max_blocks)
     } else {
@@ -190,7 +200,20 @@ fn read_sponge(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
             }
         }
     }
-    Ok(Loaded { format: format!("Sponge v{version}"), size, palette, blocks })
+    // Sponge v3 keeps them under `Blocks` with the fields in `Data`; v2 keeps them at the top with the fields beside `Id`.
+    let mut block_entities = Vec::new();
+    let list = inner.and_then(|b| b.get("BlockEntities")).or_else(|| body.get("BlockEntities")).and_then(Tag::list).unwrap_or(&[]);
+    for e in list {
+        let (Some(p), Some(map)) = (triple(e.get("Pos")), e.compound()) else { continue };
+        let id = e.get("Id").and_then(Tag::str);
+        let tag = match e.get("Data").and_then(Tag::compound) {
+            Some(data) => entity_data(id, data, &[]),
+            None => entity_data(id, map, &["Pos", "Id"]),
+        };
+        block_entities.push(([p[0] + shift[0], p[1] + shift[1], p[2] + shift[2]], tag));
+    }
+    let data_version = int(body.get("DataVersion")).unwrap_or(0) as i32;
+    Ok(Loaded { format: format!("Sponge v{version}"), size, palette, blocks, data_version, block_entities })
 }
 
 /// `minecraft:oak_stairs[facing=east]` from a palette entry's `Name` and `Properties`.
@@ -240,6 +263,7 @@ fn read_litematic(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
     let mut slot: BTreeMap<BlockState, u32> = BTreeMap::from([(BlockState::air(), 0)]);
     let mut absolute: Vec<(Pos, u32)> = Vec::new();
     let mut total: u64 = 0;
+    let mut absolute_entities: Vec<(Pos, Tag)> = Vec::new();
     for region in regions.values() {
         let start = xyz(region.get("Position")).ok_or("a region has no Position")?;
         let signed = xyz(region.get("Size")).ok_or("a region has no Size")?;
@@ -273,6 +297,11 @@ fn read_litematic(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
         };
         // Position is one corner; a negative Size runs from it toward smaller coordinates.
         let min: Pos = std::array::from_fn(|a| if signed[a] < 0 { start[a] + signed[a] + 1 } else { start[a] });
+        for e in region.get("TileEntities").and_then(Tag::list).unwrap_or(&[]) {
+            let (Some(p), Some(map)) = (xyz(Some(e)), e.compound()) else { continue };
+            let id = e.get("id").and_then(Tag::str);
+            absolute_entities.push(([min[0] + p[0], min[1] + p[1], min[2] + p[2]], entity_data(id, map, &["x", "y", "z", "id"])));
+        }
         let (w, l) = (span[0] as usize, span[2] as usize);
         for y in 0..span[1] {
             for z in 0..span[2] {
@@ -287,79 +316,13 @@ fn read_litematic(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
     if absolute.is_empty() {
         return Err("the litematic holds no blocks".into());
     }
+    let low: Pos = std::array::from_fn(|a| absolute.iter().map(|(p, _)| p[a]).min().unwrap_or(0));
     let (size, blocks) = normalize(absolute);
+    let block_entities = absolute_entities.into_iter().map(|(p, t)| ([p[0] - low[0], p[1] - low[1], p[2] - low[2]], t)).collect();
+    let data_version = int(root.get("MinecraftDataVersion")).unwrap_or(0) as i32;
     let version = int(root.get("Version")).unwrap_or(0);
     let format = if version > 0 { format!("Litematica v{version}") } else { "Litematica".into() };
-    Ok(Loaded { format, size, palette, blocks })
-}
-
-/// The 1.12 state `id << 4 | data` as a 1.13 name and `key=value;...`.
-fn legacy_state(id: usize) -> BlockState {
-    static TABLE: OnceLock<Vec<BlockState>> = OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        let mut out = vec![BlockState::air(); 4096];
-        for line in legacy_ids::LEGACY.lines() {
-            let mut f = line.split('\t');
-            let Some(i) = f.next().and_then(|v| v.trim().parse::<usize>().ok()) else { continue };
-            let name = f.next().unwrap_or("minecraft:air");
-            let props = f.next().unwrap_or("").replace(';', ",");
-            let spec = if props.is_empty() { name.to_owned() } else { format!("{name}[{props}]") };
-            if let (Some(slot), Some(s)) = (out.get_mut(i), BlockState::parse(&spec)) {
-                *slot = s;
-            }
-        }
-        out
-    });
-    table.get(id).cloned().unwrap_or_else(BlockState::air)
-}
-
-fn read_mcedit(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
-    let size = checked_size(
-        int(root.get("Width")).ok_or("the schematic has no Width")?,
-        int(root.get("Height")).ok_or("the schematic has no Height")?,
-        int(root.get("Length")).ok_or("the schematic has no Length")?,
-        max_blocks,
-    )?;
-    let Some(Tag::ByteArray(ids)) = root.get("Blocks") else { return Err("the schematic has no Blocks".into()) };
-    let data: &[i8] = match root.get("Data") {
-        Some(Tag::ByteArray(v)) => v,
-        _ => &[],
-    };
-    let added: &[i8] = match root.get("AddBlocks") {
-        Some(Tag::ByteArray(v)) => v,
-        _ => &[],
-    };
-    let shift: Pos = match (int(root.get("WEOffsetX")), int(root.get("WEOffsetY")), int(root.get("WEOffsetZ"))) {
-        (Some(x), Some(y), Some(z)) => [x as i32, y as i32, z as i32],
-        _ => [0; 3],
-    };
-    let volume = size.iter().map(|&v| v as usize).product::<usize>();
-    if ids.len() < volume {
-        return Err(format!("the schematic holds {} blocks, not {volume}", ids.len()));
-    }
-    let nibble = |v: &[i8], i: usize| v.get(i / 2).map_or(0u8, |&b| if i % 2 == 0 { b as u8 & 0x0f } else { b as u8 >> 4 });
-    let mut palette: Vec<BlockState> = Vec::new();
-    let mut slot: BTreeMap<usize, u32> = BTreeMap::new();
-    let mut blocks = Vec::with_capacity(volume);
-    let (w, l) = (size[0] as usize, size[2] as usize);
-    for y in 0..size[1] {
-        for z in 0..size[2] {
-            for x in 0..size[0] {
-                let i = (y as usize * l + z as usize) * w + x as usize;
-                let mut id = usize::from(ids[i] as u8);
-                if !added.is_empty() {
-                    id |= usize::from(nibble(added, i)) << 8;
-                }
-                let legacy = ((id << 4) | usize::from(nibble(data, i))).min(4095);
-                let p = *slot.entry(legacy).or_insert_with(|| {
-                    palette.push(legacy_state(legacy));
-                    palette.len() as u32 - 1
-                });
-                blocks.push(([x + shift[0], y + shift[1], z + shift[2]], p));
-            }
-        }
-    }
-    Ok(Loaded { format: "MCEdit".into(), size, palette, blocks })
+    Ok(Loaded { format, size, palette, blocks, data_version, block_entities })
 }
 
 /// A vanilla structure (`/place template`, a structure block's save): `size`, `palette` (or the
@@ -375,13 +338,18 @@ fn read_structure(root: &Tag, max_blocks: u64) -> Result<Loaded, String> {
         .ok_or("the structure has no palette")?;
     let palette: Vec<BlockState> = palette_list.iter().map(named_state).collect();
     let mut blocks = Vec::new();
+    let mut block_entities = Vec::new();
     for b in root.get("blocks").and_then(Tag::list).unwrap_or(&[]) {
         let (Some(p), Some(s)) = (triple(b.get("pos")), int(b.get("state"))) else { continue };
         if (0..palette.len() as i64).contains(&s) {
             blocks.push((p, s as u32));
+            if let Some(map) = b.get("nbt").and_then(Tag::compound) {
+                block_entities.push((p, entity_data(None, map, &["x", "y", "z"])));
+            }
         }
     }
-    Ok(Loaded { format: "Structure".into(), size, palette, blocks })
+    let data_version = int(root.get("DataVersion")).unwrap_or(0) as i32;
+    Ok(Loaded { format: "Structure".into(), size, palette, blocks, data_version, block_entities })
 }
 
 /// Blocks shifted so their low corner is at 0, 0, 0, and the box they fill.
@@ -401,7 +369,8 @@ fn normalize(blocks: Vec<(Pos, u32)>) -> (Pos, Vec<(Pos, u32)>) {
 /// A Sponge v3 `.schem`: `cells` in Sponge's order (`(y * length + z) * width + x`), each an index
 /// into `palette` (full state names); `offset` is the box's low corner relative to the origin and
 /// `origin` where that was in the world (WorldEdit's `Metadata.WorldEdit.Origin`).
-pub fn write_sponge3(size: Pos, offset: Pos, origin: Pos, data_version: i32, palette: &[String], cells: &[u32], date_ms: i64) -> Result<Vec<u8>, String> {
+/// `block_entities` are block entity compounds (with their `id`) by position in the box, counted from its low corner.
+pub fn write_sponge3(size: Pos, offset: Pos, origin: Pos, data_version: i32, palette: &[String], cells: &[u32], date_ms: i64, block_entities: &[(Pos, Tag)]) -> Result<Vec<u8>, String> {
     if size.iter().any(|&s| !(1..=65535).contains(&s)) {
         return Err("a schematic is at most 65535 blocks along each side".into());
     }
@@ -412,6 +381,18 @@ pub fn write_sponge3(size: Pos, offset: Pos, origin: Pos, data_version: i32, pal
     for &c in cells {
         put_varint(&mut data, c);
     }
+    let entities: Vec<Tag> = block_entities
+        .iter()
+        .map(|(p, tag)| {
+            let id = tag.get("id").and_then(Tag::str).unwrap_or("").to_owned();
+            let fields: BTreeMap<String, Tag> = tag.compound().map(|m| m.iter().filter(|(k, _)| !["id", "x", "y", "z"].contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+            Tag::Compound(BTreeMap::from([
+                ("Id".to_string(), Tag::String(id)),
+                ("Pos".to_string(), Tag::IntArray(p.to_vec())),
+                ("Data".to_string(), Tag::Compound(fields)),
+            ]))
+        })
+        .collect();
     let palette_tag = Tag::Compound(palette.iter().enumerate().map(|(i, s)| (s.clone(), Tag::Int(i as i32))).collect());
     let worldedit = Tag::Compound(BTreeMap::from([
         ("Origin".to_string(), Tag::IntArray(origin.to_vec())),
@@ -431,7 +412,7 @@ pub fn write_sponge3(size: Pos, offset: Pos, origin: Pos, data_version: i32, pal
             Tag::Compound(BTreeMap::from([
                 ("Palette".to_string(), palette_tag),
                 ("Data".to_string(), Tag::ByteArray(data)),
-                ("BlockEntities".to_string(), Tag::List(Vec::new())),
+                ("BlockEntities".to_string(), Tag::List(entities)),
             ])),
         ),
     ]));
@@ -452,7 +433,7 @@ mod tests {
         let palette = vec!["minecraft:air".to_string(), "minecraft:stone".to_string(), "minecraft:oak_stairs[facing=east,half=bottom]".to_string()];
         // A 2x1x2 box whose low corner lay 1 west and 2 below the player.
         let cells = vec![1, 0, 2, 1];
-        let bytes = write_sponge3([2, 1, 2], [-1, -2, 0], [100, 64, 100], 4440, &palette, &cells, 0).unwrap();
+        let bytes = write_sponge3([2, 1, 2], [-1, -2, 0], [100, 64, 100], 4440, &palette, &cells, 0, &[]).unwrap();
         let l = read(&bytes, 1000).unwrap();
         assert_eq!(l.format, "Sponge v3");
         assert_eq!(l.size, [2, 1, 2]);
@@ -461,6 +442,32 @@ mod tests {
         assert_eq!(at([-1, -2, 1]), "minecraft:oak_stairs[facing=east,half=bottom]");
         assert_eq!(at([0, -2, 0]), "minecraft:air");
         assert!(read(&bytes, 3).is_err());
+    }
+
+    #[test]
+    fn sponge_v3_round_trip_keeps_block_entities() {
+        let palette = vec!["minecraft:air".to_string(), "minecraft:chest".to_string()];
+        let chest = compound(vec![
+            ("id", Tag::String("minecraft:chest".into())),
+            ("Items", Tag::List(vec![compound(vec![("Slot", Tag::Byte(3)), ("id", Tag::String("minecraft:diamond".into())), ("count", Tag::Int(5))])])),
+        ]);
+        let bytes = write_sponge3([2, 1, 1], [0, 0, 0], [0, 0, 0], 4440, &palette, &[0, 1], 0, &[([1, 0, 0], chest.clone())]).unwrap();
+        let l = read(&bytes, 100).unwrap();
+        assert_eq!(l.data_version, 4440);
+        assert_eq!(l.block_entities, vec![([1, 0, 0], chest)]);
+    }
+
+    #[test]
+    fn structure_blocks_bring_their_nbt() {
+        let sign = compound(vec![("id", Tag::String("minecraft:oak_sign".into())), ("is_waxed", Tag::Byte(1))]);
+        let s = compound(vec![
+            ("size", Tag::List(vec![Tag::Int(1), Tag::Int(1), Tag::Int(1)])),
+            ("DataVersion", Tag::Int(4000)),
+            ("palette", Tag::List(vec![compound(vec![("Name", Tag::String("minecraft:oak_sign".into()))])])),
+            ("blocks", Tag::List(vec![compound(vec![("pos", Tag::List(vec![Tag::Int(0), Tag::Int(0), Tag::Int(0)])), ("state", Tag::Int(0)), ("nbt", sign.clone())])])),
+        ]);
+        let l = read(&nbt::write_gzip("", &s), 100).unwrap();
+        assert_eq!((l.data_version, l.block_entities), (4000, vec![([0, 0, 0], sign)]));
     }
 
     #[test]
@@ -504,22 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn mcedit_and_structure() {
-        let root = compound(vec![
-            ("Width", Tag::Short(2)),
-            ("Height", Tag::Short(1)),
-            ("Length", Tag::Short(1)),
-            ("Blocks", Tag::ByteArray(vec![1, 5])),
-            ("Data", Tag::ByteArray(vec![0x00])),
-            ("WEOffsetX", Tag::Int(-1)),
-            ("WEOffsetY", Tag::Int(0)),
-            ("WEOffsetZ", Tag::Int(0)),
-        ]);
-        let l = read(&nbt::write_gzip("Schematic", &root), 100).unwrap();
-        assert_eq!(l.format, "MCEdit");
-        let names: Vec<String> = l.blocks.iter().map(|b| l.palette[b.1 as usize].name.clone()).collect();
-        assert_eq!(names, vec!["minecraft:stone", "minecraft:oak_planks"]);
-        assert_eq!(l.blocks[0].0, [-1, 0, 0]);
+    fn structure_files_are_read() {
         let s = compound(vec![
             ("size", Tag::List(vec![Tag::Int(1), Tag::Int(2), Tag::Int(1)])),
             ("palette", Tag::List(vec![compound(vec![("Name", Tag::String("minecraft:glass".into()))])])),

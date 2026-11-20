@@ -12,6 +12,8 @@
 //!   when that exists.
 //!
 //! `TODO(arismoko-api: <name>)` marks behaviour the engine does not offer yet. See PORT_NOTES.md.
+
+pub mod horizon_worldedit_core;
 use horizon_worldedit_core as we;
 use mod_api::{
     BlockEdit, BlockMetadata, BlockRun, BlockState as HostState, BlockUpdateFlags, Command, CommandArgumentError,
@@ -22,6 +24,8 @@ use mod_api::{
     RegisterConfigsEvent, RightClickBlockEvent, ServerHost, ServerStoppedEvent, StateConstraint,
     Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext,
 };
+use mod_api::Tag as HostTag;
+use mod_api::{CommandSender, NodeDefault, PayloadHandleError, PermissionGatherNodesEvent, PermissionLevel, PermissionNode, PermissionValueType};
 use mod_api::{IPayloadContext, IPayloadHandler, PayloadBytes, PayloadId};
 use std::sync::Arc;
 use std::cell::RefCell;
@@ -145,7 +149,7 @@ impl CommandArgumentType for WeArgument {
         Ok(input.to_owned())
     }
 
-    fn suggest(&self, prefix: &str) -> Vec<CommandSuggestion> {
+    fn suggest(&self, _sender: Option<&CommandSender>, prefix: &str) -> Vec<CommandSuggestion> {
         let words = match self.kind {
             ArgKind::Pattern => {
                 let ids = BLOCK_IDS.lock().unwrap_or_else(|e| e.into_inner());
@@ -183,8 +187,8 @@ fn cui_players<R>(f: impl FnOnce(&mut HashMap<u128, Option<Corners>>) -> R) -> R
 struct CuiInbox;
 
 impl IPayloadHandler for CuiInbox {
-    fn handle(&self, _payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), String> {
-        let player = context.player().map_err(|e| format!("{e:?}"))?;
+    fn handle(&self, _payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), PayloadHandleError> {
+        let player = context.player().map_err(|e| PayloadHandleError::Failed(format!("{e:?}")))?;
         let uuid = player.uuid();
         cui_players(|m| m.insert(uuid, None));
         Ok(())
@@ -296,9 +300,14 @@ fn own_kind(kind: &str) -> Option<ArgKind> {
     }
 }
 
+/// The typed permission node for one `worldedit.*` name (a Boolean, as the core asks it).
+fn node(name: &str) -> PermissionNode {
+    PermissionNode::new(name, PermissionValueType::Boolean)
+}
+
 /// Whether the player may use any WorldEdit command (holds one of the nodes, or is an operator).
-fn may_use(host: &dyn ServerHost, uuid: u128) -> bool {
-    host.player(uuid).is_some_and(|p| we::NODES.iter().any(|&n| p.has_permission(host, n)))
+fn may_use(host: &mut dyn ServerHost, uuid: u128) -> bool {
+    host.player(uuid).is_some_and(|p| we::NODES.iter().any(|&n| p.permission_bool(&mut *host, &node(n)).unwrap_or(false)))
 }
 
 /// The completions for the word being typed at the end of `command` (the line without its first slash): pairs of
@@ -336,7 +345,7 @@ fn complete_line(host: &dyn ServerHost, command: &str) -> Option<Vec<(usize, Str
                     // The rest of the line is this argument (a pattern, a mask, a schematic name, a command).
                     if let Some(own) = own_kind(kind) {
                         let argument = WeArgument { kind: own, greedy: true };
-                        for s in argument.suggest(&command[starts[i]..]) {
+                        for s in argument.suggest(None, &command[starts[i]..]) {
                             push(&mut out, starts[i], s.text);
                         }
                     }
@@ -362,7 +371,7 @@ fn complete_line(host: &dyn ServerHost, command: &str) -> Option<Vec<(usize, Str
                     }
                     Some(k) => {
                         if let Some(own) = own_kind(k) {
-                            for s in (WeArgument { kind: own, greedy: false }).suggest(prefix) {
+                            for s in (WeArgument { kind: own, greedy: false }).suggest(None, prefix) {
                                 push(&mut out, starts[n], s.text);
                             }
                         }
@@ -461,6 +470,10 @@ impl we::World for GameWorld<'_> {
         names.into_iter().collect()
     }
 
+    fn item_names(&self) -> Vec<String> {
+        self.host.registry_entries("minecraft:item").unwrap_or_default().iter().map(|id| id.to_string()).collect()
+    }
+
     fn property_values(&self, block: &str, property: &str) -> Vec<String> {
         let meta = self.host.block_states();
         let Some(key) = self.host.block_state_id(block).map(|s| s.block()) else { return Vec::new() };
@@ -470,6 +483,58 @@ impl we::World for GameWorld<'_> {
             .find(|p| p.name == property)
             .map(|p| p.values)
             .unwrap_or_default()
+    }
+
+    fn block_entity_at(&self, p: we::Pos) -> Option<we::nbt::Tag> {
+        let entity = self.host.block_entity(self.level, p)?;
+        let data = entity.data(&*self.host)?;
+        let mut tag = from_host_tag(&HostTag::Compound(data));
+        if let (we::nbt::Tag::Compound(map), Some(kind)) = (&mut tag, entity.kind(&*self.host)) {
+            map.insert("id".into(), we::nbt::Tag::String(kind.id(&*self.host).to_string()));
+        }
+        Some(tag)
+    }
+
+    fn entities_in(&mut self, min: [f64; 3], max: [f64; 3]) -> Vec<we::EntityInfo> {
+        let mut out = Vec::new();
+        for e in self.level.entities_in(&*self.host, min, max).unwrap_or_default() {
+            let (Some(kind), Some(pos)) = (e.kind(&*self.host), e.position(&*self.host)) else { continue };
+            let living = self.host.living(e).is_some();
+            let nbt = e.nbt(&mut *self.host);
+            let has = |key: &str| nbt.as_ref().is_some_and(|c| c.iter().any(|(k, _)| k.to_string_lossy() == key));
+            let (named, tamed) = (has("CustomName"), has("Owner") || has("owner"));
+            out.push(we::EntityInfo { id: u64::from(e.id()), kind: kind.id(&*self.host).to_string(), pos, living, named, tamed });
+        }
+        out
+    }
+
+    fn remove_entities(&mut self, ids: &[u64]) -> usize {
+        let mut n = 0;
+        for id in ids {
+            if let Some(e) = u32::try_from(*id).ok().and_then(|i| self.host.entity(i)) {
+                if e.discard(&mut *self.host) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    fn set_block_entities(&mut self, entities: &[(we::Pos, we::nbt::Tag)]) {
+        for (p, tag) in entities {
+            let Some(entity) = self.host.block_entity(self.level, *p) else { continue };
+            let HostTag::Compound(data) = to_host_tag(tag) else { continue };
+            // `id` and the position in the data are ignored; a refusal leaves that block entity empty.
+            let _ = entity.replace_data(&mut *self.host, data);
+        }
+    }
+
+    fn upgrade_block_entity(&self, data_version: i32, data: we::nbt::Tag) -> we::nbt::Tag {
+        let HostTag::Compound(compound) = to_host_tag(&data) else { return data };
+        match self.host.upgrade_block_entity_nbt(data_version, compound) {
+            Ok(upgraded) => from_host_tag(&HostTag::Compound(upgraded)),
+            Err(_) => data,
+        }
     }
 
     fn write(&mut self, writes: &[(we::Pos, we::StateId)]) -> usize {
@@ -510,6 +575,45 @@ impl we::World for GameWorld<'_> {
     }
 }
 
+/// The core's NBT as the game's, for block entity data.
+fn to_host_tag(tag: &we::nbt::Tag) -> HostTag {
+    use we::nbt::Tag as T;
+    match tag {
+        T::Byte(v) => HostTag::Byte(*v),
+        T::Short(v) => HostTag::Short(*v),
+        T::Int(v) => HostTag::Int(*v),
+        T::Long(v) => HostTag::Long(*v),
+        T::Float(v) => HostTag::Float(v.to_bits()),
+        T::Double(v) => HostTag::Double(v.to_bits()),
+        T::ByteArray(v) => HostTag::ByteArray(v.iter().map(|&b| b as u8).collect()),
+        T::String(v) => HostTag::String(v.as_str().into()),
+        T::List(v) => HostTag::List(v.iter().map(to_host_tag).collect()),
+        T::Compound(m) => HostTag::Compound(m.iter().map(|(k, v)| (k.as_str().into(), to_host_tag(v))).collect()),
+        T::IntArray(v) => HostTag::IntArray(v.clone()),
+        T::LongArray(v) => HostTag::LongArray(v.clone()),
+    }
+}
+
+/// The game's NBT as the core's.
+fn from_host_tag(tag: &HostTag) -> we::nbt::Tag {
+    use we::nbt::Tag as T;
+    match tag {
+        HostTag::End => T::Byte(0),
+        HostTag::Byte(v) => T::Byte(*v),
+        HostTag::Short(v) => T::Short(*v),
+        HostTag::Int(v) => T::Int(*v),
+        HostTag::Long(v) => T::Long(*v),
+        HostTag::Float(v) => T::Float(f32::from_bits(*v)),
+        HostTag::Double(v) => T::Double(f64::from_bits(*v)),
+        HostTag::ByteArray(v) => T::ByteArray(v.iter().map(|&b| b as i8).collect()),
+        HostTag::String(v) => T::String(v.to_string_lossy()),
+        HostTag::List(v) => T::List(v.iter().map(from_host_tag).collect()),
+        HostTag::Compound(m) => T::Compound(m.iter().map(|(k, v)| (k.to_string_lossy(), from_host_tag(v))).collect()),
+        HostTag::IntArray(v) => T::IntArray(v.clone()),
+        HostTag::LongArray(v) => T::LongArray(v.clone()),
+    }
+}
+
 // --- players -----------------------------------------------------------------------------------
 
 fn player_by_uuid(host: &dyn ServerHost, uuid: u128) -> Option<PlayerRef> {
@@ -538,15 +642,15 @@ fn game_mode_id(mode: Option<GameMode>) -> i32 {
 }
 
 /// The player as the core sees them.
-fn actor_of(host: &dyn ServerHost, player: PlayerRef) -> we::Actor {
+fn actor_of(host: &mut dyn ServerHost, player: PlayerRef) -> we::Actor {
     let entity = player.entity();
-    let permission = player.permission_level(host).unwrap_or(0);
+    let permission = player.permission_level(&*host).unwrap_or(0);
     // Each worldedit node the player holds: a permission provider's answer (LuckPerms, through the
-    // `player_permission_check` hook), else operator level 2. Operators at level 4 pass on their level
-    // anyway (the core checks it first).
+    // `player_permission_check` hook), else the node's default (operator level 2, declared in
+    // `permission_gather_nodes`). Operators at level 4 pass on their level anyway (the core checks it first).
     let granted = we::NODES
         .iter()
-        .filter(|&&n| player.has_permission(host, n))
+        .filter(|&&n| player.permission_bool(&mut *host, &node(n)).unwrap_or(false))
         .map(|n| n.to_string())
         .collect();
     let [yaw, pitch] = entity.rotation(host).unwrap_or([0.0, 0.0]);
@@ -609,7 +713,7 @@ fn finish(host: &mut dyn ServerHost, player: PlayerRef, actor: &we::Actor, reply
     for item in &reply.give {
         let id = if item.contains(':') { item.clone() } else { format!("minecraft:{item}") };
         let stack = Identifier::parse(&id).ok().and_then(|id| host.item_key(&id)).map(ItemStack::of);
-        let given = stack.is_some_and(|stack| matches!(player.give_stack(host, stack), Ok(true)));
+        let given = stack.is_some_and(|stack| player.give_stack(host, stack).is_ok());
         if !given {
             let _ = player.tell(&mut *host, Text::literal(format!("Could not give you {item}.")));
         }
@@ -635,6 +739,15 @@ thread_local! {
 
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
+    fn permission_gather_nodes(&self, event: &mut PermissionGatherNodesEvent<'_>) {
+        // Every node the core asks about, at the operator level the old string nodes fell back to (`permission_level`).
+        for &name in we::NODES {
+            // The nodes that lift a limit need level 4 (`FULL_OPERATOR_NODES`); every other one level 2.
+            let level = if we::FULL_OPERATOR_NODES.contains(&name) { 4 } else { 2 };
+            let _ = event.nodes.add(node(name), NodeDefault::Level(PermissionLevel::from_level(level)));
+        }
+    }
+
     fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
         for (name, kind, greedy) in [
             ("pattern", ArgKind::Pattern, false),
@@ -716,7 +829,7 @@ impl Hooks for Mod {
             return Flow::Cancel;
         };
         ensure_block_ids(&*host);
-        let actor = actor_of(&*host, player);
+        let actor = actor_of(&mut *host, player);
         let reply = execute(&mut *host, &actor, event.command);
         event.replies.extend(reply.lines.iter().map(line));
         if let Some(to) = reply.teleport {
@@ -732,7 +845,7 @@ impl Hooks for Mod {
     fn player_commands_sent(&self, host: &mut dyn ServerHost, event: &mut PlayerCommandsSentEvent<'_>) {
         // Players who may use no WorldEdit command do not get its roots in their tab list. A player the host cannot
         // resolve yet (still joining) keeps the full list rather than losing it for an operator.
-        if host.player(event.player).is_none() || may_use(&*host, event.player) {
+        if host.player(event.player).is_none() || may_use(&mut *host, event.player) {
             return;
         }
         let roots = we_roots();
@@ -743,7 +856,7 @@ impl Hooks for Mod {
         let command: &str = event.command;
         let Some(first_space) = command.find(' ') else {
             // A root word alone (`/s`): WorldEdit's roots leave the list of a player who may use none of it.
-            if !may_use(&*host, event.player) {
+            if !may_use(&mut *host, event.player) {
                 let roots = we_roots();
                 event.suggestions.retain(|s| !roots.contains(&s.text.trim_start_matches('/').to_ascii_lowercase()));
             }
@@ -753,7 +866,7 @@ impl Hooks for Mod {
             return;
         }
         // Nothing of WorldEdit (not even a schematic name) for a player who may not use it.
-        if !may_use(&*host, event.player) {
+        if !may_use(&mut *host, event.player) {
             event.suggestions.clear();
             return;
         }
@@ -770,7 +883,7 @@ impl Hooks for Mod {
 
     fn left_click_block(&self, host: &mut dyn ServerHost, event: &mut LeftClickBlockEvent) -> Flow {
         let Some(player) = acting(&*host) else { return Flow::Continue };
-        let actor = actor_of(&*host, player);
+        let actor = actor_of(&mut *host, player);
         let pos = event.pos;
         let reply = {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
@@ -793,7 +906,7 @@ impl Hooks for Mod {
             return Flow::Continue;
         }
         let Some(player) = acting(&*host) else { return Flow::Continue };
-        let mut actor = actor_of(&*host, player);
+        let mut actor = actor_of(&mut *host, player);
         actor.held = event.click.stack.map(|s| s.item().id(&*host)).filter(|i| i != "minecraft:air");
         let pos = event.click.pos;
         let reply = {
@@ -824,13 +937,16 @@ impl Hooks for Mod {
     fn right_click_item(&self, host: HostSide, event: &mut RightClickItemEvent<'_>) -> Flow {
         let HostSide::Server(host) = host else { return Flow::Continue };
         let Some(player) = acting(&*host) else { return Flow::Continue };
-        let mut actor = actor_of(&*host, player);
+        let mut actor = actor_of(&mut *host, player);
         actor.held = Some(event.click.stack.item().id(&*host));
         let reply = {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
-            we::with(|e| match e.brush_use(&mut world, &actor, None, now_ms()) {
+            we::with(|e| match e.far_wand_air(&world, &actor, now_ms()) {
                 Some(r) => Some(r),
-                None => e.nav_use(&world, &actor, now_ms()),
+                None => match e.brush_use(&mut world, &actor, None, now_ms()) {
+                    Some(r) => Some(r),
+                    None => e.nav_use(&world, &actor, now_ms()),
+                },
             })
         };
         if let Some(reply) = reply {

@@ -18,6 +18,7 @@ pub mod ops;
 pub mod pattern;
 pub mod region;
 pub mod schem;
+pub mod selector;
 pub mod session;
 pub mod shapes;
 pub mod world;
@@ -25,8 +26,8 @@ pub mod yaml; // vendored horizon-yaml: reads the original plugins/WorldEdit/con
 
 pub use block::BlockState;
 pub use config::Config;
-pub use engine::{form_allows, is_command, is_rotate, is_shadowed, usages, Actor, Engine, Env, Line, Reply, NODES};
-pub use world::{Pos, StateId, World};
+pub use engine::{form_allows, is_command, is_rotate, is_shadowed, usages, Actor, Engine, Env, Line, Reply, FULL_OPERATOR_NODES, NODES};
+pub use world::{EntityInfo, Pos, StateId, World};
 
 use std::collections::BTreeSet;
 use std::path::Path;
