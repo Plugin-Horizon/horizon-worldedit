@@ -179,6 +179,91 @@ pub fn line(a: Pos, b: Pos, radius: f64, filled: bool) -> Vec<Pos> {
     out
 }
 
+/// `EditSession.drawSpline` with tension, bias and continuity 0 (WorldEdit's `//curve`): a Catmull-Rom
+/// spline through `nodes` (each node is taken at its block centre), sampled about ten times per unit
+/// of arc length, every sample floored to a block, ballooned by `radius` and, with `filled` false,
+/// hollowed to its surface. Fewer than two nodes draw nothing.
+pub fn spline(nodes: &[Pos], radius: f64, filled: bool) -> Vec<Pos> {
+    let n = nodes.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let pts: Vec<[f64; 3]> = nodes.iter().map(|p| [0, 1, 2].map(|k| f64::from(p[k]) + 0.5)).collect();
+    // Node index clamped to the ends, as `KochanekBartelsInterpolation.retrieve` does.
+    let at = |i: i64| pts[i.clamp(0, n as i64 - 1) as usize];
+    // Per segment i the coefficients a, b, c of a*t^3 + b*t^2 + c*t + d (d is node i itself).
+    let coef: Vec<([f64; 3], [f64; 3], [f64; 3])> = (0..n as i64)
+        .map(|i| {
+            let (p0, p1, p2, p3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+            let a = [0, 1, 2].map(|k| -0.5 * p0[k] + 1.5 * p1[k] - 1.5 * p2[k] + 0.5 * p3[k]);
+            let b = [0, 1, 2].map(|k| p0[k] - 2.5 * p1[k] + 2.0 * p2[k] - 0.5 * p3[k]);
+            let c = [0, 1, 2].map(|k| -0.5 * p0[k] + 0.5 * p2[k]);
+            (a, b, c)
+        })
+        .collect();
+    let position = |t: f64| -> [f64; 3] {
+        let s = t * (n - 1) as f64;
+        let i = s.floor() as usize;
+        let r = s - i as f64;
+        let (a, b, c) = coef[i];
+        let d = pts[i];
+        [0, 1, 2].map(|k| ((a[k] * r + b[k]) * r + c[k]) * r + d[k])
+    };
+    // Length of one segment between the remainders rl and rr: 8-point sampling of the speed.
+    let segment = |i: usize, rl: f64, rr: f64| -> f64 {
+        let (a, b, c) = coef[i];
+        let a3 = a.map(|v| 3.0 * v);
+        let b2 = b.map(|v| 2.0 * v);
+        let speed = |t: f64| {
+            let v = [0, 1, 2].map(|k| (a3[k] * t + b2[k]) * t + c[k]);
+            (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+        };
+        let mut acc = speed(rl) / 2.0;
+        for j in 1..7 {
+            let t = (rr - rl) * (j as f64 / 8.0) + rl;
+            acc += speed(t);
+        }
+        acc += speed(rr) / 2.0;
+        acc * (rr - rl) / 8.0
+    };
+    // `arcLength(0, 1)`: the first segment from its start, the middle ones whole, the last one ends at 1.
+    let total = segment(0, 0.0, 1.0) + (1..n - 1).map(|k| segment(k, 0.0, 1.0)).sum::<f64>();
+    let step = 1.0 / total / 10.0;
+    let mut samples: HashSet<Pos> = HashSet::new();
+    let mut t = 0.0;
+    while t <= 1.0 {
+        samples.insert(position(t).map(|v| v.floor() as i32));
+        t += step;
+    }
+    let ceil = radius.ceil() as i32;
+    let radius_sq = radius * radius;
+    let mut ball: HashSet<Pos> = HashSet::new();
+    for v in &samples {
+        for x in v[0] - ceil..=v[0] + ceil {
+            for y in v[1] - ceil..=v[1] + ceil {
+                for z in v[2] - ceil..=v[2] + ceil {
+                    let (dx, dy, dz) = (f64::from(x - v[0]), f64::from(y - v[1]), f64::from(z - v[2]));
+                    if dx * dx + dy * dy + dz * dz <= radius_sq {
+                        ball.insert([x, y, z]);
+                    }
+                }
+            }
+        }
+    }
+    let mut out: Vec<Pos> = if filled {
+        ball.iter().copied().collect()
+    } else {
+        ball.iter()
+            .copied()
+            .filter(|v| {
+                ![[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].iter().all(|o| ball.contains(&[v[0] + o[0], v[1] + o[1], v[2] + o[2]]))
+            })
+            .collect()
+    };
+    out.sort_unstable();
+    out
+}
+
 /// The eight mirror images of an offset (each distinct position once).
 fn mirror8(out: &mut Vec<Pos>, c: Pos, [x, y, z]: Pos) {
     for sx in signs(x) {
@@ -212,6 +297,23 @@ mod tests {
 
     fn unique(v: &[Pos]) -> bool {
         v.iter().collect::<HashSet<_>>().len() == v.len()
+    }
+
+    #[test]
+    fn spline_runs_between_its_end_nodes() {
+        // Nodes at block centres 0.5 and 10.5: the curve starts in block 0 and ends in block 10.
+        let s = spline(&[[0, 0, 0], [10, 0, 0]], 0.0, true);
+        assert!(s.contains(&[0, 0, 0]));
+        assert!(s.contains(&[10, 0, 0]));
+        assert!(s.iter().all(|p| p[1] == 0 && p[2] == 0 && (0..=10).contains(&p[0])));
+        assert!(spline(&[[0, 0, 0]], 0.0, true).is_empty());
+    }
+
+    #[test]
+    fn spline_hollow_of_a_thin_line_keeps_it_all() {
+        let filled = spline(&[[0, 0, 0], [10, 0, 0]], 0.0, true);
+        let hollow = spline(&[[0, 0, 0], [10, 0, 0]], 0.0, false);
+        assert_eq!(filled.len(), hollow.len());
     }
 
     #[test]

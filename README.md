@@ -117,6 +117,7 @@ horizon-launcher native-build <path to this folder> --server-output <dir> --vers
 
 ## Known gaps
 
+- Round 5: `//curve` (convex polyhedral selection, Catmull-Rom spline as `drawSpline` with zero tension, bias and continuity) and `//snowsmooth` (command with `-l` and `-m`) are ported, written blind. Still open: `/brush snowsmooth` (its brush kernel is 10 wide, the port's blur is 5), `//regen`, `//revolve`, `//forest`, `//flora`, super pickaxe, tree/stack/lrbuild tools, snapshots, biome commands (no engine API, see HMOD_PORT.md).
 - Round 4: `//timeout`, `//fast`, `//perf`, `//reorder`, `//drawsel`, `//watchdog`, `//registry` and `/tool farwand` are ported. `//fast`, `//perf` and `//reorder` record their state only, and `//timeout` is recorded without a calculator to apply it to (see HMOD_PORT.md).
 - Round 3: polygon, ellipsoid, sphere, cylinder and convex selectors, `//generate`, `//deform`, `/butcher`, `/remove` are ported. Still open: `//regen`, `//curve`, `//snowsmooth`, `//revolve`, `//forest`, `//flora`, super pickaxe, tree/stack/lrbuild tools, snapshots, biome commands (no engine API, see HMOD_PORT.md).
 
@@ -124,7 +125,7 @@ What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: .
 
 - The selection outline (WorldEdit CUI) is not drawn.
 - No selection API for other mods yet (WorldGuard on arismoko reports that it has no selection).
-- Not ported yet: `//curve`, `//regen`, `//forest`, `//flora`, `//snowsmooth`, `//revolve` (clipboard turns are quarter turns only), the super pickaxe, tree/deltree/stacker/lrbuild tools, snapshots, biome commands, `//world` (needs a level by name), `/delchunks` and CraftScript.
+- Not ported yet: `//regen`, `//forest`, `//flora`, `/brush snowsmooth`, `//revolve` (clipboard turns are quarter turns only), the super pickaxe, tree/deltree/stacker/lrbuild tools, snapshots, biome commands, `//world` (needs a level by name), `/delchunks` and CraftScript.
 - Entities (`-e`) and biomes (`-b`) are not copied: the host API has no entity spawn from saved data and no biome write for this mod.
 - Block entities (chest contents, signs, spawners...) are copied, cut, pasted, stacked, moved, undone and saved in schematics
   (Sponge v3 `BlockEntities`; read from Sponge v2/v3, structure `.nbt` and Litematica files).

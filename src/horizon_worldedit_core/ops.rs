@@ -213,6 +213,140 @@ pub fn smooth(world: &dyn World, region: &Cuboid, iterations: u32, mask: Option<
     out
 }
 
+/// `//snowsmooth` (WorldEdit's `SnowHeightMap`): the height map of the region where a snow layer counts as
+/// a fraction of a block, blurred `iterations` times with the 5x5 kernel and written back. A column that
+/// grows gets snow layers on top and copies the blocks below it (`layer_blocks` snow blocks at its foot);
+/// a column that shrinks is cut down the same way. Columns with liquid at their top do not grow.
+pub fn snow_smooth(world: &dyn World, region: &Cuboid, iterations: u32, layer_blocks: i32, mask: Option<&Mask>) -> Vec<(Pos, StateId)> {
+    let [w, _, l] = region.size();
+    let (w, l) = (w as usize, l as usize);
+    let (origin, top_y) = (region.min[1], region.max[1]);
+    let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
+    let state = |name: &str, props: &[(&str, &str)]| world.resolve(&crate::horizon_worldedit_core::block::BlockState::new(name, props)).unwrap_or(air);
+    let ground = |s: StateId| match mask {
+        Some(m) => m.hits(world, s),
+        None => !world.is_air(s),
+    };
+    let snow_layers = |n: i32| {
+        let n = n.to_string();
+        state("minecraft:snow", &[("layers", n.as_str())])
+    };
+    let snow_block = state("minecraft:snow_block", &[]);
+    // SnowHeightMap's constructor: the top of each column, in blocks, a snow layer as a fraction.
+    let mut data = vec![0.0f64; w * l];
+    let mut loaded = vec![true; w * l];
+    for i in 0..w {
+        for j in 0..l {
+            let (x, z) = (region.min[0] + i as i32, region.min[2] + j as i32);
+            let idx = i * l + j;
+            // getHighestTerrainBlock: the highest ground block, or the floor when there is none.
+            let mut top = origin;
+            for y in (origin..=top_y).rev() {
+                match world.get([x, y, z]) {
+                    Some(s) if ground(s) => {
+                        top = y;
+                        break;
+                    }
+                    None => {
+                        loaded[idx] = false;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if !loaded[idx] {
+                continue;
+            }
+            let upper = world.describe(world.get([x, top + 1, z]).unwrap_or(air));
+            data[idx] = if upper.name == "minecraft:snow" {
+                let layers = upper.prop("layers").and_then(|v| v.parse::<i32>().ok()).unwrap_or(1);
+                f64::from(top + 1) + f64::from(layers - 1) / 8.0
+            } else if world.is_air(world.get([x, top, z]).unwrap_or(air)) {
+                f64::from(top)
+            } else {
+                f64::from(top + 1)
+            };
+        }
+    }
+    // applyFilter: the blur `iterations` times (clamped edges, as `smooth`), then half a snow layer more.
+    let k = kernel();
+    let mut current = data.clone();
+    for _ in 0..iterations {
+        let mut next = current.clone();
+        for i in 0..w {
+            for j in 0..l {
+                let mut v = 0.0;
+                for (di, row) in k.iter().enumerate() {
+                    for (dj, weight) in row.iter().enumerate() {
+                        let ii = (i as i64 + di as i64 - 2).clamp(0, w as i64 - 1) as usize;
+                        let jj = (j as i64 + dj as i64 - 2).clamp(0, l as i64 - 1) as usize;
+                        v += weight * current[ii * l + jj];
+                    }
+                }
+                next[i * l + j] = v;
+            }
+        }
+        current = next;
+    }
+    let target: Vec<f64> = current.iter().map(|h| h + 0.0625).collect();
+    // applyChanges. Reads come from the world as it is: a column only reads cells it has not written yet.
+    let mut out = Vec::new();
+    let o = f64::from(origin);
+    for i in 0..w {
+        for j in 0..l {
+            let idx = i * l + j;
+            if !loaded[idx] {
+                continue;
+            }
+            let cur = data[idx];
+            if cur == o {
+                continue;
+            }
+            let (x, z) = (region.min[0] + i as i32, region.min[2] + j as i32);
+            let new = target[idx].min(f64::from(top_y));
+            let scale = (cur - o) / (new - o);
+            if new >= cur {
+                let existing = world.get([x, cur.floor() as i32, z]).unwrap_or(air);
+                if matches!(world.describe(existing).name.as_str(), "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column") {
+                    continue;
+                }
+                let snow_y = new.floor() as i32;
+                out.push(([x, snow_y, z], snow_layers(((new - f64::from(snow_y)) * 8.0) as i32 + 1)));
+                let snow_from = (new - 1.0 - o - f64::from(layer_blocks)).floor() as i64;
+                let mut y = (new - 1.0 - o).floor() as i64;
+                while y >= 0 {
+                    let p = [x, origin + y as i32, z];
+                    if y >= snow_from {
+                        out.push((p, snow_block));
+                    } else {
+                        let from = (y as f64 * scale).floor() as i32;
+                        out.push((p, world.get([x, origin + from, z]).unwrap_or(air)));
+                    }
+                    y -= 1;
+                }
+            } else {
+                let rel_top = (new - o).floor() as i64;
+                let snow_from = (new - o - f64::from(layer_blocks)).floor() as i64;
+                for y in 0..rel_top {
+                    let p = [x, origin + y as i32, z];
+                    if y >= snow_from {
+                        out.push((p, snow_block));
+                    } else {
+                        let from = (y as f64 * scale).floor() as i32;
+                        out.push((p, world.get([x, origin + from, z]).unwrap_or(air)));
+                    }
+                }
+                let snow_y = new.floor() as i32;
+                out.push(([x, snow_y, z], snow_layers(((new - f64::from(snow_y)) * 8.0) as i32 + 1)));
+                for y in (new + 1.0).floor() as i32..=cur.floor() as i32 {
+                    out.push(([x, y, z], air));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// `//stack`: the region copied `count` times next to itself toward `dir`.
 pub fn stack(world: &dyn World, region: &Cuboid, step: Pos, count: i32, skip_air: bool, only: Option<&Mask>) -> Result<(Vec<(Pos, StateId)>, usize), String> {
     let mut source = Vec::with_capacity(region.volume() as usize);
@@ -363,6 +497,15 @@ mod tests {
         // The spike is cut down to about its surroundings.
         assert!(out.contains(&([4, 6, 4], 0)) && out.contains(&([4, 2, 4], 0)));
         assert!(out.iter().all(|(p, _)| p[1] <= 6));
+    }
+
+    #[test]
+    fn snow_smooth_puts_a_snow_layer_on_flat_ground() {
+        let mut w = FakeWorld::new();
+        w.fill([0, 0, 0], [8, 4, 8], "stone");
+        let out = snow_smooth(&w, &Cuboid::new([0, 0, 0], [8, 10, 8]), 0, 1, None);
+        // No blur: the column stands at 5 (the top stone is at 4) plus 1/16, so one snow layer at y 5.
+        assert!(out.contains(&([4, 5, 4], w.id("minecraft:snow[layers=1]"))));
     }
 
     #[test]

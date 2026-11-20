@@ -100,6 +100,8 @@ pub const NODES: &[&str] = &[
     "worldedit.region.faces",
     "worldedit.region.hollow",
     "worldedit.region.line",
+    "worldedit.region.curve",
+    "worldedit.region.snowsmooth",
     "worldedit.region.move",
     "worldedit.region.naturalize",
     "worldedit.region.overlay",
@@ -263,7 +265,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("middle", "<pattern:text>"),
     ("naturalize", ""),
     ("smooth", "[args:text]"),
+    ("snowsmooth", "[args:text]"),
     ("line", "<args:text>"),
+    ("curve", "<args:text>"),
     ("stack", "[args:text]"),
     ("move", "[args:text]"),
     ("sphere", "<args:text>"),
@@ -382,7 +386,9 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["replace", "re", "rep"], "", &["<to:pattern>", "<from:mask> <to:pattern>"]),
     (&["hollow"], "", &["", "<thickness:integer>", "<thickness:integer> <block:pattern>"]),
     (&["smooth"], "", &["", "<iterations:integer>", "<iterations:integer> <filter:mask>"]),
+    (&["snowsmooth"], "lm", &["{flags}", "<iterations:integer> {flags}"]),
     (&["line"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
+    (&["curve"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
     (&["stack"], "asr", &["{flags}", "<count:integer> {flags}", "<count:integer> {dir} {flags}"]),
     (
         &["move"],
@@ -622,6 +628,7 @@ fn flag_sets(letters: &str) -> Vec<String> {
                 .map(|(_, &c)| match c {
                     'm' => "-m <maskarg:mask>".to_owned(),
                     'p' => "-p <page:integer>".to_owned(),
+                    'l' => "-l <layers:integer>".to_owned(),
                     _ => format!("-{c}"),
                 })
                 .collect::<Vec<_>>()
@@ -678,10 +685,11 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "stack" => ("abersm", "asrm"),
         "move" => ("abesm", "asm"),
         "sphere" | "hsphere" => ("hr", "hr"),
-        "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "brush" | "br" | "cone" => ("h", "h"),
+        "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "brush" | "br" | "cone" => ("h", "h"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
         "distr" => ("cdpm", "cdpm"),
+        "snowsmooth" => ("lm", "lm"),
         "chunk" => ("sc", "sc"),
         "size" => ("c", "c"),
         "generate" | "gen" | "g" => ("hroc", "hroc"),
@@ -715,7 +723,9 @@ fn usage(name: &str) -> String {
         "count" => "<mask>".into(),
         "hollow" => "[thickness] [pattern]".into(),
         "smooth" => "[iterations] [mask]".into(),
+        "snowsmooth" => "[iterations]".into(),
         "line" => "<pattern> [thickness]".into(),
+        "curve" => "<pattern> [thickness]".into(),
         "stack" => "[count] [offset]".into(),
         "move" => "[multiplier] [offset] [replace]".into(),
         "sphere" | "hsphere" => "<pattern> <radii>".into(),
@@ -770,7 +780,7 @@ fn usage(name: &str) -> String {
 
 /// Whether flag `c` of command `name` is followed by a value.
 fn takes_value(name: &str, c: char) -> bool {
-    c == 'm' || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "registry"))
+    c == 'm' || (c == 'l' && name == "snowsmooth") || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "registry"))
 }
 
 /// Splits a command's words from its flags. Unknown flags and flags this server does not implement
@@ -855,6 +865,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "distr" => "worldedit.analysis.distr",
         "set" => "worldedit.region.set",
         "line" => "worldedit.region.line",
+        "curve" => "worldedit.region.curve",
         "replace" | "re" | "rep" => "worldedit.region.replace",
         "overlay" => "worldedit.region.overlay",
         "center" | "middle" => "worldedit.region.center",
@@ -862,6 +873,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "walls" => "worldedit.region.walls",
         "faces" | "outline" => "worldedit.region.faces",
         "smooth" => "worldedit.region.smooth",
+        "snowsmooth" => "worldedit.region.snowsmooth",
         "move" => "worldedit.region.move",
         "stack" => "worldedit.region.stack",
         "hollow" => "worldedit.region.hollow",
@@ -1185,7 +1197,9 @@ impl Engine {
             "overlay" => self.overlay(world, actor, &args),
             "naturalize" => self.naturalize(world, actor),
             "smooth" => self.smooth(world, actor, &args),
+            "snowsmooth" => self.snow_smooth(world, actor, &args),
             "line" => self.line(world, actor, &args),
+            "curve" => self.curve(world, actor, &args),
             "stack" => self.stack(world, actor, &args),
             "move" => self.move_(world, actor, &args),
             "sphere" | "hsphere" => self.sphere(world, actor, name == "hsphere", &args),
@@ -1787,6 +1801,23 @@ impl Engine {
         Ok(vec![format!("Terrain's height map smoothed. {n} blocks changed.{note}")])
     }
 
+    /// `//snowsmooth [iterations] [-l layers] [-m mask]` (`RegionCommands.snowSmooth`).
+    fn snow_smooth(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let c = self.region(world, actor)?;
+        let iterations = args.int(0, 1)?.clamp(0, 50) as u32;
+        let layers = match args.value('l') {
+            Some(v) => v.parse::<i32>().map_err(|_| number_error(v))?,
+            None => 1,
+        };
+        let mask = match args.value('m') {
+            Some(m) => Some(Mask::parse(world, m, actor.held.as_deref())?),
+            None => None,
+        };
+        let ops = ops::snow_smooth(world, &c, iterations, layers, mask.as_ref());
+        let (n, note) = self.commit(world, actor, ops)?;
+        Ok(vec![format!("Snow's height map smoothed. {n} blocks changed.{note}")])
+    }
+
     fn line(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
         let c = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
         let s = self.sessions.get(actor.uuid);
@@ -1804,6 +1835,28 @@ impl Engine {
         let points = shapes::line(a, b, thickness, !args.flag('h'));
         let (lo, hi) = (world.min_y(), world.max_y());
         let ops = points.into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
+        let (n, note) = self.commit(world, actor, ops)?;
+        Ok(vec![format!("{n} blocks have been changed.{note}")])
+    }
+
+    /// `//curve`: a spline through the vertices of the convex polyhedral selection (`EditSession.drawSpline`).
+    fn curve(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let points = match self.sessions.get(actor.uuid).shape.clone() {
+            Some(crate::horizon_worldedit_core::selector::Shape::Convex { points }) => points,
+            _ => return Err("//curve only works with convex polyhedral selections".into()),
+        };
+        let pattern = self.need_pattern(world, actor, args, 0, "curve")?;
+        let thickness = match args.get(1) {
+            Some(w) => w.parse::<f64>().map_err(|_| number_error(w))?,
+            None => 0.0,
+        };
+        if !(thickness >= 0.0) {
+            return Err("Thickness must be >= 0".into());
+        }
+        self.check_radius(&[thickness])?;
+        let salt = self.salt(actor);
+        let (lo, hi) = (world.min_y(), world.max_y());
+        let ops = shapes::spline(&points, thickness, !args.flag('h')).into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been changed.{note}")])
     }
