@@ -110,14 +110,17 @@ pub fn naturalize(world: &dyn World, region: &Cuboid, [grass, dirt, stone]: [Sta
     out
 }
 
-/// The 5x5 Gaussian kernel (sigma 1) WorldEdit's `//smooth` uses.
-fn kernel() -> [[f64; 5]; 5] {
-    let mut k = [[0.0; 5]; 5];
+/// WorldEdit's `GaussianKernel(radius, 1.0)`: a `(2 * radius + 1)` square of weights exp(-(dx² + dz²) / 2),
+/// normalised to sum 1 (the constant in front of the curve cancels out). `//smooth` and `//snowsmooth` use
+/// radius 5, the snow smooth brush 10.
+fn kernel(radius: usize) -> Vec<Vec<f64>> {
+    let r = radius as i64;
+    let mut k = vec![vec![0.0; 2 * radius + 1]; 2 * radius + 1];
     let mut sum = 0.0;
     for (i, row) in k.iter_mut().enumerate() {
         for (j, v) in row.iter_mut().enumerate() {
-            let (dx, dz) = (i as f64 - 2.0, j as f64 - 2.0);
-            *v = (-(dx * dx + dz * dz) / 2.0).exp();
+            let (dx, dz) = (i as i64 - r, j as i64 - r);
+            *v = (-((dx * dx + dz * dz) as f64) / 2.0).exp();
             sum += *v;
         }
     }
@@ -127,6 +130,29 @@ fn kernel() -> [[f64; 5]; 5] {
         }
     }
     k
+}
+
+/// One pass of WorldEdit's `HeightMapFilter.calculateHeight` over a `w` x `l` height map (`current` row-major by
+/// x, then z). A sample that falls off the map reads the centre cell on that axis, not the edge cell.
+fn blur_once(current: &[f64], w: usize, l: usize, k: &[Vec<f64>]) -> Vec<f64> {
+    let radius = (k.len() / 2) as i64;
+    let mut next = vec![0.0; w * l];
+    for i in 0..w {
+        for j in 0..l {
+            let mut v = 0.0;
+            for (di, row) in k.iter().enumerate() {
+                for (dj, weight) in row.iter().enumerate() {
+                    let oi = i as i64 + di as i64 - radius;
+                    let oj = j as i64 + dj as i64 - radius;
+                    let ii = if (0..w as i64).contains(&oi) { oi as usize } else { i };
+                    let jj = if (0..l as i64).contains(&oj) { oj as usize } else { j };
+                    v += weight * current[ii * l + jj];
+                }
+            }
+            next[i * l + j] = v;
+        }
+    }
+    next
 }
 
 /// `//smooth` and the smooth brush: the region's height map blurred `iterations` times, each column
@@ -160,24 +186,10 @@ pub fn smooth(world: &dyn World, region: &Cuboid, iterations: u32, mask: Option<
             }
         }
     }
-    let k = kernel();
+    let k = kernel(5);
     let mut current: Vec<f64> = heights.iter().map(|&h| f64::from(h)).collect();
     for _ in 0..iterations.max(1) {
-        let mut next = current.clone();
-        for i in 0..w {
-            for j in 0..l {
-                let mut v = 0.0;
-                for (di, row) in k.iter().enumerate() {
-                    for (dj, weight) in row.iter().enumerate() {
-                        let ii = (i as i64 + di as i64 - 2).clamp(0, w as i64 - 1) as usize;
-                        let jj = (j as i64 + dj as i64 - 2).clamp(0, l as i64 - 1) as usize;
-                        v += weight * current[ii * l + jj];
-                    }
-                }
-                next[i * l + j] = v;
-            }
-        }
-        current = next;
+        current = blur_once(&current, w, l, &k);
     }
     let mut out = Vec::new();
     let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
@@ -214,10 +226,11 @@ pub fn smooth(world: &dyn World, region: &Cuboid, iterations: u32, mask: Option<
 }
 
 /// `//snowsmooth` (WorldEdit's `SnowHeightMap`): the height map of the region where a snow layer counts as
-/// a fraction of a block, blurred `iterations` times with the 5x5 kernel and written back. A column that
-/// grows gets snow layers on top and copies the blocks below it (`layer_blocks` snow blocks at its foot);
-/// a column that shrinks is cut down the same way. Columns with liquid at their top do not grow.
-pub fn snow_smooth(world: &dyn World, region: &Cuboid, iterations: u32, layer_blocks: i32, mask: Option<&Mask>) -> Vec<(Pos, StateId)> {
+/// a fraction of a block, blurred `iterations` times with a Gaussian kernel of `blur_radius` (`//snowsmooth`
+/// uses 5, the brush 10) and written back. A column that grows gets snow layers on top and copies the blocks
+/// below it (`layer_blocks` snow blocks at its foot); a column that shrinks is cut down the same way. Columns
+/// with liquid at their top do not grow.
+pub fn snow_smooth(world: &dyn World, region: &Cuboid, iterations: u32, layer_blocks: i32, mask: Option<&Mask>, blur_radius: usize) -> Vec<(Pos, StateId)> {
     let [w, _, l] = region.size();
     let (w, l) = (w as usize, l as usize);
     let (origin, top_y) = (region.min[1], region.max[1]);
@@ -268,25 +281,11 @@ pub fn snow_smooth(world: &dyn World, region: &Cuboid, iterations: u32, layer_bl
             };
         }
     }
-    // applyFilter: the blur `iterations` times (clamped edges, as `smooth`), then half a snow layer more.
-    let k = kernel();
+    // applyFilter: the blur `iterations` times, then half a snow layer more.
+    let k = kernel(blur_radius);
     let mut current = data.clone();
     for _ in 0..iterations {
-        let mut next = current.clone();
-        for i in 0..w {
-            for j in 0..l {
-                let mut v = 0.0;
-                for (di, row) in k.iter().enumerate() {
-                    for (dj, weight) in row.iter().enumerate() {
-                        let ii = (i as i64 + di as i64 - 2).clamp(0, w as i64 - 1) as usize;
-                        let jj = (j as i64 + dj as i64 - 2).clamp(0, l as i64 - 1) as usize;
-                        v += weight * current[ii * l + jj];
-                    }
-                }
-                next[i * l + j] = v;
-            }
-        }
-        current = next;
+        current = blur_once(&current, w, l, &k);
     }
     let target: Vec<f64> = current.iter().map(|h| h + 0.0625).collect();
     // applyChanges. Reads come from the world as it is: a column only reads cells it has not written yet.
@@ -500,10 +499,28 @@ mod tests {
     }
 
     #[test]
+    fn gaussian_kernel_is_radius_sized_and_sums_to_one() {
+        // WorldEdit's GaussianKernel(5, 1.0): an 11 x 11 square; the centre weight of kernel(1) is 1 / 4.89764.
+        let k = kernel(5);
+        assert_eq!(k.len(), 11);
+        assert!(k.iter().all(|row| row.len() == 11));
+        let sum: f64 = k.iter().flatten().sum();
+        assert!((sum - 1.0).abs() < 1e-12);
+        assert!((kernel(1)[1][1] - 0.204_17).abs() < 1e-4);
+    }
+
+    #[test]
+    fn blur_reads_the_centre_off_the_map() {
+        // A 1 x 1 map: every sample falls off it and reads the centre, so the value stays.
+        let out = blur_once(&[7.0], 1, 1, &kernel(2));
+        assert!((out[0] - 7.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn snow_smooth_puts_a_snow_layer_on_flat_ground() {
         let mut w = FakeWorld::new();
         w.fill([0, 0, 0], [8, 4, 8], "stone");
-        let out = snow_smooth(&w, &Cuboid::new([0, 0, 0], [8, 10, 8]), 0, 1, None);
+        let out = snow_smooth(&w, &Cuboid::new([0, 0, 0], [8, 10, 8]), 0, 1, None, 5);
         // No blur: the column stands at 5 (the top stone is at 4) plus 1/16, so one snow layer at y 5.
         assert!(out.contains(&([4, 5, 4], w.id("minecraft:snow[layers=1]"))));
     }

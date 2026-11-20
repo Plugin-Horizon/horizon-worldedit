@@ -1813,7 +1813,7 @@ impl Engine {
             Some(m) => Some(Mask::parse(world, m, actor.held.as_deref())?),
             None => None,
         };
-        let ops = ops::snow_smooth(world, &c, iterations, layers, mask.as_ref());
+        let ops = ops::snow_smooth(world, &c, iterations, layers, mask.as_ref(), 5);
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("Snow's height map smoothed. {n} blocks changed.{note}")])
     }
