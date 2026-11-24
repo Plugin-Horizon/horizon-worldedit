@@ -38,8 +38,13 @@ pub const NODES: &[&str] = &[
     "worldedit.brush.ex",
     "worldedit.brush.options.mask",
     "worldedit.brush.options.material",
+    "worldedit.brush.gravity",
+    "worldedit.brush.lower",
+    "worldedit.brush.raise",
+    "worldedit.brush.set",
     "worldedit.brush.smooth",
     "worldedit.brush.snowsmooth",
+    "worldedit.brush.splatter",
     "worldedit.brush.sphere",
     "worldedit.calc",
     "worldedit.butcher",
@@ -917,6 +922,11 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("sphere" | "s") => "worldedit.brush.sphere",
             Some("cylinder" | "cyl" | "c") => "worldedit.brush.cylinder",
             Some("smooth") => "worldedit.brush.smooth",
+            Some("splatter" | "splat") => "worldedit.brush.splatter",
+            Some("gravity" | "grav") => "worldedit.brush.gravity",
+            Some("set") => "worldedit.brush.set",
+            Some("raise") => "worldedit.brush.raise",
+            Some("lower") => "worldedit.brush.lower",
             Some("snowsmooth") => "worldedit.brush.snowsmooth",
             Some("clipboard" | "copy") => "worldedit.brush.clipboard",
             Some("extinguish" | "ex") => "worldedit.brush.ex",
@@ -2454,6 +2464,32 @@ impl Engine {
                 let shape = BrushShape::SnowSmooth { radius: radius(1, 2.0)?, iterations: args.int(2, 4)?.clamp(0, 50) as u32, layers, mask };
                 (shape, None)
             }
+            "splatter" | "splat" => {
+                let p = self.need_pattern(world, actor, args, 1, "brush splatter")?;
+                let decay = args.int(3, 1)?;
+                (BrushShape::Splatter { radius: radius(2, 2.0)?, decay }, Some(p))
+            }
+            "gravity" | "grav" => {
+                let height = match args.value('h') {
+                    Some(v) => Some(v.parse::<i32>().map_err(|_| number_error(v))?),
+                    None => None,
+                };
+                (BrushShape::Gravity { radius: radius(1, 5.0)?, height }, None)
+            }
+            "set" | "raise" | "lower" => {
+                let shape = match args.get(1).map(|s| s.to_ascii_lowercase()).as_deref() {
+                    Some("sphere" | "s") => 0u8,
+                    Some("cylinder" | "cyl" | "c") => 1,
+                    Some("cuboid" | "cub") => 2,
+                    _ => return Err(usage(&format!("brush {kind}"))),
+                };
+                let (k, p) = if kind == "set" {
+                    (0u8, Some(self.need_pattern(world, actor, args, 3, "brush set")?))
+                } else {
+                    (if kind == "raise" { 1 } else { 2 }, None)
+                };
+                (BrushShape::Region { kind: k, shape, radius: radius(2, 5.0)? }, p)
+            }
             // The fire extinguisher: a sphere of air over the fire it finds.
             "extinguish" | "ex" => {
                 let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
@@ -2464,6 +2500,7 @@ impl Engine {
         let (r, h) = match &shape {
             BrushShape::Sphere { radius, .. } | BrushShape::Smooth { radius, .. } | BrushShape::SnowSmooth { radius, .. } => (*radius, 0),
             BrushShape::Paste { .. } => (0.0, 0),
+            BrushShape::Splatter { radius, .. } | BrushShape::Gravity { radius, .. } | BrushShape::Region { radius, .. } => (*radius, 0),
             BrushShape::Cylinder { radius, height, .. } => (*radius, *height),
         };
         if r > self.config.max_brush_radius || f64::from(h) > self.config.max_brush_radius {
@@ -2483,6 +2520,14 @@ impl Engine {
                 format!("Smooth brush equipped ({} x {iterations}x using {}).", *radius as i64, if arg_mask.is_some() { "filter" } else { "any block" })
             }
             BrushShape::Paste { .. } => "Clipboard brush shape equipped.".to_owned(),
+            BrushShape::Splatter { radius, decay } => {
+                if !(0..=10).contains(decay) {
+                    return Err(format!("Splatter brush decay value: {decay} is out of range 0 - 10."));
+                }
+                format!("Splatter brush shape equipped ({} with {decay} decay).", *radius as i64)
+            }
+            BrushShape::Gravity { radius, .. } => format!("Gravity brush equipped ({}).", *radius as i64),
+            BrushShape::Region { kind, radius, .. } => format!("{} brush equipped ({}).", ["Set", "Raise", "Lower"][*kind as usize], *radius as i64),
             BrushShape::SnowSmooth { radius, iterations, layers, mask } => {
                 format!("SnowSmooth brush equipped ({} x {iterations}x using {}), {layers} snow blocks.", *radius as i64, if mask.is_some() { "filter" } else { "any block" })
             }
@@ -2664,6 +2709,11 @@ impl Engine {
             BrushShape::Smooth { .. } => "worldedit.brush.smooth",
             BrushShape::SnowSmooth { .. } => "worldedit.brush.snowsmooth",
             BrushShape::Paste { .. } => "worldedit.brush.clipboard",
+            BrushShape::Splatter { .. } => "worldedit.brush.splatter",
+            BrushShape::Gravity { .. } => "worldedit.brush.gravity",
+            BrushShape::Region { kind: 0, .. } => "worldedit.brush.set",
+            BrushShape::Region { kind: 1, .. } => "worldedit.brush.raise",
+            BrushShape::Region { .. } => "worldedit.brush.lower",
         };
         if let Err(e) = self.permitted(actor, Some(node)).and(self.allowed(actor)) {
             return Some(Reply::err(e));
@@ -2732,6 +2782,76 @@ impl Engine {
                     None => None,
                 };
                 ops::snow_smooth(world, &region, *iterations, *layers, heights.as_ref(), 10)
+            }
+            (BrushShape::Splatter { radius, decay }, Some(p)) => {
+                let (d, sq) = (f64::from(*decay) / 10.0, radius * radius);
+                shapes::sphere(target, [*radius; 3], false)
+                    .into_iter()
+                    .filter(|q| keep(q, world))
+                    .filter(|q| {
+                        let dist = (0..3).map(|a| f64::from(q[a] - target[a]).powi(2)).sum::<f64>();
+                        let h = (salt ^ (q[0] as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (q[1] as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ (q[2] as u64).wrapping_mul(0x1656_67B1_9E37_79F9)).wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+                        let r = ((h ^ (h >> 33)) >> 11) as f64 / (1u64 << 53) as f64;
+                        r > dist / sq * d * 2.0
+                    })
+                    .map(|q| (q, p.pick(salt, q)))
+                    .collect()
+            }
+            (BrushShape::Gravity { radius, height }, _) => {
+                let off = height.map_or(*radius, f64::from);
+                let ymax = (f64::from(target[1]) + off).min(f64::from(hi)) as i32;
+                let ymin = (f64::from(target[1]) - off).max(f64::from(lo)) as i32;
+                let r = *radius as i32;
+                let mut out = Vec::new();
+                for x in target[0] - r..=target[0] + r {
+                    for z in target[2] - r..=target[2] + r {
+                        let mut lowest: Option<i32> = None;
+                        let (mut put, mut gone) = (Vec::new(), Vec::new());
+                        for y in ymin..=ymax {
+                            let Some(s) = world.get([x, y, z]) else { continue };
+                            if world.is_air(s) {
+                                lowest.get_or_insert(y);
+                                continue;
+                            }
+                            let Some(l) = lowest else { continue };
+                            lowest = Some(l + 1);
+                            gone.retain(|g| *g != [x, l, z]);
+                            put.push(([x, l, z], s));
+                            gone.push([x, y, z]);
+                        }
+                        let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
+                        out.extend(put.iter().copied());
+                        out.extend(gone.into_iter().map(|g| (g, air)));
+                    }
+                }
+                out
+            }
+            (BrushShape::Region { kind, shape, radius }, pat) => {
+                let cells = match shape {
+                    0 => shapes::sphere(target, [*radius; 3], false),
+                    1 => shapes::cylinder(target, [*radius; 2], 1, false),
+                    _ => {
+                        let r = *radius as i32;
+                        let mut v = Vec::new();
+                        for x in -r..=r {
+                            for y in -r..=r {
+                                for z in -r..=r {
+                                    v.push([target[0] + x, target[1] + y, target[2] + z]);
+                                }
+                            }
+                        }
+                        v
+                    }
+                };
+                let cells: Vec<Pos> = cells.into_iter().filter(|q| keep(q, world)).collect();
+                match (kind, pat) {
+                    (0, Some(p)) => cells.into_iter().map(|q| (q, p.pick(salt, q))).collect(),
+                    // Deform "y-=1" / "y+=1" in raw coordinates: each block takes the one below (above).
+                    (k, _) => {
+                        let dy = if *k == 1 { -1 } else { 1 };
+                        cells.into_iter().filter_map(|q| world.get([q[0], q[1] + dy, q[2]]).map(|s| (q, s))).collect()
+                    }
+                }
             }
             _ => Vec::new(),
         };

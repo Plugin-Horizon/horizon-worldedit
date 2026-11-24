@@ -30,6 +30,13 @@ pub enum BrushShape {
     Sphere { radius: f64, hollow: bool },
     Cylinder { radius: f64, height: i32, hollow: bool },
     Smooth { radius: f64, iterations: u32 },
+    /// `/brush splatter <pattern> [radius] [decay]` (`SplatterBrush`).
+    Splatter { radius: f64, decay: i32 },
+    /// `/brush gravity [radius] [-h height]` (`GravityBrush`); `height` is the `-h` offset.
+    Gravity { radius: f64, height: Option<i32> },
+    /// `/brush set|raise|lower <sphere|cylinder|cuboid> [radius] ...` (operation brushes). `kind`: 0 set, 1 raise, 2 lower;
+    /// `shape`: 0 sphere, 1 cylinder, 2 cuboid.
+    Region { kind: u8, shape: u8, radius: f64 },
     /// `/brush snowsmooth [radius] [iterations] [-l layers] [-m mask]`: `mask` is the height map's filter (`-m`),
     /// not the `/mask` of the brush.
     SnowSmooth { radius: f64, iterations: u32, layers: i32, mask: Option<String> },
