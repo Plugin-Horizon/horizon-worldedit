@@ -137,7 +137,56 @@ pub fn describe(kind: SelKind, shape: Option<&Shape>, pos1: Option<Pos>, pos2: O
     out
 }
 
+/// The most blocks a structure block outlines along an axis (`ServerCUIHandler.getMaxServerCuiSize`).
+pub const SERVER_CUI_MAX: i32 = 48;
+/// How far (per axis) the outlined box may be from the structure block that draws it.
+const SERVER_CUI_DISTANCE: i32 = 32;
+
+/// The structure block that draws a cuboid selection for a player without the CUI mod
+/// (`ServerCUIHandler.createStructureBlock`): where it stands, and the box it outlines as an offset and a size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructureOutline {
+    pub block: Pos,
+    pub offset: Pos,
+    pub size: Pos,
+}
+
+/// The structure block for `c` as seen by a player at `position` looking along `yaw` and `pitch`: 12 blocks in front
+/// of them, at the selection's height (at most 3 above it, within the build height). None when the box is wider than
+/// 48 blocks or too far from that block to be drawn.
+pub fn structure_outline(c: &Cuboid, position: [f64; 3], yaw: f32, pitch: f32, min_y: i32, max_y: i32) -> Option<StructureOutline> {
+    let size = c.size();
+    if size.iter().any(|&n| n > SERVER_CUI_MAX) {
+        return None;
+    }
+    let (rot_x, rot_y) = (f64::from(yaw), f64::from(pitch));
+    let xz = rot_y.to_radians().cos();
+    let x = (position[0] - (-xz * rot_x.to_radians().sin()) * 12.0) as i32;
+    let z = (position[2] - (xz * rot_x.to_radians().cos()) * 12.0) as i32;
+    let y = min_y.max((max_y.min(c.min[1] + SERVER_CUI_DISTANCE)).min(c.min[1] + 3));
+    let offset = [c.min[0] - x, c.min[1] - y, c.min[2] - z];
+    if offset.iter().any(|v| v.abs() > SERVER_CUI_DISTANCE) {
+        return None;
+    }
+    Some(StructureOutline { block: [x, y, z], offset, size })
+}
+
 impl Engine {
+    /// The structure block to show `player` (who has no CUI mod), if their selection is a cuboid it can draw: the level
+    /// the selection is in, and the block. None for any other selection, a player with the CUI mod or with the server
+    /// outline off (`useServerCUI`, `server-side-cui`), and a selection that is not in `dimension`.
+    pub fn structure_outline_for(&mut self, player: u128, dimension: &str, position: [f64; 3], yaw: f32, pitch: f32, min_y: i32, max_y: i32) -> Option<StructureOutline> {
+        if self.sessions.get(player).cui.is_some() {
+            return None;
+        }
+        let (level, c) = self.outline_of(player)?;
+        let s = self.sessions.get(player);
+        if level != dimension || s.kind != SelKind::Cuboid {
+            return None;
+        }
+        structure_outline(&c, position, yaw, pitch, min_y, max_y)
+    }
+
     /// The client's hello on `worldedit:cui` (`v|<protocol version>`): from now on it is told the player's selection.
     /// A client that says hello again (WorldEditCUI does) is sent the selection again. Anything else is not a hello.
     pub fn cui_hello(&mut self, player: u128, text: &str) -> bool {
@@ -205,6 +254,35 @@ mod tests {
 
     fn run(e: &mut Engine, w: &mut FakeWorld, line: &str) -> String {
         e.command(w, &actor(), line, &Env::default()).text()
+    }
+
+    #[test]
+    fn the_structure_block_stands_twelve_blocks_in_front_of_the_player() {
+        let c = Cuboid::new([-3, 64, -20], [4, 70, -14]);
+        let o = structure_outline(&c, [0.5, 64.0, 0.5], 0.0, 0.0, -64, 319).unwrap();
+        // Facing south (yaw 0) the block is 12 blocks to the north of the player's z; y is 3 above the box's floor.
+        assert_eq!(o.block, [0, 67, -11]);
+        assert_eq!(o.offset, [-3, -3, -9]);
+        assert_eq!(o.size, [8, 7, 7]);
+        // Wider than 48, or too far to reach from the block: nothing is drawn.
+        assert!(structure_outline(&Cuboid::new([0, 64, 0], [48, 64, 0]), [0.5, 64.0, 0.5], 0.0, 0.0, -64, 319).is_none());
+        assert!(structure_outline(&c, [100.5, 64.0, 0.5], 0.0, 0.0, -64, 319).is_none());
+        // The build height bounds the block's y.
+        let low = structure_outline(&Cuboid::new([0, -64, -5], [1, -64, -4]), [0.5, 0.0, 0.5], 0.0, 0.0, -64, 319).unwrap();
+        assert_eq!(low.block[1], -61);
+    }
+
+    #[test]
+    fn only_a_cuboid_of_a_player_without_the_mod_gets_a_structure_block() {
+        let mut e = Engine::default();
+        let mut w = FakeWorld::new();
+        run(&mut e, &mut w, "//pos1 0,64,0");
+        run(&mut e, &mut w, "//pos2 1,65,1");
+        let shown = e.structure_outline_for(7, "minecraft:overworld", [0.5, 64.0, 12.5], 0.0, 0.0, -64, 319);
+        assert_eq!(shown.map(|o| o.size), Some([2, 2, 2]));
+        assert!(e.structure_outline_for(7, "minecraft:the_nether", [0.5, 64.0, 12.5], 0.0, 0.0, -64, 319).is_none());
+        e.cui_hello(7, "v|4");
+        assert!(e.structure_outline_for(7, "minecraft:overworld", [0.5, 64.0, 12.5], 0.0, 0.0, -64, 319).is_none());
     }
 
     #[test]

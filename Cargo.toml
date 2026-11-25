@@ -14,9 +14,3 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 # Already in Horizon's Cargo.lock: the players' session files.
 serde_json = "1"
-
-
-[features]
-default = []
-# Code written against engine APIs that live in local branches (rec-regen: level.regenerate_chunks, rec-world-data: level.delete_chunks).
-next-engine = []

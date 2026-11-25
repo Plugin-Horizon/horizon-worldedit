@@ -836,8 +836,8 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "biomelist" | "biomels" => ("p", "p"),
         "biomeinfo" => ("tp", "tp"),
         "setbiome" | "replacebiome" => ("p", "p"),
-        "regen" => ("bc", "b"),
-        "delchunks" => ("o", ""),
+        "regen" => ("bc", "bc"),
+        "delchunks" => ("o", "o"),
         "perf" => ("h", "h"),
         "registry" => ("p", "p"),
         "snapshot" | "snap" => ("p", "p"),
@@ -950,7 +950,7 @@ fn brush_flags(sub: &str) -> (&'static str, &'static str, &'static str) {
 
 /// Whether flag `c` of command `name` is followed by a value.
 fn takes_value(name: &str, c: char) -> bool {
-    c == 'm' || (c == 'l' && matches!(name, "snowsmooth" | "brush" | "br")) || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "biomelist" | "biomels" | "registry" | "snapshot" | "snap"))
+    c == 'm' || (c == 'o' && name == "delchunks") || (c == 'l' && matches!(name, "snowsmooth" | "brush" | "br")) || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "biomelist" | "biomels" | "registry" | "snapshot" | "snap"))
 }
 
 /// Splits a command's words from its flags. Unknown flags and flags this server does not implement
@@ -1413,7 +1413,7 @@ impl Engine {
             "regen" => self.regen(world, actor, &args),
             "forest" => self.forest(world, actor, &args),
             "flora" => self.flora(world, actor, &args),
-            "delchunks" => self.del_chunks(world, actor),
+            "delchunks" => self.del_chunks(world, actor, &args),
             "world" => self.world_cmd(world, actor, &args),
             "listchunks" => self.list_chunks(actor, &args),
             "searchitem" => self.search_item(world, &args),

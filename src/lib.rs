@@ -202,6 +202,87 @@ fn send_outlines(host: &mut dyn ServerHost) {
     }
 }
 
+thread_local! {
+    /// The structure block each player without the CUI mod was last shown: where it stands, and the box it outlines
+    /// (offset, size).
+    static OUTLINES: RefCell<HashMap<u128, ([i32; 3], [i32; 3], [i32; 3])>> = RefCell::new(HashMap::new());
+}
+
+/// The selection outline for players WITHOUT the WorldEditCUI mod (`ServerCUIHandler`): a structure block in save mode,
+/// shown to that player alone (`player_show_block_entity`) 12 blocks in front of them, whose bounding box is the selection.
+/// Cuboid selections up to 48 blocks a side. Sent when the selection or the block's place changes; the block it replaced
+/// is shown as it really is again when the block moves or the outline goes.
+fn send_server_outlines(host: &mut dyn ServerHost, tick_dimension: &str) {
+    for player in host.players().server_players() {
+        let uuid = player.uuid();
+        let entity = player.entity();
+        let Some(level) = entity.level(&*host) else { continue };
+        if level.dimension_id() != tick_dimension {
+            continue;
+        }
+        let Some((min_y, height)) = level.height(&*host) else { continue };
+        let position = entity.position(&*host).unwrap_or_default();
+        let [yaw, pitch] = entity.rotation(&*host).unwrap_or([0.0, 0.0]);
+        let wanted = we::with(|e| e.structure_outline_for(uuid, tick_dimension, position, yaw, pitch, min_y, min_y + height - 1));
+        let key = wanted.as_ref().map(|o| (o.block, o.offset, o.size));
+        let last = OUTLINES.with(|o| o.borrow().get(&uuid).copied());
+        if key == last {
+            continue;
+        }
+        if let Some((old, _, _)) = last {
+            if key.is_none_or(|(block, _, _)| block != old) {
+                if let Some(real) = level.block_state(&*host, old) {
+                    let _ = player.show_block(&mut *host, old, real);
+                }
+            }
+        }
+        let (Some(outline), Some(key)) = (wanted, key) else {
+            OUTLINES.with(|o| o.borrow_mut().remove(&uuid));
+            continue;
+        };
+        let Some(state) = structure_block_state(&*host) else { continue };
+        let name = player.name(&*host).unwrap_or_default();
+        use we::nbt::Tag as T;
+        let [x, y, z] = outline.block;
+        let tag = T::Compound(
+            [
+                ("name", T::String(format!("worldedit:{name}"))),
+                ("author", T::String(name)),
+                ("metadata", T::String(String::new())),
+                ("x", T::Int(x)),
+                ("y", T::Int(y)),
+                ("z", T::Int(z)),
+                ("posX", T::Int(outline.offset[0])),
+                ("posY", T::Int(outline.offset[1])),
+                ("posZ", T::Int(outline.offset[2])),
+                ("sizeX", T::Int(outline.size[0])),
+                ("sizeY", T::Int(outline.size[1])),
+                ("sizeZ", T::Int(outline.size[2])),
+                ("rotation", T::String("NONE".into())),
+                ("mirror", T::String("NONE".into())),
+                ("mode", T::String("SAVE".into())),
+                ("ignoreEntities", T::Byte(1)),
+                ("showboundingbox", T::Byte(1)),
+                ("id", T::String("minecraft:structure_block".into())),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect(),
+        );
+        let HostTag::Compound(data) = to_host_tag(&tag) else { continue };
+        if player.show_block_entity(&mut *host, outline.block, state, data).is_ok() {
+            OUTLINES.with(|o| o.borrow_mut().insert(uuid, key));
+        }
+    }
+    OUTLINES.with(|o| o.borrow_mut().retain(|uuid, _| player_by_uuid(&*host, *uuid).is_some()));
+}
+
+fn structure_block_state(host: &dyn ServerHost) -> Option<HostState> {
+    let meta = host.block_states();
+    let block = host.block_state_id("minecraft:structure_block")?.block();
+    HostState::of(&meta, block, &[]).ok()
+}
+
 /// Whether the engine accepts command words that start with `/` (the `//set` forms). It does not yet
 /// (`usage_nodes` in the engine's native_server.rs allows only `a-z 0-9 _ -`): flip this when it does, and every
 /// `//command` completes through the same argument kinds as the single-slash ones.
@@ -540,8 +621,6 @@ impl we::World for GameWorld<'_> {
         self.host.levels().list_levels().iter().map(|l| l.dimension_id().to_string()).collect()
     }
 
-    // `rec-regen` (level.regenerate_chunks) and `rec-world-data` (level.delete_chunks): engine branches not merged yet.
-    #[cfg(feature = "next-engine")]
     fn regenerate_chunks(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
         use mod_api::RegenRefusal as Refusal;
         self.level.regenerate_chunks(&mut *self.host, chunks).map_err(|e| match e {
@@ -553,10 +632,67 @@ impl we::World for GameWorld<'_> {
         })
     }
 
-    #[cfg(feature = "next-engine")]
     fn delete_chunks(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
         let list: Vec<(i32, i32)> = chunks.iter().map(|c| (c[0], c[1])).collect();
         self.level.delete_chunks(&mut *self.host, &list).map(|n| n as u32).ok_or_else(|| "the level is not the one in place, or the list is too long".to_owned())
+    }
+
+    fn delete_chunks_with_backup(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
+        let list: Vec<(i32, i32)> = chunks.iter().map(|c| (c[0], c[1])).collect();
+        // The region files that hold the chunks are copied first (at most 32 regions a call), so ask in pieces of whole regions.
+        let mut erased = 0;
+        for part in list.chunks(256) {
+            erased += self
+                .level
+                .delete_chunks_with_backup(&mut *self.host, part)
+                .map(|n| n as u32)
+                .ok_or_else(|| "the backup of the region files failed, or the level is not the one in place, or the chunks reach more than 32 regions".to_owned())?;
+        }
+        Ok(erased)
+    }
+
+    fn saved_chunk_modified(&self, chunk: [i32; 2]) -> Option<i64> {
+        self.level.saved_chunk_modified(&*self.host, chunk)
+    }
+
+    fn generate_region(&mut self, min: we::Pos, max: we::Pos, seed: Option<i64>, biomes: bool) -> Result<we::Generated, String> {
+        use mod_api::GenerateRefusal as Refusal;
+        let mut out = we::Generated::default();
+        for cx in (min[0] >> 4)..=(max[0] >> 4) {
+            for cz in (min[2] >> 4)..=(max[2] >> 4) {
+                let sections = self.level.generate_chunk(&*self.host, [cx, cz], seed).map_err(|e| match e {
+                    Refusal::NotInPlace => "this level is not the one the server is ticking".to_owned(),
+                    Refusal::NoGenerator => "this level has no generator of the game's own".to_owned(),
+                    Refusal::SeedUnsupported => "this level's generator cannot be built again under another seed".to_owned(),
+                    other => format!("the generator refused: {other:?}"),
+                })?;
+                for section in sections {
+                    let base_y = section.section_y * 16;
+                    if base_y > max[1] || base_y + 15 < min[1] {
+                        continue;
+                    }
+                    for y in min[1].max(base_y)..=max[1].min(base_y + 15) {
+                        for z in min[2].max(cz * 16)..=max[2].min(cz * 16 + 15) {
+                            for x in min[0].max(cx * 16)..=max[0].min(cx * 16 + 15) {
+                                let index = (((y - base_y) as usize) << 8) | (((z & 15) as usize) << 4) | (x & 15) as usize;
+                                if let Some(state) = section.blocks.get(index) {
+                                    out.blocks.push(([x, y, z], intern(state.clone())));
+                                }
+                            }
+                        }
+                    }
+                    if biomes {
+                        for (index, biome) in section.biomes.iter().enumerate() {
+                            let cell = [cx * 16 + ((index & 3) as i32) * 4, base_y + ((index >> 4) as i32) * 4, cz * 16 + (((index >> 2) & 3) as i32) * 4];
+                            if (0..3).all(|a| cell[a] + 3 >= min[a] && cell[a] <= max[a]) {
+                                out.biomes.insert(cell, biome.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn generate_tree(&mut self, p: we::Pos, feature: &str) -> bool {
@@ -1058,6 +1194,7 @@ impl Hooks for Mod {
         let HostSide::Server(host) = host else { return };
         ensure_block_ids(&*host);
         send_outlines(&mut *host);
+        send_server_outlines(&mut *host, &event.level.dimension_id().to_string());
         let moves: Vec<_> = TELEPORTS.with(|t| t.borrow_mut().drain(..).collect());
         for (uuid, to, [yaw, pitch]) in moves {
             if let Some(player) = player_by_uuid(&*host, uuid) {
@@ -1078,9 +1215,6 @@ impl Hooks for Mod {
 
     fn server_stopped(&self, _: &mut dyn ServerHost, _: &mut ServerStoppedEvent) {
         // Selections, clipboards, history and queued writes go with the world.
-        // TODO(arismoko-api: player_show_block_entity): the outline for clients WITHOUT the WorldEditCUI mod (WorldEdit's
-        // `ServerCUIHandler`: a structure block with the selection's box, shown to that player only) needs a block entity
-        // shown to one player; `player_show_block` sends a block state without its data. Nothing is drawn for them.
         we::with(|e| e.closed());
     }
 }

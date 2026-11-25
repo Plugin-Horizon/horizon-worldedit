@@ -145,6 +145,22 @@ pub trait World {
     fn regenerate_chunks(&mut self, _chunks: &[[i32; 2]]) -> Result<u32, String> {
         Err("This game cannot regenerate chunks".into())
     }
+    /// What the level's generator makes over the box `min..=max` under `seed` (None: the level's own), as it would
+    /// make it in a new world, without touching the level: every block of the box, and with `biomes` the biome of
+    /// each 4x4x4 cell it reaches (keyed by the cell's minimum corner). Chunks need not be loaded.
+    fn generate_region(&mut self, _min: Pos, _max: Pos, _seed: Option<i64>, _biomes: bool) -> Result<Generated, String> {
+        Err("This game cannot generate chunks on the side".into())
+    }
+    /// When the saved chunk (chunk x, z) was last written, in whole seconds since the Unix epoch; None for a chunk the
+    /// save does not hold.
+    fn saved_chunk_modified(&self, _chunk: [i32; 2]) -> Option<i64> {
+        None
+    }
+    /// `delete_chunks`, after copying the region files that hold the chunks to the level's `backups` folder; nothing is
+    /// erased when the copy fails.
+    fn delete_chunks_with_backup(&mut self, _chunks: &[[i32; 2]]) -> Result<u32, String> {
+        Err("This game cannot back up chunks before deleting them".into())
+    }
     /// Erases these chunks (chunk x, z) from the level's saved data; how many were erased. Chunks that are loaded now
     /// are left alone (`Err` is for a refusal of the whole call).
     fn delete_chunks(&mut self, _chunks: &[[i32; 2]]) -> Result<u32, String> {
@@ -153,6 +169,21 @@ pub trait World {
     /// The ids of the levels this server has (`minecraft:overworld`), for `//world`. Empty where the game cannot say.
     fn level_names(&self) -> Vec<String> {
         Vec::new()
+    }
+}
+
+/// The blocks and biome cells `World::generate_region` returns.
+#[derive(Clone, Debug, Default)]
+pub struct Generated {
+    pub blocks: Vec<(Pos, StateId)>,
+    /// The biome of each 4x4x4 cell, by the cell's minimum corner.
+    pub biomes: std::collections::HashMap<Pos, String>,
+}
+
+impl Generated {
+    /// The biome of the cell that holds `p`.
+    pub fn biome_at(&self, p: Pos) -> Option<&String> {
+        self.biomes.get(&[p[0] >> 2 << 2, p[1] >> 2 << 2, p[2] >> 2 << 2])
     }
 }
 

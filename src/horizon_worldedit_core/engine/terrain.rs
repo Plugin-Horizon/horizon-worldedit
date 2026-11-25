@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::clipboard::biome_cell;
 use crate::horizon_worldedit_core::edit::{Change, Extras};
 use crate::horizon_worldedit_core::pattern::is_solid_name;
 use crate::horizon_worldedit_core::region::add;
@@ -166,16 +167,23 @@ impl Engine {
 
     // ---- regeneration and chunks ----
 
-    /// `//regen [-b]`: the selection's chunks generated again from the world's seed, the part outside the selection (in
-    /// the chunks it only partly covers) put back as it was. Biomes are always regenerated with the blocks.
+    /// `//regen [-b] [-c] [seed]`: the selection generated again. Without a seed or `-c` the engine regenerates the
+    /// selection's chunks from the world's seed, and the part outside the selection (in the chunks it only partly
+    /// covers) is put back as it was; biomes are then always regenerated with the blocks. With a seed, or with `-c`
+    /// (into the clipboard instead of the world), the level's generator is run on the side under that seed and only the
+    /// selection is taken from the result; `-b` takes the biomes with the blocks there.
     pub(super) fn regen(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
-        if args.get(0).is_some() {
-            return Err("Regenerating with another seed is not supported on this server; it uses the world's seed".into());
-        }
+        let seed = match args.get(0) {
+            Some(w) => Some(w.parse::<i64>().map_err(|_| number_error(w))?),
+            None => None,
+        };
         let c = self.region(world, actor)?;
         let chunks = chunks_of(&c);
         if chunks.len() > REGEN_CHUNKS {
             return Err(format!("The selection reaches {} chunks; //regen takes at most {REGEN_CHUNKS} at once", chunks.len()));
+        }
+        if seed.is_some() || args.flag('c') {
+            return self.regen_aside(world, actor, &c, seed, args.flag('b'), args.flag('c'));
         }
         if let Some(missing) = chunks.iter().find(|ch| world.get([ch[0] * 16, c.min[1], ch[1] * 16]).is_none()) {
             return Err(format!("The chunk ({}, {}) is not loaded; stand near it or load it first", missing[0], missing[1]));
@@ -208,17 +216,87 @@ impl Engine {
         Ok(vec!["Region regenerated.".into()])
     }
 
-    /// `/delchunks`: the chunks the selection reaches erased from the saved world. Chunks that are loaded stay (the
-    /// game cannot erase what it holds); the answer says how many.
-    pub(super) fn del_chunks(&mut self, world: &mut dyn World, actor: &Actor) -> R {
+    /// `//regen` under a seed, or into the clipboard: the generator's blocks over the selection (the part of it the
+    /// selection shape holds), written to the world with an undo entry, or kept as the clipboard around the placement.
+    fn regen_aside(&mut self, world: &mut dyn World, actor: &Actor, c: &Cuboid, seed: Option<i64>, biomes: bool, to_clipboard: bool) -> R {
+        let shape = self.shape_of(actor);
+        let generated = world.generate_region(c.min, c.max, seed, biomes).map_err(|e| format!("Unable to regenerate chunks: {e}"))?;
+        let inside = |p: Pos| shape.as_ref().is_none_or(|s| s.contains(p)) && (c.min[0]..=c.max[0]).contains(&p[0]) && (c.min[1]..=c.max[1]).contains(&p[1]) && (c.min[2]..=c.max[2]).contains(&p[2]);
+        let blocks: Vec<(Pos, StateId)> = generated.blocks.iter().copied().filter(|&(p, _)| inside(p)).collect();
+        if to_clipboard {
+            let origin = self.placement(actor)?;
+            let rel = |p: Pos| [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]];
+            let mut clip = Clipboard::from_blocks(blocks.iter().map(|&(p, s)| (rel(p), s)).collect(), "the regenerated region".into());
+            clip.bounds = c.shifted([-origin[0], -origin[1], -origin[2]]);
+            clip.origin = Some((actor.dimension.clone(), origin));
+            if biomes {
+                for &(p, _) in &blocks {
+                    if let Some(b) = generated.biome_at(p) {
+                        clip.biomes.entry(biome_cell(rel(p))).or_insert_with(|| b.clone());
+                    }
+                }
+            }
+            self.sessions.get(actor.uuid).clipboard = Some(clip);
+            return Ok(vec!["Region regenerated.".into()]);
+        }
+        if let Some(missing) = chunks_of(c).iter().find(|ch| world.get([ch[0] * 16, c.min[1], ch[1] * 16]).is_none()) {
+            return Err(format!("The chunk ({}, {}) is not loaded; stand near it or load it first", missing[0], missing[1]));
+        }
+        let before: Vec<(Pos, StateId)> = blocks.iter().filter_map(|&(p, _)| world.get(p).map(|s| (p, s))).collect();
+        let entities_before: HashMap<Pos, Tag> = before.iter().filter(|&&(_, s)| !world.is_air(s)).filter_map(|&(p, _)| world.block_entity_at(p).map(|t| (p, t))).collect();
+        world.write(&blocks);
+        let mut extras = Extras::default();
+        if biomes {
+            let mut cells: Vec<(&Pos, &String)> = generated.biomes.iter().collect();
+            cells.sort();
+            for (&cell, biome) in cells {
+                let reaches = (0..3).all(|a| cell[a] + 3 >= c.min[a] && cell[a] <= c.max[a]);
+                if !reaches {
+                    continue;
+                }
+                let was = world.biome_at(cell);
+                if was.as_deref() != Some(biome.as_str()) && world.set_biome(cell, biome) {
+                    extras.biomes.push((cell, was.unwrap_or_else(|| "minecraft:plains".to_owned()), biome.clone()));
+                }
+            }
+        }
+        let changed: Vec<(Pos, StateId, StateId)> = before
+            .iter()
+            .filter_map(|&(p, old)| {
+                let new = world.get(p)?;
+                (new != old).then_some((p, old, new))
+            })
+            .collect();
+        let entities_after: HashMap<Pos, Tag> = changed.iter().filter(|&&(_, _, s)| !world.is_air(s)).filter_map(|&(p, _, _)| world.block_entity_at(p).map(|t| (p, t))).collect();
+        let change = Change { dimension: actor.dimension.clone(), blocks: changed, at_ms: self.now_ms, entities_before, entities_after, extras };
+        let size = self.config.history_size;
+        self.sessions.get(actor.uuid).remember(change, size);
+        Ok(vec!["Region regenerated.".into()])
+    }
+
+    /// `/delchunks [-o <time>]`: the chunks the selection reaches erased from the saved world, after the region files that
+    /// hold them are copied to the level's `backups` folder. With `-o` only chunks last saved before that time go: a date
+    /// (`2026-01-01`, `2026-01-01T12:30`, UTC) or an age (`30d`, `1y2w`, `12h30m`). Chunks that are loaded stay (the game
+    /// cannot erase what it holds); the answer says how many.
+    pub(super) fn del_chunks(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
         let c = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
-        let chunks = chunks_of(&c);
+        let mut chunks = chunks_of(&c);
+        let mut out = Vec::new();
+        if let Some(text) = args.value('o') {
+            let before = parse_cutoff(text, self.now_ms / 1000)?;
+            let all = chunks.len();
+            // A chunk the save does not hold has nothing to age: it is left out.
+            chunks.retain(|&ch| world.saved_chunk_modified(ch).is_some_and(|t| t < before));
+            if chunks.len() < all {
+                out.push(format!("{} chunk(s) of the selection are newer than that or not saved and were kept.", all - chunks.len()));
+            }
+        }
         let (mut erased, mut asked) = (0u32, 0usize);
         for part in chunks.chunks(DELETE_CHUNKS_PER_CALL) {
-            erased += world.delete_chunks(part).map_err(|e| format!("Failed to erase the chunks: {e}"))?;
+            erased += world.delete_chunks_with_backup(part).map_err(|e| format!("Failed to erase the chunks: {e}"))?;
             asked += part.len();
         }
-        let mut out = vec![format!("{erased} chunk(s) have been erased from the saved world.")];
+        out.insert(0, format!("{erased} chunk(s) have been erased from the saved world; the region files were copied to the level's backups folder first."));
         if (erased as usize) < asked {
             out.push(format!("{} chunk(s) are loaded or held and were left alone; run /delchunks again once nobody is near them.", asked - erased as usize));
         }
@@ -429,6 +507,67 @@ fn world_dimension(actor: &Actor) -> String {
 }
 
 /// The chunks (x, z) a cuboid reaches.
+/// `-o`'s time as seconds since the Unix epoch: a UTC date or date and time, or an age back from `now` (`1y2w3d4h5m6s`).
+fn parse_cutoff(text: &str, now: i64) -> Result<i64, String> {
+    let bad = || format!("'{text}' is not a time: use a date like 2026-01-01 or an age like 30d");
+    let t = text.trim();
+    if t.contains('-') {
+        let (date, clock) = match t.split_once(['T', ' ']) {
+            Some((d, c)) => (d, Some(c)),
+            None => (t, None),
+        };
+        let mut d = date.split('-').map(|v| v.parse::<i64>());
+        let (Some(Ok(y)), Some(Ok(m)), Some(Ok(day)), None) = (d.next(), d.next(), d.next(), d.next()) else { return Err(bad()) };
+        if !(1..=12).contains(&m) || !(1..=31).contains(&day) {
+            return Err(bad());
+        }
+        let mut secs = 0;
+        if let Some(clock) = clock {
+            let mut p = clock.trim_end_matches('Z').split(':').map(|v| v.parse::<i64>());
+            let (Some(Ok(h)), Some(Ok(mi))) = (p.next(), p.next()) else { return Err(bad()) };
+            let s = match p.next() {
+                Some(Ok(s)) => s,
+                Some(Err(_)) => return Err(bad()),
+                None => 0,
+            };
+            if !(0..24).contains(&h) || !(0..60).contains(&mi) || !(0..60).contains(&s) {
+                return Err(bad());
+            }
+            secs = h * 3600 + mi * 60 + s;
+        }
+        // Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's civil-from-days, inverted).
+        let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let doy = (153 * m + 2) / 5 + day - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        return Ok((era * 146_097 + doe - 719_468) * 86_400 + secs);
+    }
+    let mut total = 0i64;
+    let mut number = String::new();
+    for ch in t.chars() {
+        if ch.is_ascii_digit() {
+            number.push(ch);
+            continue;
+        }
+        let n: i64 = number.parse().map_err(|_| bad())?;
+        number.clear();
+        total += n * match ch.to_ascii_lowercase() {
+            'y' => 365 * 86_400,
+            'w' => 7 * 86_400,
+            'd' => 86_400,
+            'h' => 3600,
+            'm' => 60,
+            's' => 1,
+            _ => return Err(bad()),
+        };
+    }
+    if !number.is_empty() || total == 0 {
+        return Err(bad());
+    }
+    Ok(now - total)
+}
+
 fn chunks_of(c: &Cuboid) -> Vec<[i32; 2]> {
     ((c.min[0] >> 4)..=(c.max[0] >> 4)).flat_map(|x| ((c.min[2] >> 4)..=(c.max[2] >> 4)).map(move |z| [x, z])).collect()
 }
@@ -854,6 +993,7 @@ mod tests {
 
     use crate::horizon_worldedit_core::engine::{Actor, Engine, Env};
     use crate::horizon_worldedit_core::world::World as WorldTrait;
+    use crate::horizon_worldedit_core::world::Generated;
 
     /// A fake world that can also regenerate and delete chunks: a regeneration turns the whole chunk to grass blocks.
     struct Terrain {
@@ -913,11 +1053,41 @@ mod tests {
             self.regenerated.extend_from_slice(chunks);
             Ok(chunks.len() as u32)
         }
-        fn delete_chunks(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
+        fn delete_chunks_with_backup(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
             // The chunk (0, 0) is held by a player.
             let gone: Vec<[i32; 2]> = chunks.iter().copied().filter(|c| *c != [0, 0]).collect();
             self.deleted.extend_from_slice(&gone);
             Ok(gone.len() as u32)
+        }
+        fn saved_chunk_modified(&self, chunk: [i32; 2]) -> Option<i64> {
+            // (0, 0) was saved in 2001, (1, 0) in 2033, (2, 0) never.
+            match chunk {
+                [0, 0] => Some(1_000_000_000),
+                [1, 0] => Some(2_000_000_000),
+                _ => None,
+            }
+        }
+        fn generate_region(&mut self, min: Pos, max: Pos, seed: Option<i64>, biomes: bool) -> Result<Generated, String> {
+            // Seed 7 makes sand, any other seed (or the level's own) glass; every cell is desert with biomes.
+            let state = self.inner.id(if seed == Some(7) { "minecraft:sand" } else { "minecraft:glass" });
+            let mut out = Generated::default();
+            for x in min[0]..=max[0] {
+                for y in min[1]..=max[1] {
+                    for z in min[2]..=max[2] {
+                        out.blocks.push(([x, y, z], state));
+                    }
+                }
+            }
+            if biomes {
+                for x in (min[0] >> 2)..=(max[0] >> 2) {
+                    for y in (min[1] >> 2)..=(max[1] >> 2) {
+                        for z in (min[2] >> 2)..=(max[2] >> 2) {
+                            out.biomes.insert([x << 2, y << 2, z << 2], "minecraft:desert".into());
+                        }
+                    }
+                }
+            }
+            Ok(out)
         }
     }
 
@@ -1008,12 +1178,44 @@ mod tests {
         assert_eq!(w.get([7, 5, 5]), Some(stone), "outside the selection, in a chunk it partly covers");
         run(&mut e, &mut w, &a, "/undo");
         assert_eq!(w.get([20, 5, 5]), Some(stone));
-        // Another seed, and the clipboard, are refused by name.
-        fails(&mut e, &mut w, &a, "/regen 12345");
-        fails(&mut e, &mut w, &a, "/regen -c");
         // A chunk that is not loaded.
         w.inner.unloaded.push((1, 0));
         fails(&mut e, &mut w, &a, "/regen");
+    }
+
+    #[test]
+    fn regen_with_a_seed_takes_only_the_selection_from_the_generator() {
+        let (mut e, mut w, a) = (Engine::default(), terrain(), actor(0x7108));
+        w.inner.fill([0, 0, 0], [15, 15, 15], "minecraft:stone");
+        e.select(a.uuid, &a.dimension, [2, 0, 2], [5, 3, 5]);
+        assert_eq!(run(&mut e, &mut w, &a, "/regen 7"), "Region regenerated.");
+        assert!(w.regenerated.is_empty(), "the engine's own regeneration is not used");
+        let (sand, stone) = (w.inner.id("minecraft:sand"), w.inner.id("minecraft:stone"));
+        assert_eq!(w.get([3, 1, 3]), Some(sand));
+        assert_eq!(w.get([6, 1, 3]), Some(stone));
+        assert_eq!(w.get([3, 4, 3]), Some(stone));
+        // The biomes stay without -b and come with it.
+        assert_eq!(w.biome_at([3, 1, 3]).as_deref(), Some("minecraft:plains"));
+        run(&mut e, &mut w, &a, "/regen -b 7");
+        assert_eq!(w.biome_at([3, 1, 3]).as_deref(), Some("minecraft:desert"));
+        // Undo puts back the biomes and then the blocks.
+        run(&mut e, &mut w, &a, "/undo");
+        assert_eq!(w.biome_at([3, 1, 3]).as_deref(), Some("minecraft:plains"));
+        run(&mut e, &mut w, &a, "/undo");
+        assert_eq!(w.get([3, 1, 3]), Some(stone));
+        fails(&mut e, &mut w, &a, "/regen seven");
+    }
+
+    #[test]
+    fn regen_into_the_clipboard_leaves_the_world_alone() {
+        let (mut e, mut w, a) = (Engine::default(), terrain(), actor(0x7109));
+        w.inner.fill([0, 0, 0], [15, 15, 15], "minecraft:stone");
+        e.select(a.uuid, &a.dimension, [2, 0, 2], [3, 1, 3]);
+        assert_eq!(run(&mut e, &mut w, &a, "/regen -c 7"), "Region regenerated.");
+        assert_eq!(w.get([2, 0, 2]), Some(w.inner.id("minecraft:stone")));
+        // The origin is the player's block, so a paste there puts the generated sand where it would have stood.
+        run(&mut e, &mut w, &a, "/paste");
+        assert_eq!(w.get([2, 0, 2]), Some(w.inner.id("minecraft:sand")));
     }
 
     #[test]
@@ -1033,7 +1235,32 @@ mod tests {
         assert!(said.contains("1 chunk(s) have been erased"), "{said}");
         assert!(said.contains("1 chunk(s) are loaded or held"), "{said}");
         assert_eq!(w.deleted, vec![[1, 0]]);
-        fails(&mut e, &mut w, &a, "delchunks -o 2026-01-01");
+    }
+
+    #[test]
+    fn delchunks_o_keeps_chunks_saved_after_the_time() {
+        let (mut e, mut w, a) = (Engine::default(), terrain(), actor(0x710a));
+        // Chunks (0, 0) saved 2001-09-09, (1, 0) 2033-05-18, (2, 0) never.
+        e.select(a.uuid, &a.dimension, [0, 0, 0], [47, 15, 15]);
+        let said = run(&mut e, &mut w, &a, "delchunks -o 2020-01-01");
+        assert!(said.contains("2 chunk(s) of the selection are newer than that or not saved"), "{said}");
+        // (0, 0) is held by a player, so nothing is erased, and (1, 0) and (2, 0) were not asked for.
+        assert!(w.deleted.is_empty());
+        let said = run(&mut e, &mut w, &a, "delchunks -o 2040-01-01T00:00");
+        assert!(said.contains("1 chunk(s) have been erased") || said.contains("0 chunk(s) have been erased"), "{said}");
+        assert_eq!(w.deleted, vec![[1, 0]]);
+        fails(&mut e, &mut w, &a, "delchunks -o yesterday");
+    }
+
+    #[test]
+    fn cutoffs_are_dates_or_ages() {
+        assert_eq!(parse_cutoff("1970-01-02", 0), Ok(86_400));
+        assert_eq!(parse_cutoff("2001-09-09T01:46:40", 0), Ok(1_000_000_000));
+        assert_eq!(parse_cutoff("1d2h", 1_000_000), Ok(1_000_000 - 86_400 - 7200));
+        assert_eq!(parse_cutoff("2w", 2_000_000), Ok(2_000_000 - 14 * 86_400));
+        assert!(parse_cutoff("", 0).is_err());
+        assert!(parse_cutoff("5", 0).is_err());
+        assert!(parse_cutoff("2026-13-01", 0).is_err());
     }
 
     #[test]
