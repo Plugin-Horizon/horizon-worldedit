@@ -108,6 +108,21 @@ pub trait World {
     fn generate_tree(&mut self, _p: Pos, _feature: &str) -> bool {
         false
     }
+    /// Generates the structure `structure` (a `minecraft:` structure id: a village, a shipwreck...) with its start at `p`, as
+    /// `/place structure` does; whether it placed anything. Where the game cannot say, nothing is placed.
+    fn generate_structure(&mut self, _p: Pos, _structure: &str) -> bool {
+        false
+    }
+    /// Uses the item `item` on the block at `p` from the side `face` (`ItemUseFunction`); bone meal grows what it can. Whether
+    /// something happened. The default does nothing.
+    fn use_item(&mut self, _p: Pos, _item: &str, _face: [i32; 3]) -> bool {
+        false
+    }
+    /// Applies the side effects `//update` names to the blocks at `positions`: `lighting` (the light is checked), `neighbors`
+    /// (the neighbours are told) and `update` (the block's shape follows its neighbours). How many positions were visited.
+    fn apply_side_effects(&mut self, _positions: &[Pos], _lighting: bool, _neighbors: bool, _update: bool) -> usize {
+        0
+    }
     /// Breaks the block at `p` the way a tool does: with its drops when `drop`, none otherwise. Whether a block broke.
     /// The default writes air and drops nothing.
     fn break_block(&mut self, p: Pos, _drop: bool) -> bool {
@@ -208,6 +223,11 @@ pub mod fake {
         pub spawned: Vec<(String, [f64; 3], Tag)>,
         /// The feature ids `generate_tree` was asked for.
         pub planted: Vec<String>,
+        /// The structures `generate_structure` was asked for, the items `use_item` was asked to use (with the block), and the
+        /// positions `apply_side_effects` visited.
+        pub structures: Vec<String>,
+        pub used: Vec<(Pos, String)>,
+        pub side_effects: Vec<(Pos, bool, bool, bool)>,
         /// Biomes by 4x4x4 cell (`p >> 2`); a cell not here is plains.
         pub biomes: HashMap<Pos, String>,
         /// How many `write` calls there were, and how many blocks they carried.
@@ -259,7 +279,7 @@ pub mod fake {
             for t in ["bottom", "top", "double"] {
                 states.push(BlockState::new("minecraft:stone_slab", &[("type", t), ("waterlogged", "false")]));
             }
-            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), entities: HashMap::new(), mobs: Vec::new(), mob_data: Vec::new(), spawned: Vec::new(), planted: Vec::new(), biomes: HashMap::new(), write_calls: 0, written: 0 }
+            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), entities: HashMap::new(), mobs: Vec::new(), mob_data: Vec::new(), spawned: Vec::new(), planted: Vec::new(), structures: Vec::new(), used: Vec::new(), side_effects: Vec::new(), biomes: HashMap::new(), write_calls: 0, written: 0 }
         }
         pub fn id(&self, spec: &str) -> StateId {
             self.resolve(&BlockState::parse(spec).unwrap()).unwrap_or_else(|| panic!("no state {spec}"))
@@ -363,6 +383,20 @@ pub mod fake {
             for (p, t) in entities {
                 self.entities.insert(*p, t.clone());
             }
+        }
+        fn generate_structure(&mut self, _p: Pos, structure: &str) -> bool {
+            self.structures.push(structure.to_owned());
+            structure != "minecraft:nothing"
+        }
+        fn use_item(&mut self, p: Pos, item: &str, _face: [i32; 3]) -> bool {
+            self.used.push((p, item.to_owned()));
+            true
+        }
+        fn apply_side_effects(&mut self, positions: &[Pos], lighting: bool, neighbors: bool, update: bool) -> usize {
+            for &p in positions {
+                self.side_effects.push((p, lighting, neighbors, update));
+            }
+            positions.len()
         }
         fn generate_tree(&mut self, p: Pos, feature: &str) -> bool {
             // A trunk of four logs with a cap of leaves, where the way is free; the feature id is only recorded.

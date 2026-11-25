@@ -54,6 +54,23 @@ pub enum BrushShape {
     /// `/brush forest|feature|biome <shape> [radius] [density] <type>` (`kind` 0, 1, 2; `shape` as `Region`): `arg` is the
     /// tree type, the feature id or the biome; `density` in percent; `column` is `-c` of the biome brush (the whole height).
     Terrain { kind: u8, shape: u8, radius: f64, density: f64, arg: String, column: bool },
+    /// `/brush apply|paint <shape> <radius> [density] forest|item|set` (`ApplyBrushCommands`, `PaintBrushCommands`): `paint` acts on
+    /// the ground of a share (`density`, percent) of the shape's columns, apply on every block of the shape.
+    Apply { paint: bool, op: ApplyOp, shape: u8, radius: f64, density: f64 },
+    /// `/brush deform <shape> [radius] [expression] [-r] [-o]` (`Deform`): `mode` 0 unit cube, 1 raw coordinates (`-r`), 2 offset by
+    /// `offset`, the placement position when bound (`-o`).
+    Deform { shape: u8, radius: f64, expression: String, mode: u8, offset: [i32; 3] },
+}
+
+/// What an apply or paint brush does to a block.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApplyOp {
+    /// Plant this tree type (`TreeGeneratorFactory`).
+    Forest(String),
+    /// Use this item on the block, from this side (`ItemUseFactory`).
+    Item(String, [i32; 3]),
+    /// Replace the block by the pattern (`ReplaceFactory`).
+    Set(Pattern),
 }
 
 #[derive(Clone, Debug, PartialEq)]

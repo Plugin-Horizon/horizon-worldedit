@@ -119,23 +119,18 @@ impl Engine {
         Ok(Coords::new(args.flag('r'), args.flag('o'), args.flag('c'), c, placement))
     }
 
-    /// `//generate [-hroc] <pattern> <expression>`
-    pub(super) fn generate(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
-        let c = self.region(world, actor)?;
-        if args.words.len() < 2 {
-            return Err(usage("generate"));
-        }
-        let pattern = self.pattern(world, actor, args.get(0))?;
-        let expr = compile(&args.rest(1), &["x", "y", "z", "type", "data"])?;
-        let coords = self.expression_coords(actor, args, &c)?;
+    /// The positions of `c` (inside the selection's shape) where `expr` is above zero; with `-h` only those with a
+    /// neighbour where it is not (`ArbitraryShape.generate`).
+    fn expression_hits(&mut self, world: &mut dyn World, actor: &Actor, args: &Args, c: &Cuboid, expr: &Expr) -> Result<Vec<Pos>, String> {
+        let coords = self.expression_coords(actor, args, c)?;
         let shape = self.shape_of(actor);
-        let salt = self.salt(actor);
         let inside = |p: Pos| -> Result<bool, String> {
             let mut vars = vars_at(&coords, p);
             Ok(expr.run(&mut vars)? > 0.0)
         };
+        let _ = world;
         let mut chosen: Vec<Pos> = Vec::new();
-        for p in Self::shape_positions(&shape, &c) {
+        for p in Self::shape_positions(&shape, c) {
             if inside(p)? {
                 chosen.push(p);
             }
@@ -156,9 +151,52 @@ impl Engine {
             }
             chosen = hollow;
         }
+        Ok(chosen)
+    }
+
+    /// The expression timeout of this player in milliseconds (`//timeout`, else `calculation.timeout`); negative for none.
+    pub(super) fn timeout_of(&mut self, actor: &Actor) -> i64 {
+        self.sessions.get(actor.uuid).timeout_ms.unwrap_or(self.config.calculation_timeout)
+    }
+
+    /// `//generate [-hroc] <pattern> <expression>`
+    pub(super) fn generate(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let c = self.region(world, actor)?;
+        if args.words.len() < 2 {
+            return Err(usage("generate"));
+        }
+        let pattern = self.pattern(world, actor, args.get(0))?;
+        let expr = compile(&args.rest(1), &["x", "y", "z", "type", "data"])?;
+        let salt = self.salt(actor);
+        let chosen = self.expression_hits(world, actor, args, &c, &expr)?;
         let ops: Vec<(Pos, StateId)> = chosen.into_iter().map(|p| (p, pattern.pick(salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been created.{note}")])
+    }
+
+    /// `//generatebiome [-hroc] <biome> <expression>` (`//genbiome`, `//gb`): the biome of every block of the selection where
+    /// the expression is above zero. Biomes are kept per 4x4x4 cell, so a cell changes when any of its blocks is chosen.
+    pub(super) fn generate_biome(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+        let c = self.region(world, actor)?;
+        if args.words.len() < 2 {
+            return Err(usage("generatebiome"));
+        }
+        let biome = super::terrain::biome_arg(world, args.get(0).unwrap_or_default())?;
+        let expr = compile(&args.rest(1), &["x", "y", "z"])?;
+        let chosen = self.expression_hits(world, actor, args, &c, &expr)?;
+        let mut extras = crate::horizon_worldedit_core::edit::Extras::default();
+        let mut seen: std::collections::BTreeSet<Pos> = std::collections::BTreeSet::new();
+        for p in &chosen {
+            let cell = [(p[0] >> 2) << 2, (p[1] >> 2) << 2, (p[2] >> 2) << 2];
+            if seen.insert(cell) {
+                let before = world.biome_at(cell);
+                if world.set_biome(cell, &biome) {
+                    extras.biomes.push((cell, before.unwrap_or_else(|| "minecraft:plains".to_owned()), biome.clone()));
+                }
+            }
+        }
+        self.remember_biomes(actor, &actor.dimension, extras);
+        Ok(vec![format!("{} biomes affected.", chosen.len())])
     }
 
     /// `//deform [-roc] <expression>`
@@ -183,6 +221,65 @@ impl Engine {
         }
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been deformed.{note}")])
+    }
+
+    /// `/brush deform <shape> [radius] [expression] [-r] [-o]`: the brush the item will carry.
+    pub(super) fn deform_brush_shape(&mut self, actor: &Actor, args: &Args) -> Result<BrushShape, String> {
+        let shape = Self::region_shape(args.get(1).ok_or_else(|| usage("brush deform"))?)?;
+        let mut at = 2;
+        let mut radius = 5.0;
+        if let Some(w) = args.get(at).filter(|w| w.parse::<f64>().is_ok()) {
+            radius = w.parse::<f64>().map_err(|_| number_error(w))?;
+            at += 1;
+        }
+        let expression = if args.words.len() > at { args.rest(at) } else { "y-=0.2".to_owned() };
+        compile(&expression, &["x", "y", "z"])?;
+        self.check_brush_radius(radius)?;
+        let (mode, offset) = if args.flag('r') {
+            (1, [0; 3])
+        } else if args.flag('o') {
+            (2, self.placement(actor)?)
+        } else {
+            (0, [0; 3])
+        };
+        Ok(BrushShape::Deform { shape, radius, expression, mode, offset })
+    }
+
+    /// A click with a deform brush at `target`.
+    pub(super) fn deform_brush_use(&mut self, world: &mut dyn World, actor: &Actor, brush: &BrushShape, target: Pos, mask: Option<&Mask>) -> Reply {
+        let BrushShape::Deform { shape, radius, expression, mode, offset } = brush else { return Reply::default() };
+        let (lo, hi) = (world.min_y(), world.max_y());
+        let cells: Vec<Pos> = super::more::region_cells(target, *shape, *radius).into_iter().filter(|p| (lo..=hi).contains(&p[1])).collect();
+        let Some(first) = cells.first().copied() else { return Reply::default() };
+        let mut c = Cuboid::new(first, first);
+        for p in &cells {
+            c = Cuboid { min: [0, 1, 2].map(|a| c.min[a].min(p[a])), max: [0, 1, 2].map(|a| c.max[a].max(p[a])) };
+        }
+        let expr = match compile(expression, &["x", "y", "z"]) {
+            Ok(e) => e,
+            Err(e) => return Reply::err(e),
+        };
+        let coords = Coords::new(*mode == 1, *mode == 2, false, &c, *offset);
+        let mut ops: Vec<(Pos, StateId)> = Vec::new();
+        for p in cells {
+            if mask.is_some_and(|m| !world.get(p).is_some_and(|s| m.hits(&*world, s))) {
+                continue;
+            }
+            let mut vars = vars_at(&coords, p);
+            if let Err(e) = expr.run(&mut vars) {
+                return Reply::err(e);
+            }
+            let out = coords.output([vars["x"], vars["y"], vars["z"]]);
+            let src = out.map(|v| (v + 0.5).floor() as i32);
+            if let Some(s) = world.get(src) {
+                ops.push((p, s));
+            }
+        }
+        match self.commit(world, actor, ops) {
+            Ok(_) => Reply::default(),
+            Err(e) if e.starts_with("Max blocks changed") => Reply::err("Max blocks change limit reached.".into()),
+            Err(e) => Reply::err(e),
+        }
     }
 
     /// The entities within `radius` of the placement (a cylinder of full height), or all loaded ones for `-1`.

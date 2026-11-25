@@ -116,6 +116,14 @@ pub(crate) const ENTRIES: &[Entry] = &[
     Entry { name: "snapshot", aliases: &["snap"], desc: "Snapshot commands for restoring backups" },
     Entry { name: "restore", aliases: &["/restore"], desc: "Restore the selection from a snapshot" },
     Entry { name: "worldedit", aliases: &["we"], desc: "WorldEdit commands" },
+    Entry { name: "/pos", aliases: &[], desc: "Set positions" },
+    Entry { name: "/update", aliases: &[], desc: "Apply side effects to your selection" },
+    Entry { name: "/feature", aliases: &[], desc: "Generate Minecraft features" },
+    Entry { name: "/structure", aliases: &[], desc: "Generate Minecraft structures" },
+    Entry { name: "/generatebiome", aliases: &["/genbiome", "/gb"], desc: "Sets biome according to a formula." },
+    Entry { name: "toggleeditwand", aliases: &[], desc: "Remind the user that the wand is now a tool and can be unbound with /tool none." },
+    Entry { name: "forestgen", aliases: &[], desc: "Generate a forest" },
+    Entry { name: "pumpkins", aliases: &[], desc: "Generate pumpkin patches" },
 ];
 
 /// The sub-commands of the commands that have some: name and description.
@@ -143,8 +151,11 @@ const SUBS: &[(&str, &[(&str, &str)])] = &[
     (
         "brush",
         &[
+            ("apply", "Apply brush, apply a function to every block"),
             ("cylinder", "Choose the cylinder brush"),
+            ("deform", "Deform brush, applies an expression to an area"),
             ("none", "Unbind a bound brush from your current item"),
+            ("paint", "Paint brush, apply a function to a surface"),
             ("smooth", "Choose the terrain softener brush"),
             ("sphere", "Choose the sphere brush"),
         ],

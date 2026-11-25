@@ -383,7 +383,9 @@ impl Engine {
             | BrushShape::Morph { radius, .. }
             | BrushShape::Butcher { radius, .. }
             | BrushShape::Heightmap { radius, .. }
-            | BrushShape::Terrain { radius, .. } => *radius = size,
+            | BrushShape::Terrain { radius, .. }
+            | BrushShape::Apply { radius, .. }
+            | BrushShape::Deform { radius, .. } => *radius = size,
             _ => {}
         }
     }

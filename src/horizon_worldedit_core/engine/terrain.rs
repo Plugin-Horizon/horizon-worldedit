@@ -43,10 +43,10 @@ fn set_world_override(player: u128, level: Option<String>) {
 }
 
 /// A small generator (splitmix64) for the random choices: a salt from the session gives each command its own run.
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(super) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -54,10 +54,10 @@ impl Rng {
         z ^ (z >> 31)
     }
     /// A double in `[0, 1)`.
-    fn unit(&mut self) -> f64 {
+    pub(super) fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
-    fn below(&mut self, n: usize) -> usize {
+    pub(super) fn below(&mut self, n: usize) -> usize {
         (self.next() % n.max(1) as u64) as usize
     }
 }
@@ -65,7 +65,7 @@ impl Rng {
 // ---- biomes ----
 
 /// `minecraft:old_growth_pine_taiga` as `Old Growth Pine Taiga`: the name the game shows for a biome.
-fn rich_name(id: &str) -> String {
+pub(super) fn rich_name(id: &str) -> String {
     id.rsplit(':')
         .next()
         .unwrap_or(id)
@@ -79,19 +79,19 @@ fn rich_name(id: &str) -> String {
 }
 
 /// A name with its namespace: `plains` is `minecraft:plains`.
-fn namespaced(name: &str) -> String {
+pub(super) fn namespaced(name: &str) -> String {
     let name = name.trim().to_ascii_lowercase();
     if name.contains(':') { name } else { format!("minecraft:{name}") }
 }
 
 /// The 4x4x4 cells (their corner blocks) that hold a block of `c`.
-fn cells_of(c: &Cuboid) -> impl Iterator<Item = Pos> {
+pub(super) fn cells_of(c: &Cuboid) -> impl Iterator<Item = Pos> {
     let (lo, hi) = (c.min, c.max);
     ((lo[0] >> 2)..=(hi[0] >> 2)).flat_map(move |x| ((lo[2] >> 2)..=(hi[2] >> 2)).flat_map(move |z| ((lo[1] >> 2)..=(hi[1] >> 2)).map(move |y| [x << 2, y << 2, z << 2])))
 }
 
 /// The biome `name` names, checked against the level's table when it gives one.
-fn biome_arg(world: &dyn World, name: &str) -> Result<String, String> {
+pub(super) fn biome_arg(world: &dyn World, name: &str) -> Result<String, String> {
     let id = namespaced(name);
     let known = world.biome_names();
     if !known.is_empty() && !known.iter().any(|b| *b == id) {
@@ -156,7 +156,7 @@ impl Engine {
     }
 
     /// Keeps the cells a biome edit set for `//undo`.
-    fn remember_biomes(&mut self, actor: &Actor, dimension: &str, extras: Extras) {
+    pub(super) fn remember_biomes(&mut self, actor: &Actor, dimension: &str, extras: Extras) {
         if extras.is_empty() {
             return;
         }
@@ -349,7 +349,7 @@ impl Engine {
     }
 
     /// Runs `place` over `area` (the blocks it may touch, trees reach past it) and remembers what changed for `//undo`.
-    fn plant_with_undo(&mut self, world: &mut dyn World, actor: &Actor, area: &Cuboid, place: impl FnOnce(&mut dyn World) -> usize) -> Result<usize, String> {
+    pub(super) fn plant_with_undo(&mut self, world: &mut dyn World, actor: &Actor, area: &Cuboid, place: impl FnOnce(&mut dyn World) -> usize) -> Result<usize, String> {
         let reach = Cuboid::new([area.min[0] - TREE_REACH[0], area.min[1], area.min[2] - TREE_REACH[0]], [area.max[0] + TREE_REACH[0], (area.max[1] + TREE_REACH[1]).min(world.max_y()), area.max[2] + TREE_REACH[0]]);
         if reach.volume() > SCAN_LIMIT {
             return Err(format!("The area is {} blocks with the room trees need; one edit handles at most {SCAN_LIMIT}", reach.volume()));
@@ -491,7 +491,7 @@ impl Engine {
 }
 
 /// `density` percent as a share, `[0, 100]`.
-fn density_arg(word: Option<&str>, default: f64) -> Result<f64, String> {
+pub(super) fn density_arg(word: Option<&str>, default: f64) -> Result<f64, String> {
     let d = match word {
         Some(w) => w.parse::<f64>().map_err(|_| number_error(w))?,
         None => default,
@@ -502,7 +502,7 @@ fn density_arg(word: Option<&str>, default: f64) -> Result<f64, String> {
     Ok(d / 100.0)
 }
 
-fn world_dimension(actor: &Actor) -> String {
+pub(super) fn world_dimension(actor: &Actor) -> String {
     actor.dimension.clone()
 }
 
@@ -612,7 +612,7 @@ fn outside_of(world: &dyn World, c: &Cuboid, chunks: &[[i32; 2]]) -> Outside {
 
 /// Sets `biome` over `c` (only where `mask` accepts the block, when given), cell by cell; the blocks affected and what
 /// `//undo` needs. A box without a mask goes to the game in as few calls as the cell cap allows.
-fn apply_biome(world: &mut dyn World, c: &Cuboid, biome: &str, mask: Option<&Mask>) -> Result<(u64, Extras), String> {
+pub(super) fn apply_biome(world: &mut dyn World, c: &Cuboid, biome: &str, mask: Option<&Mask>) -> Result<(u64, Extras), String> {
     let cells: Vec<Pos> = cells_of(c).collect();
     let mut extras = Extras::default();
     if mask.is_none() {
@@ -660,7 +660,7 @@ fn apply_biome(world: &mut dyn World, c: &Cuboid, biome: &str, mask: Option<&Mas
 // ---- trees ----
 
 #[derive(Clone, Copy, Debug)]
-enum Tree {
+pub(super) enum Tree {
     /// A configured feature of the game.
     Feature(&'static str),
     /// WorldEdit's own pine, made of logs and leaves.
@@ -707,13 +707,13 @@ const TREES: &[(&[&str], Tree)] = &[
 ];
 
 /// `TreeType.lookup`: a tree type by any of its names.
-fn tree_lookup(name: &str) -> Option<Tree> {
+pub(super) fn tree_lookup(name: &str) -> Option<Tree> {
     let name = name.to_ascii_lowercase();
     TREES.iter().find(|(names, _)| names.contains(&name.as_str())).map(|&(_, t)| t)
 }
 
 /// `TreeType.generate`: plants `tree` with its base at `p`; whether it did.
-fn plant(world: &mut dyn World, tree: Tree, p: Pos, rng: &mut Rng) -> bool {
+pub(super) fn plant(world: &mut dyn World, tree: Tree, p: Pos, rng: &mut Rng) -> bool {
     match tree {
         Tree::Feature(id) => world.generate_tree(p, id),
         Tree::Chorus => world.generate_tree([p[0], p[1] - 1, p[2]], "minecraft:chorus_plant"),
@@ -776,7 +776,7 @@ fn pine(world: &mut dyn World, base: Pos, rng: &mut Rng) -> bool {
 
 /// `//forest`'s `LayerVisitor` over `columns`: in a share (`density`) of them the first solid block from `y1` down
 /// takes a tree, on top of it, or in its place when it is plants or snow. How many trees stand.
-fn plant_forest(world: &mut dyn World, columns: &[(i32, i32)], y0: i32, y1: i32, density: f64, tree: Tree, rng: &mut Rng) -> usize {
+pub(super) fn plant_forest(world: &mut dyn World, columns: &[(i32, i32)], y0: i32, y1: i32, density: f64, tree: Tree, rng: &mut Rng) -> usize {
     let mut planted = 0;
     for &(x, z) in columns {
         if rng.unit() > density {
@@ -804,7 +804,7 @@ fn plant_forest(world: &mut dyn World, columns: &[(i32, i32)], y0: i32, y1: i32,
 
 /// The first block that is not air from `y1` down to `y0` in the column, with its state; `None` when the column
 /// starts below ground (its top block is not air) or holds none.
-fn ground(world: &dyn World, x: i32, z: i32, y0: i32, y1: i32) -> Option<(Pos, StateId)> {
+pub(super) fn ground(world: &dyn World, x: i32, z: i32, y0: i32, y1: i32) -> Option<(Pos, StateId)> {
     let top = (y1 + 1).min(world.max_y());
     if world.get([x, top, z]).is_some_and(|s| !world.is_air(s)) && top > y1 {
         return None;

@@ -699,6 +699,33 @@ impl we::World for GameWorld<'_> {
         self.level.generate_tree(&mut *self.host, p, feature).unwrap_or(false)
     }
 
+    fn use_item(&mut self, p: we::Pos, item: &str, _face: [i32; 3]) -> bool {
+        // Bone meal is the one item the host can use without a player (as a dispenser does); other items need a use-on-block call.
+        item == "minecraft:bone_meal" && self.level.bone_meal(&mut *self.host, p)
+    }
+
+    fn apply_side_effects(&mut self, positions: &[we::Pos], lighting: bool, neighbors: bool, update: bool) -> usize {
+        let mut visited = 0;
+        for &p in positions {
+            let Some(state) = self.level.block_state(&*self.host, p) else { continue };
+            if update {
+                if let Some(next) = self.level.update_from_neighbour_shapes(&mut *self.host, p) {
+                    if next != state {
+                        self.write(&[(p, intern(next))]);
+                    }
+                }
+            }
+            if neighbors {
+                let _ = self.level.update_neighbors(&mut *self.host, p, state, mod_api::NeighbourUpdate::Neighbours);
+            }
+            if lighting {
+                self.level.check_light(&mut *self.host, p);
+            }
+            visited += 1;
+        }
+        visited
+    }
+
     fn break_block(&mut self, p: we::Pos, drop: bool) -> bool {
         // `Level.destroyBlock` with no tool in hand: the drops (when asked) are spawned as the game does.
         matches!(self.level.destroy_block(&mut *self.host, p, drop, None, false), Ok(Some(_)))

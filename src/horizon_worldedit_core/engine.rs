@@ -22,6 +22,7 @@ mod cui;
 mod expr;
 mod extra;
 mod help;
+mod more;
 mod nav;
 mod select;
 mod snap;
@@ -187,6 +188,18 @@ pub const NODES: &[&str] = &[
     "worldedit.brush.options.range",
     "worldedit.brush.options.size",
     "worldedit.brush.options.tracemask",
+    "worldedit.brush.deform",
+    "worldedit.brush.apply",
+    "worldedit.brush.paint",
+    "worldedit.brush.item",
+    "worldedit.generation.feature",
+    "worldedit.generation.structure",
+    "worldedit.generation.shape.biome",
+    "worldedit.generation.forest",
+    "worldedit.generation.pumpkins",
+    "worldedit.update",
+    "worldedit.wand.toggle",
+    "worldedit.timeout.unrestricted",
 ];
 
 /// Nodes that lift a limit and need operator level 4 where `node_levels` names no other level (the original's `default: op`
@@ -424,6 +437,16 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("snapshot", "<args:text>"),
     ("snap", "<args:text>"),
     ("restore", "[snapshot:text]"),
+    ("pos", "[args:text]"),
+    ("update", "[sideeffects:word]"),
+    ("feature", "<feature:word>"),
+    ("structure", "<structure:word>"),
+    ("generatebiome", "<args:text>"),
+    ("genbiome", "<args:text>"),
+    ("gb", "<args:text>"),
+    ("toggleeditwand", ""),
+    ("forestgen", "[args:text]"),
+    ("pumpkins", "[size:integer]"),
 ];
 
 /// The typed usages, one per sub-command path: the names a command answers to (aliases too), the flags
@@ -539,6 +562,17 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
             "heightmap <image:word>",
             "heightmap <image:word> <radius:number>",
             "heightmap <image:word> <radius:number> <intensity:number>",
+            "deform <shape:word>",
+            "deform <shape:word> <radius:number>",
+            "deform <shape:word> <radius:number> <expression:text>",
+            "apply <shape:word> <radius:number> forest <type:word>",
+            "apply <shape:word> <radius:number> item <item:word>",
+            "apply <shape:word> <radius:number> item <item:word> <direction:word>",
+            "apply <shape:word> <radius:number> set <block:pattern>",
+            "paint <shape:word> <radius:number> <density:number> forest <type:word>",
+            "paint <shape:word> <radius:number> <density:number> item <item:word>",
+            "paint <shape:word> <radius:number> <density:number> item <item:word> <direction:word>",
+            "paint <shape:word> <radius:number> <density:number> set <block:pattern>",
         ],
     ),
     (&["mask"], "", &["", "<filter:mask>"]),
@@ -590,6 +624,14 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["registry"], "p", &["{flags} <registry:word> <query:text>"]),
     (&["snapshot", "snap"], "p", &["list", "list -p <page:integer>", "use <name:text>", "sel <index:integer>", "before <date:text>", "after <date:text>"]),
     (&["restore"], "", &["", "<snapshot:text>"]),
+    (&["pos"], "", &["", "<x:word> <y:word> <z:word>", "<position:word>"]),
+    (&["update"], "", &["", "<sideeffects:word>"]),
+    (&["feature"], "", &["<feature:word>"]),
+    (&["structure"], "", &["<structure:word>"]),
+    (&["generatebiome", "genbiome", "gb"], "hroc", &["{flags} <biome:word> <expression:text>"]),
+    (&["toggleeditwand"], "", &[""]),
+    (&["forestgen"], "", &["", "<size:integer>", "<size:integer> <type:word>", "<size:integer> <type:word> <density:number>"]),
+    (&["pumpkins"], "", &["", "<size:integer>"]),
 ];
 
 /// The direction words the usages list. The short forms (`n`, `u`, `f`...) are accepted too; the
@@ -679,7 +721,7 @@ fn qualify(rest: &str, mid: &BTreeSet<String>) -> String {
 /// names in `BOTH_FORMS` it registers both ways (`/brush` and `//brush`); every other command is
 /// registered with a leading `/` in its name (`@Command(name = "/set")`), which the player types as
 /// `//set`.
-pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "range", "tracemask", "superpickaxe", "pickaxe", "sp", "clearclipboard", "selwand", "navwand", "farwand", "tree", "deltree", "lrbuild", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks", "snapshot", "snap"];
+pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "range", "tracemask", "superpickaxe", "pickaxe", "sp", "clearclipboard", "selwand", "navwand", "farwand", "tree", "deltree", "lrbuild", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks", "snapshot", "snap", "toggleeditwand", "forestgen", "pumpkins"];
 pub const BOTH_FORMS: &[&str] = &[
     "brush", "br", "schem", "schematic", "undo", "redo", "clearhistory", "material", "removeabove", "removebelow", "removenear", "replacenear", "fixwater", "fixlava", "snow", "thaw", "green", "extinguish", "ex", "ext", "gmask",
     "toggleplace", "searchitem", "ascend", "asc", "descend", "desc", "thru", "jumpto", "j", "unstuck", "ceil", "restore",
@@ -822,7 +864,8 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "snowsmooth" => ("lm", "lm"),
         "chunk" => ("sc", "sc"),
         "size" => ("c", "c"),
-        "generate" | "gen" | "g" => ("hroc", "hroc"),
+        "generate" | "gen" | "g" | "generatebiome" => ("hroc", "hroc"),
+        "pos" => ("s", "s"),
         "deform" => ("rocl", "roc"),
         "butcher" => ("pnagbtfrw", "pnagbtfrw"),
         "wand" => ("n", "n"),
@@ -876,6 +919,14 @@ fn usage(name: &str) -> String {
         "rot" | "rotate" => "<rotate-y> [rotate-x] [rotate-z]".into(),
         "flip" | "mirror" => "[direction]".into(),
         "pos1" | "pos2" => "[coordinates]".into(),
+        "pos" => "[pos1] [pos2...] [-s selector]".into(),
+        "update" => "[side-effects]".into(),
+        "feature" => "<feature>".into(),
+        "structure" => "<structure>".into(),
+        "generatebiome" => "<biome> <expression...>".into(),
+        "forestgen" => "[size] [type] [density]".into(),
+        "pumpkins" => "[size]".into(),
+        "brush deform" => "<shape> [radius] [expression] [-r] [-o]".into(),
         "chunk" => "[coordinates]".into(),
         "generate" | "gen" | "g" => "<pattern> <expression...>".into(),
         "deform" => "<expression...>".into(),
@@ -944,13 +995,14 @@ fn brush_flags(sub: &str) -> (&'static str, &'static str, &'static str) {
         "butcher" | "kill" => ("pngabtfrw", "pngabtfrw", ""),
         "heightmap" => ("efr", "efr", ""),
         "biome" => ("c", "c", ""),
+        "deform" => ("ro", "ro", ""),
         _ => ("", "", ""),
     }
 }
 
 /// Whether flag `c` of command `name` is followed by a value.
 fn takes_value(name: &str, c: char) -> bool {
-    c == 'm' || (c == 'o' && name == "delchunks") || (c == 'l' && matches!(name, "snowsmooth" | "brush" | "br")) || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "biomelist" | "biomels" | "registry" | "snapshot" | "snap"))
+    c == 'm' || (c == 's' && name == "pos") || (c == 'o' && name == "delchunks") || (c == 'l' && matches!(name, "snowsmooth" | "brush" | "br")) || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "biomelist" | "biomels" | "registry" | "snapshot" | "snap"))
 }
 
 /// Splits a command's words from its flags. Unknown flags and flags this server does not implement
@@ -1033,7 +1085,14 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "trim" => "worldedit.selection.trim",
         "help" => "worldedit.help",
         "wand" => "worldedit.wand",
-        "pos1" | "pos2" => "worldedit.selection.pos",
+        "pos1" | "pos2" | "pos" => "worldedit.selection.pos",
+        "toggleeditwand" => "worldedit.wand.toggle",
+        "generatebiome" => "worldedit.generation.shape.biome",
+        "update" => "worldedit.update",
+        "feature" => "worldedit.generation.feature",
+        "structure" => "worldedit.generation.structure",
+        "forestgen" => "worldedit.generation.forest",
+        "pumpkins" => "worldedit.generation.pumpkins",
         "hpos1" | "hpos2" => "worldedit.selection.hpos",
         "chunk" => "worldedit.selection.chunk",
         "expand" => "worldedit.selection.expand",
@@ -1105,6 +1164,9 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("morph" | "erode" | "dilate") => "worldedit.brush.morph",
             Some("butcher" | "kill") => "worldedit.brush.butcher",
             Some("heightmap") => "worldedit.brush.heightmap",
+            Some("deform") => "worldedit.brush.deform",
+            Some("apply") => "worldedit.brush.apply",
+            Some("paint") => "worldedit.brush.paint",
             Some("clipboard" | "copy") => "worldedit.brush.clipboard",
             Some("extinguish" | "ex") => "worldedit.brush.ex",
             _ => return None,
@@ -1277,7 +1339,9 @@ impl Engine {
     fn permitted(&self, actor: &Actor, node: Option<&str>) -> Result<(), String> {
         let nodes: Vec<&str> = node.map(|n| n.split('|').collect()).unwrap_or_default();
         let level = nodes.iter().map(|n| self.node_level(n)).min().unwrap_or(self.config.permission_level);
-        if actor.permission >= level || nodes.iter().any(|n| actor.granted.contains(*n)) {
+        // `no-op-permissions`: operators are held to the permission system like everyone else (a level of 0 is everyone).
+        let by_level = actor.permission >= level && (!self.config.no_op_permissions || level == 0);
+        if by_level || nodes.iter().any(|n| actor.granted.contains(*n)) {
             return Ok(());
         }
         Err("You are not permitted to do that. Are you in the right mode?".into())
@@ -1351,6 +1415,7 @@ impl Engine {
             "desc" => "descend".to_owned(),
             "j" => "jumpto".to_owned(),
             "gen" | "g" => "generate".to_owned(),
+            "genbiome" | "gb" => "generatebiome".to_owned(),
             "biomels" => "biomelist".to_owned(),
             "snap" => "snapshot".to_owned(),
             "pickaxe" | "sp" => "superpickaxe".to_owned(),
@@ -1377,7 +1442,7 @@ impl Engine {
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
         let writes = !matches!(
             name.as_str(),
-            "we" | "worldedit" | "wand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "range" | "brushsize" | "tracemask" | "superpickaxe" | "togglepickaxe" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks" | "biomelist" | "biomeinfo" | "world" | "butcher" | "remove" | "timeout" | "fast" | "perf" | "reorder" | "drawsel" | "watchdog" | "registry" | "snapshot"
+            "we" | "worldedit" | "wand" | "pos" | "toggleeditwand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "range" | "brushsize" | "tracemask" | "superpickaxe" | "togglepickaxe" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks" | "biomelist" | "biomeinfo" | "world" | "butcher" | "remove" | "timeout" | "fast" | "perf" | "reorder" | "drawsel" | "watchdog" | "registry" | "snapshot"
         );
         if writes && self.queue.busy(actor.uuid) {
             return Reply::err("Your last edit is still being written; wait a moment".into());
@@ -1423,6 +1488,14 @@ impl Engine {
             "butcher" => self.butcher(world, actor, &args),
             "remove" => self.remove_entities(world, actor, &args),
             "pos1" | "pos2" => self.pos(world, actor, name == "pos1", &args),
+            "pos" => self.pos_cmd(world, actor, &args),
+            "update" => self.update_cmd(world, actor, &args),
+            "feature" => self.feature_cmd(world, actor, &args),
+            "structure" => self.structure_cmd(world, actor, &args),
+            "generatebiome" => self.generate_biome(world, actor, &args),
+            "toggleeditwand" => self.toggle_edit_wand(),
+            "forestgen" => self.forest_gen(world, actor, &args),
+            "pumpkins" => self.pumpkins(world, actor, &args),
             "hpos1" | "hpos2" => self.hpos(world, actor, name == "hpos1"),
             "sel" | "desel" => self.sel(actor, &name, &args),
             "size" => self.size(world, actor, &args),
@@ -2753,6 +2826,8 @@ impl Engine {
                 }
                 (BrushShape::Butcher { radius: r, flags }, None)
             }
+            "deform" => (self.deform_brush_shape(actor, args)?, None),
+            "apply" | "paint" => (self.apply_brush_shape(world, actor, args, kind == "paint")?, None),
             "heightmap" => {
                 let name = args.get(1).ok_or_else(|| usage("brush heightmap"))?;
                 let dir = env.config_file.parent().map(|p| p.join("assets")).unwrap_or_else(|| PathBuf::from("assets"));
@@ -2780,6 +2855,7 @@ impl Engine {
             BrushShape::Paste { .. } => (0.0, 0),
             BrushShape::Splatter { radius, .. } | BrushShape::Gravity { radius, .. } | BrushShape::Region { radius, .. } | BrushShape::Snow { radius, .. } | BrushShape::Morph { radius, .. } | BrushShape::Heightmap { radius, .. } => (*radius, 0),
             BrushShape::Butcher { .. } | BrushShape::Terrain { .. } => (0.0, 0),
+            BrushShape::Apply { radius, .. } | BrushShape::Deform { radius, .. } => (*radius, 0),
             BrushShape::Cylinder { radius, height, .. } => (*radius, *height),
         };
         self.check_brush_radius(r.max(f64::from(h)))?;
@@ -2813,6 +2889,8 @@ impl Engine {
             BrushShape::Butcher { radius, .. } => format!("Butcher brush equipped ({}).", *radius as i64),
             BrushShape::Heightmap { radius, .. } => format!("Heightmap brush equipped ({}).", *radius as i64),
             BrushShape::Terrain { .. } => String::new(),
+            BrushShape::Apply { paint, op, .. } => format!("Set brush to {}.", more::describe_apply(*paint, op)),
+            BrushShape::Deform { expression, .. } => format!("Set brush to deformation of {expression}."),
             BrushShape::SnowSmooth { radius, iterations, layers, mask } => {
                 format!("SnowSmooth brush equipped ({} x {iterations}x using {}), {layers} snow blocks.", *radius as i64, if mask.is_some() { "filter" } else { "any block" })
             }
@@ -2824,8 +2902,15 @@ impl Engine {
         if let Some(o) = s.brush_opts.get_mut(&item) {
             o.size = None;
         }
+        let warn = matches!(&shape, BrushShape::Apply { op: crate::horizon_worldedit_core::session::ApplyOp::Item(..), .. });
         s.brushes.insert(item.clone(), Brush { shape, pattern, mask });
-        Ok(vec![msg, Self::unbind_hint()])
+        let mut out = Vec::new();
+        if warn {
+            out.push(more::ITEM_WARNING.to_owned());
+        }
+        out.push(msg);
+        out.push(Self::unbind_hint());
+        Ok(out)
     }
 
     /// `WorldEdit.checkMaxBrushRadius`: only a positive limit limits.
@@ -2974,6 +3059,9 @@ impl Engine {
             BrushShape::Morph { .. } => "worldedit.brush.morph",
             BrushShape::Butcher { .. } => "worldedit.brush.butcher",
             BrushShape::Heightmap { .. } => "worldedit.brush.heightmap",
+            BrushShape::Apply { paint: false, .. } => "worldedit.brush.apply",
+            BrushShape::Apply { .. } => "worldedit.brush.paint",
+            BrushShape::Deform { .. } => "worldedit.brush.deform",
             BrushShape::Terrain { kind: 0, .. } => "worldedit.brush.forest",
             BrushShape::Terrain { kind: 1, .. } => "worldedit.brush.feature",
             BrushShape::Terrain { .. } => "worldedit.brush.biome",
@@ -3023,6 +3111,12 @@ impl Engine {
                 Err(e) if e.starts_with("Max blocks changed") => Reply::err("Max blocks change limit reached.".into()),
                 Err(e) => Reply::err(e),
             });
+        }
+        if matches!(&brush.shape, BrushShape::Apply { .. }) {
+            return Some(self.apply_brush_use(world, actor, &brush.shape, target, mask.as_ref()));
+        }
+        if matches!(&brush.shape, BrushShape::Deform { .. }) {
+            return Some(self.deform_brush_use(world, actor, &brush.shape, target, mask.as_ref()));
         }
         // The forest, feature and biome brushes act through the game, not through block writes.
         if let BrushShape::Terrain { .. } = &brush.shape {

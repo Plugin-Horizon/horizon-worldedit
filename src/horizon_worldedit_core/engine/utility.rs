@@ -484,16 +484,21 @@ impl Engine {
         Ok(out)
     }
 
-    /// `//timeout [ms]`: the evaluation timeout (`calculation.timeout`, 100 ms). Recorded only: the calculator
-    /// here has no timeout to apply it to.
+    /// `//timeout [ms]`: the evaluation timeout, `calculation.timeout` unless given; a player without `worldedit.timeout.unrestricted`
+    /// may not go above `calculation.max-timeout`.
     pub(super) fn timeout(&mut self, actor: &Actor, args: &Args) -> R {
+        let default = self.config.calculation_timeout;
         let limit = match args.get(0) {
-            Some(w) => w.parse::<i64>().map_err(|_| number_error(w))?.max(-1),
-            None => DEFAULT_TIMEOUT_MS,
+            Some(w) => i64::from(w.parse::<i32>().map_err(|_| number_error(w))?).max(-1),
+            None => default,
         };
+        let max = self.config.calculation_max_timeout;
+        if !self.holds(actor, "worldedit.timeout.unrestricted") && max > -1 && limit > max {
+            return Err(format!("Your maximum allowable timeout is {max}ms."));
+        }
         self.sessions.get(actor.uuid).timeout_ms = Some(limit);
         let mut line = format!("Timeout time set to {limit}ms.");
-        if limit != DEFAULT_TIMEOUT_MS {
+        if limit != default {
             line.push_str(" (Use //timeout to go back to the default.)");
         }
         Ok(vec![line])
@@ -647,9 +652,6 @@ impl Engine {
         Ok(out)
     }
 }
-
-/// `//timeout`'s default, `calculation.timeout`, in milliseconds.
-const DEFAULT_TIMEOUT_MS: i64 = 100;
 
 /// `on`/`true` and `off`/`false`, any case: the switch words of `//fast` and `//drawsel`.
 fn switch_arg(word: &str) -> Option<bool> {
