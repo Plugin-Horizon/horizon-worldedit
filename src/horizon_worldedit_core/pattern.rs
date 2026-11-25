@@ -287,7 +287,7 @@ impl Pattern {
         }
         let trimmed = spec.trim();
         // The parsers that take the whole input: `#clipboard`, `^...`, `*...` (the random list comes first, as in WorldEdit).
-        if !trimmed.contains(',') || trimmed.starts_with('^') || trimmed.starts_with('*') || trimmed.starts_with("##") {
+        if split_entries(trimmed).len() == 1 {
             if let Some(found) = Self::dynamic_pattern(world, trimmed, hand) {
                 return found;
             }
