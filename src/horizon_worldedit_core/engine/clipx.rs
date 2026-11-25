@@ -48,6 +48,29 @@ impl Engine {
         (extras, mobs)
     }
 
+    /// `-e` and `-b` of `//stack` and `//move`: the entities and biomes of `c` as a clipboard, read before the blocks change, and the
+    /// ids of the entities taken. `None` when neither flag is set.
+    pub(super) fn extras_source(&mut self, world: &mut dyn World, actor: &Actor, args: &Args, c: &Cuboid) -> Result<Option<(Clipboard, Vec<u64>)>, String> {
+        if !args.flag('e') && !args.flag('b') {
+            return Ok(None);
+        }
+        let mut clip = Clipboard::copy(world, c, c.min, &actor.dimension)?;
+        let (_, taken) = self.copy_extras(world, args, &mut clip, c, c.min, &None);
+        Ok(Some((clip, taken)))
+    }
+
+    /// The entities and biomes of `clip` made at each of `ats` (its origin is the region's minimum), with what `//undo` needs.
+    pub(super) fn paste_extras_at(world: &mut dyn World, clip: &Clipboard, args: &Args, ats: &[Pos]) -> Extras {
+        let mut all = Extras::default();
+        for &at in ats {
+            let plan = clip.extras_plan(at, args.flag('e'), args.flag('b'));
+            let (extras, _) = Self::paste_extras(world, plan);
+            all.biomes.extend(extras.biomes);
+            all.spawned.extend(extras.spawned);
+        }
+        all
+    }
+
     /// Keeps what a paste did besides blocks with that paste's history entry: on the edit just remembered when the
     /// paste changed blocks, else as an edit of its own.
     pub(super) fn remember_extras(&mut self, actor: &Actor, blocks_changed: usize, extras: Extras) {

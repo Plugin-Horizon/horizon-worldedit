@@ -189,6 +189,38 @@ impl Clipboard {
         plan
     }
 
+    /// `//revolve -e -b`: the entities and biome cells one revolution step of `degrees` about the origin makes, with the origin
+    /// at `at`. Entities turn as points about the origin and face the turned way; a biome cell goes where its blocks go.
+    pub fn revolved_plan(&self, at: Pos, degrees: f64, mobs: bool, biomes: bool) -> ExtrasPlan {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let mut plan = ExtrasPlan::default();
+        if mobs {
+            for m in &self.mobs {
+                let (x, z) = (m.pos[0], m.pos[2]);
+                let pos = [x * cos + z * sin + f64::from(at[0]), m.pos[1] + f64::from(at[1]), -x * sin + z * cos + f64::from(at[2])];
+                let mut nbt = m.nbt.clone();
+                set_yaw(&mut nbt, &|yaw| yaw - degrees as f32);
+                plan.mobs.push((m.kind.clone(), pos, entity_data_at(&nbt, at, pos)));
+            }
+        }
+        if biomes && !self.biomes.is_empty() {
+            let mut seen: HashMap<Pos, ()> = HashMap::new();
+            let mut columns: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+            for &(rel, _) in &self.blocks {
+                let Some(biome) = self.biomes.get(&biome_cell(rel)) else { continue };
+                let (fx, fz) = (f64::from(rel[0]), f64::from(rel[2]));
+                let q = [(fx * cos + fz * sin + 0.5).floor() as i32, rel[1], (-fx * sin + fz * cos + 0.5).floor() as i32];
+                let p = add(at, q);
+                columns.insert((p[0], p[2]));
+                if seen.insert([p[0] >> 2, p[1] >> 2, p[2] >> 2], ()).is_none() {
+                    plan.biomes.push((p, biome.clone()));
+                }
+            }
+            plan.columns = columns.len();
+        }
+        plan
+    }
+
     /// The entities a paste at `at` creates: type, position in the world, and the saved data made fit for a new
     /// entity (no UUID, a hanging entity's block position moved with the paste).
     pub fn mobs_at(&self, at: Pos) -> Vec<(String, [f64; 3], Tag)> {

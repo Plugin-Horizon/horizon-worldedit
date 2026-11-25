@@ -4,7 +4,7 @@
 use crate::horizon_worldedit_core::brushes;
 use crate::horizon_worldedit_core::clipboard::Clipboard;
 use crate::horizon_worldedit_core::config::Config;
-use crate::horizon_worldedit_core::edit::{plan_with, Change, Queue};
+use crate::horizon_worldedit_core::edit::{plan_with, Change, Extras, Queue};
 use crate::horizon_worldedit_core::nbt::Tag;
 use crate::horizon_worldedit_core::ops;
 use crate::horizon_worldedit_core::pattern::{next_salt, Mask, Pattern};
@@ -480,11 +480,11 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["snowsmooth"], "lm", &["{flags}", "<iterations:integer> {flags}"]),
     (&["line"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
     (&["curve"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
-    (&["revolve"], "r", &["<count:integer>", "{flags} <count:integer>"]),
-    (&["stack"], "asr", &["{flags}", "<count:integer> {flags}", "<count:integer> {dir} {flags}"]),
+    (&["revolve"], "reb", &["<count:integer>", "{flags} <count:integer>"]),
+    (&["stack"], "asrbe", &["{flags}", "<count:integer> {flags}", "<count:integer> {dir} {flags}"]),
     (
         &["move"],
-        "as",
+        "asbe",
         &["{flags}", "<distance:integer> {flags}", "<distance:integer> {dir} {flags}", "<distance:integer> {dir} <leave:pattern> {flags}"],
     ),
     (&["sphere", "hsphere"], "hr", &["{flags} <block:pattern> <radii:word> {flags}"]),
@@ -611,7 +611,7 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["world"], "", &["", "<world:word>"]),
     (&["placement"], "", &["pos1", "player", "here", "world", "min", "max", "pos1 <multiplier:integer>", "player <multiplier:integer>", "here <multiplier:integer>", "world <multiplier:integer>", "min <multiplier:integer>", "max <multiplier:integer>", "pos1 <multiplier:integer> {dir}", "player <multiplier:integer> {dir}", "here <multiplier:integer> {dir}", "world <multiplier:integer> {dir}", "min <multiplier:integer> {dir}", "max <multiplier:integer> {dir}"]),
     (&["generate", "gen", "g"], "hroc", &["{flags} <block:pattern> <expression:text>"]),
-    (&["deform"], "roc", &["{flags} <expression:text>"]),
+    (&["deform"], "rocl", &["{flags} <expression:text>"]),
     (&["butcher"], "pnagbtfrw", &["{flags}", "{flags} <radius:integer>"]),
     (&["remove", "rem", "rement"], "", &["<type:word> <radius:integer>"]),
     (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
@@ -852,12 +852,12 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
     match name {
         "copy" | "cut" => ("ebm", "ebm"),
         "paste" => ("abenosvm", "aonsmeb"),
-        "stack" => ("abersm", "asrm"),
-        "move" => ("abesm", "asm"),
+        "stack" => ("abersm", "abersm"),
+        "move" => ("abesm", "abesm"),
         "sphere" | "hsphere" => ("hr", "hr"),
         "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "cone" => ("h", "h"),
         "brush" | "br" => ("hlmaovbepngtfrws", "hlmaovepngbtfrws"),
-        "revolve" => ("mreb", "mr"),
+        "revolve" => ("mreb", "mreb"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
         "distr" => ("cdpm", "cdpm"),
@@ -866,7 +866,7 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "size" => ("c", "c"),
         "generate" | "gen" | "g" | "generatebiome" => ("hroc", "hroc"),
         "pos" => ("s", "s"),
-        "deform" => ("rocl", "roc"),
+        "deform" => ("rocl", "rocl"),
         "butcher" => ("pnagbtfrw", "pnagbtfrw"),
         "wand" => ("n", "n"),
         "sel" => ("d", "d"),
@@ -988,7 +988,7 @@ fn usage(name: &str) -> String {
 fn brush_flags(sub: &str) -> (&'static str, &'static str, &'static str) {
     match sub {
         "sphere" | "s" | "cylinder" | "cyl" | "c" => ("h", "h", ""),
-        "clipboard" | "copy" => ("avoebm", "avom", "m"),
+        "clipboard" | "copy" => ("avoebm", "avoebm", "m"),
         "snowsmooth" => ("lm", "lm", "lm"),
         "gravity" | "grav" => ("h", "h", "h"),
         "snow" => ("s", "s", ""),
@@ -2209,6 +2209,9 @@ impl Engine {
             }
         }
         let sign = if args.flag('r') { 1.0 } else { -1.0 };
+        if args.flag('e') || args.flag('b') {
+            let _ = self.copy_extras(world, args, &mut clip, &c, origin, &None);
+        }
         let mut writes: Vec<(Pos, StateId)> = Vec::new();
         let mut entities: HashMap<Pos, Tag> = HashMap::new();
         for i in 1..count {
@@ -2224,6 +2227,16 @@ impl Engine {
         let writes: Vec<(Pos, StateId)> = last.into_iter().map(|(p, s)| (crate::horizon_worldedit_core::region::add(origin, p), s)).collect();
         let entities: HashMap<Pos, Tag> = entities.into_iter().map(|(p, t)| (crate::horizon_worldedit_core::region::add(origin, p), t)).collect();
         let (n, note) = self.commit_with(world, actor, writes, entities)?;
+        if args.flag('e') || args.flag('b') {
+            let mut all = Extras::default();
+            for i in 1..count {
+                let plan = clip.revolved_plan(origin, sign * 360.0 * f64::from(i) / f64::from(count), args.flag('e'), args.flag('b'));
+                let (extras, _) = Self::paste_extras(world, plan);
+                all.biomes.extend(extras.biomes);
+                all.spawned.extend(extras.spawned);
+            }
+            self.remember_extras(actor, n, all);
+        }
         Ok(vec![format!("The selection has been pasted {count} times."), format!("{n} blocks changed.{note}")])
     }
 
@@ -2279,7 +2292,13 @@ impl Engine {
         let (ops, copied) = ops::stack(world, &c, step, count, args.flag('a'), mask.as_ref())?;
         let shifts: Vec<Pos> = (1..=count).map(|n| crate::horizon_worldedit_core::region::scale(step, n)).collect();
         let entities = ops::carried_entities(world, &c, &shifts, mask.as_ref());
-        let (_, note) = self.commit_with(world, actor, ops, entities)?;
+        let source = self.extras_source(world, actor, args, &c)?;
+        let (changed, note) = self.commit_with(world, actor, ops, entities)?;
+        if let Some((clip, _)) = &source {
+            let ats: Vec<Pos> = shifts.iter().map(|&by| crate::horizon_worldedit_core::region::add(c.min, by)).collect();
+            let extras = Self::paste_extras_at(world, clip, args, &ats);
+            self.remember_extras(actor, changed, extras);
+        }
         if args.flag('s') {
             self.sessions.get(actor.uuid).set_selection(c.shifted(crate::horizon_worldedit_core::region::scale(step, count)), &actor.dimension);
         }
@@ -2305,7 +2324,16 @@ impl Engine {
         let salt = self.salt(actor);
         let (ops, moved) = ops::move_region(world, &c, by, &leave, salt, args.flag('a'), mask.as_ref())?;
         let entities = ops::carried_entities(world, &c, &[by], mask.as_ref());
-        let (_, note) = self.commit_with(world, actor, ops, entities)?;
+        let source = self.extras_source(world, actor, args, &c)?;
+        let (changed, note) = self.commit_with(world, actor, ops, entities)?;
+        if let Some((clip, taken)) = &source {
+            // The entities move: the ones in the region go, and are made again at the target.
+            if args.flag('e') && !taken.is_empty() {
+                world.remove_entities(taken);
+            }
+            let extras = Self::paste_extras_at(world, clip, args, &[crate::horizon_worldedit_core::region::add(c.min, by)]);
+            self.remember_extras(actor, changed, extras);
+        }
         if args.flag('s') {
             self.sessions.get(actor.uuid).set_selection(c.shifted(by), &actor.dimension);
         }
@@ -2749,7 +2777,7 @@ impl Engine {
                     }
                     None => None,
                 };
-                let shape = BrushShape::Paste { clip, ignore_air: args.flag('a'), use_origin: args.flag('o'), structure_void: args.flag('v'), mask };
+                let shape = BrushShape::Paste { clip, ignore_air: args.flag('a'), use_origin: args.flag('o'), structure_void: args.flag('v'), mask, entities: args.flag('e'), biomes: args.flag('b') };
                 (shape, None)
             }
             // SnowSmoothBrush: `-l` snow blocks under the snow, `-m` the mask of the height map.
@@ -3087,7 +3115,7 @@ impl Engine {
         };
         // ClipboardBrush.build: the copy's centre goes to the target (its origin with -o); air left out with -a,
         // structure voids unless -v, and only the blocks the -m mask accepts are pasted.
-        if let BrushShape::Paste { clip, ignore_air, use_origin, structure_void, mask: source } = &brush.shape {
+        if let BrushShape::Paste { clip, ignore_air, use_origin, structure_void, mask: source, entities: paste_mobs, biomes: paste_biomes } = &brush.shape {
             let source = match source.as_deref().map(|m| Mask::parse(world, m, None)) {
                 Some(Ok(m)) => Some(m),
                 Some(Err(e)) => return Some(Reply::err(e)),
@@ -3106,8 +3134,15 @@ impl Engine {
                 writes.retain(|(_, s)| m.hits(w, *s));
             }
             let entities = clip.entities_for(at, &writes);
+            let plan = clip.extras_plan(at, *paste_mobs, *paste_biomes);
             return Some(match self.commit_with(world, actor, writes, entities) {
-                Ok(_) => Reply::default(),
+                Ok(changed) => {
+                    if *paste_mobs || *paste_biomes {
+                        let (extras, _) = Self::paste_extras(world, plan);
+                        self.remember_extras(actor, changed.0, extras);
+                    }
+                    Reply::default()
+                }
                 Err(e) if e.starts_with("Max blocks changed") => Reply::err("Max blocks change limit reached.".into()),
                 Err(e) => Reply::err(e),
             });

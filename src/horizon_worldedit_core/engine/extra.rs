@@ -199,7 +199,7 @@ impl Engine {
         Ok(vec![format!("{} biomes affected.", chosen.len())])
     }
 
-    /// `//deform [-roc] <expression>`
+    /// `//deform [-roc] [-l] <expression>`: with `-l` the blocks are fetched from the clipboard, in its own coordinate system.
     pub(super) fn deform(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
         let c = self.region(world, actor)?;
         if args.words.is_empty() {
@@ -208,15 +208,35 @@ impl Engine {
         let expr = compile(&args.rest(0), &["x", "y", "z"])?;
         let coords = self.expression_coords(actor, args, &c)?;
         let shape = self.shape_of(actor);
+        // `-l`: the source is the clipboard, with a coordinate system made from its own box (`TransformUtil`, clipboard minimum
+        // as the placement).
+        let source: Option<(HashMap<Pos, StateId>, Coords, Cuboid)> = if args.flag('l') {
+            let clip = self.sessions.get(actor.uuid).clipboard.as_ref().ok_or("Your clipboard is empty. Use //copy first.")?;
+            let b = clip.bounds;
+            let blocks: HashMap<Pos, StateId> = clip.blocks.iter().copied().collect();
+            Some((blocks, Coords::new(args.flag('r'), args.flag('o'), args.flag('c'), &b, b.min), b))
+        } else {
+            None
+        };
+        let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
         let mut ops: Vec<(Pos, StateId)> = Vec::new();
         for p in Self::shape_positions(&shape, &c) {
             let mut vars = vars_at(&coords, p);
             expr.run(&mut vars)?;
-            let out = coords.output([vars["x"], vars["y"], vars["z"]]);
-            let src = out.map(|v| (v + 0.5).floor() as i32);
-            // A source that is not loaded or outside the world leaves the block as it is.
-            if let Some(s) = world.get(src) {
-                ops.push((p, s));
+            let out = [vars["x"], vars["y"], vars["z"]];
+            match &source {
+                Some((blocks, src_coords, bounds)) => {
+                    let at = src_coords.output(out).map(|v| (v + 0.5).floor() as i32);
+                    let state = if bounds.contains(at) { blocks.get(&at).copied().unwrap_or(air) } else { air };
+                    ops.push((p, state));
+                }
+                None => {
+                    let src = coords.output(out).map(|v| (v + 0.5).floor() as i32);
+                    // A source that is not loaded or outside the world leaves the block as it is.
+                    if let Some(s) = world.get(src) {
+                        ops.push((p, s));
+                    }
+                }
             }
         }
         let (n, note) = self.commit(world, actor, ops)?;

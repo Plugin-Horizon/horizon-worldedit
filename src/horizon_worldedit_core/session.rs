@@ -50,7 +50,7 @@ pub enum BrushShape {
     SnowSmooth { radius: f64, iterations: u32, layers: i32, mask: Option<String> },
     /// `/brush clipboard [-a -v -o -m mask]`: the clipboard as it was when the brush was equipped (WorldEdit keeps
     /// the holder, not a copy of it later). `structure_void`: `-v`, paste structure voids too.
-    Paste { clip: Clipboard, ignore_air: bool, use_origin: bool, structure_void: bool, mask: Option<String> },
+    Paste { clip: Clipboard, ignore_air: bool, use_origin: bool, structure_void: bool, mask: Option<String>, entities: bool, biomes: bool },
     /// `/brush forest|feature|biome <shape> [radius] [density] <type>` (`kind` 0, 1, 2; `shape` as `Region`): `arg` is the
     /// tree type, the feature id or the biome; `density` in percent; `column` is `-c` of the biome brush (the whole height).
     Terrain { kind: u8, shape: u8, radius: f64, density: f64, arg: String, column: bool },
