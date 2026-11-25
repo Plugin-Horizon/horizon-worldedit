@@ -35,8 +35,16 @@ pub enum BrushShape {
     /// `/brush gravity [radius] [-h height]` (`GravityBrush`); `height` is the `-h` offset.
     Gravity { radius: f64, height: Option<i32> },
     /// `/brush set|raise|lower <sphere|cylinder|cuboid> [radius] ...` (operation brushes). `kind`: 0 set, 1 raise, 2 lower;
-    /// `shape`: 0 sphere, 1 cylinder, 2 cuboid.
-    Region { kind: u8, shape: u8, radius: f64 },
+    /// `shape`: 0 sphere, 1 cylinder, 2 cuboid. `fill`: the pattern of `set` (the operation's own, not `/material`).
+    Region { kind: u8, shape: u8, radius: f64, fill: Option<Pattern> },
+    /// `/brush snow <sphere|cylinder|cuboid> [radius] [-s]` (`ApplyLayer` with `Snow`).
+    Snow { shape: u8, radius: f64, stack: bool },
+    /// `/brush morph|erode|dilate` (`MorphBrush`): faces and iterations of the erode and the dilate pass.
+    Morph { radius: f64, min_erode: i32, erode_iter: i32, min_dilate: i32, dilate_iter: i32 },
+    /// `/brush butcher [radius] [-pngabtfrw]`: `flags` are `brushes::butcher_flags`, already cut to what the player may.
+    Butcher { radius: f64, flags: u8 },
+    /// `/brush heightmap <image> [radius] [intensity] [-efr]` (`ImageHeightmapBrush`).
+    Heightmap { image: std::sync::Arc<crate::horizon_worldedit_core::heightmap::HeightImage>, radius: f64, intensity: f64, erase: bool, flatten: bool, randomize: bool },
     /// `/brush snowsmooth [radius] [iterations] [-l layers] [-m mask]`: `mask` is the height map's filter (`-m`),
     /// not the `/mask` of the brush.
     SnowSmooth { radius: f64, iterations: u32, layers: i32, mask: Option<String> },

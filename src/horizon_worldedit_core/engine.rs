@@ -1,6 +1,7 @@
 //! The commands, the wand and the brushes, for every player of a server: what a typed `//command`,
 //! a click with the wand or a brush does to the player's session and to the world.
 
+use crate::horizon_worldedit_core::brushes;
 use crate::horizon_worldedit_core::clipboard::Clipboard;
 use crate::horizon_worldedit_core::config::Config;
 use crate::horizon_worldedit_core::edit::{plan_with, Change, Queue};
@@ -44,6 +45,10 @@ pub const NODES: &[&str] = &[
     "worldedit.brush.set",
     "worldedit.brush.smooth",
     "worldedit.brush.snowsmooth",
+    "worldedit.brush.snow",
+    "worldedit.brush.morph",
+    "worldedit.brush.butcher",
+    "worldedit.brush.heightmap",
     "worldedit.brush.splatter",
     "worldedit.brush.sphere",
     "worldedit.calc",
@@ -449,6 +454,30 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
             "ex",
             "ex <radius:number>",
         ],
+            "splatter <block:pattern>",
+            "splatter <block:pattern> <radius:number>",
+            "splatter <block:pattern> <radius:number> <decay:integer>",
+            "gravity",
+            "gravity <radius:number>",
+            "set <shape:word> <radius:number> <block:pattern>",
+            "raise <shape:word>",
+            "raise <shape:word> <radius:number>",
+            "lower <shape:word>",
+            "lower <shape:word> <radius:number>",
+            "snow <shape:word>",
+            "snow <shape:word> <radius:number>",
+            "morph",
+            "morph <size:number>",
+            "morph <size:number> <min-erode:integer> <erode-iterations:integer> <min-dilate:integer> <dilate-iterations:integer>",
+            "erode",
+            "erode <size:number>",
+            "dilate",
+            "dilate <size:number>",
+            "butcher",
+            "butcher <radius:number>",
+            "heightmap <image:word>",
+            "heightmap <image:word> <radius:number>",
+            "heightmap <image:word> <radius:number> <intensity:number>",
     ),
     (&["mask"], "", &["", "<filter:mask>"]),
     (&["gmask"], "", &["", "<filter:mask>"]),
@@ -701,7 +730,7 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "move" => ("abesm", "asm"),
         "sphere" | "hsphere" => ("hr", "hr"),
         "cyl" | "hcyl" | "pyramid" | "hpyramid" | "line" | "curve" | "cone" => ("h", "h"),
-        "brush" | "br" => ("hlmaovbe", "hlmaov"),
+        "brush" | "br" => ("hlmaovbepngtfrws", "hlmaovepngbtfrws"),
         "revolve" => ("mreb", "mr"),
         "outset" | "inset" => ("hv", "hv"),
         "schem" | "schematic" => ("fdnp", "fdnp"),
@@ -763,7 +792,12 @@ fn usage(name: &str) -> String {
         "butcher" => "[radius]".into(),
         "remove" | "rem" | "rement" => "<type> <radius>".into(),
         "sel" => "[cuboid|extend|poly|polyextend|ellipsoid|sphere|cyl|convex]".into(),
-        "brush" | "br" => "<sphere|cylinder|smooth|snowsmooth|clipboard|extinguish|none> ...".into(),
+        "brush" | "br" => "<sphere|cylinder|splatter|smooth|snowsmooth|clipboard|extinguish|gravity|set|raise|lower|snow|morph|erode|dilate|butcher|heightmap|none> ...".into(),
+        "brush snow" | "brush raise" | "brush lower" => "<cuboid|sphere|cylinder> [radius]".into(),
+        "brush set" => "<cuboid|sphere|cylinder> [radius] <pattern>".into(),
+        "brush morph" => "[size] [min-erode-faces] [erode-iterations] [min-dilate-faces] [dilate-iterations]".into(),
+        "brush erode" | "brush dilate" | "brush butcher" => "[radius]".into(),
+        "brush heightmap" => "<image> [radius] [intensity]".into(),
         "brush sphere" => "<pattern> [radius]".into(),
         "brush cylinder" => "<pattern> [radius] [height]".into(),
         "fill" | "fillr" => "<pattern> <radius> [depth]".into(),
@@ -797,6 +831,22 @@ fn usage(name: &str) -> String {
 }
 
 /// Whether flag `c` of command `name` is followed by a value.
+/// The flags of one `/brush` sub-command, as BrushCommands declares them: (accepted, implemented, the ones that take a
+/// value). `-h` is a switch on the sphere and the cylinder but takes the height on the gravity brush; `-e`/`-b` of the
+/// clipboard brush (entities, biomes) are accepted and not implemented.
+fn brush_flags(sub: &str) -> (&'static str, &'static str, &'static str) {
+    match sub {
+        "sphere" | "s" | "cylinder" | "cyl" | "c" => ("h", "h", ""),
+        "clipboard" | "copy" => ("avoebm", "avom", "m"),
+        "snowsmooth" => ("lm", "lm", "lm"),
+        "gravity" | "grav" => ("h", "h", "h"),
+        "snow" => ("s", "s", ""),
+        "butcher" | "kill" => ("pngabtfrw", "pngabtfrw", ""),
+        "heightmap" => ("efr", "efr", ""),
+        _ => ("", "", ""),
+    }
+}
+
 fn takes_value(name: &str, c: char) -> bool {
     c == 'm' || (c == 'l' && matches!(name, "snowsmooth" | "brush" | "br")) || (c == 'p' && matches!(name, "distr" | "schem" | "schematic" | "searchitem" | "help" | "listchunks" | "registry"))
 }
@@ -808,7 +858,13 @@ fn parse_args<'a>(name: &str, rest: &[&'a str]) -> Result<Args<'a>, String> {
         // An expression: `-` is a minus there, never a flag.
         return Ok(Args { words: rest.to_vec(), flags: Vec::new(), values: Vec::new() });
     }
-    let (accepted, implemented) = flag_spec(name);
+    let is_brush = matches!(name, "brush" | "br");
+    let (accepted, implemented, valued) = if is_brush {
+        brush_flags(&rest.first().filter(|w| !w.starts_with('-')).map(|w| w.to_ascii_lowercase()).unwrap_or_default())
+    } else {
+        let (a, i) = flag_spec(name);
+        (a, i, "")
+    };
     let mut words = Vec::new();
     let mut flags = Vec::new();
     let mut values: Vec<(char, String)> = Vec::new();
@@ -831,7 +887,7 @@ fn parse_args<'a>(name: &str, rest: &[&'a str]) -> Result<Args<'a>, String> {
                 if !implemented.contains(c) {
                     return Err(format!("-{c} is not supported on this server"));
                 }
-                if takes_value(name, c) {
+                if if is_brush { valued.contains(c) } else { takes_value(name, c) } {
                     want = Some(c);
                 }
                 flags.push(c);
@@ -929,6 +985,10 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("lower") => "worldedit.brush.lower",
             Some("snowsmooth") => "worldedit.brush.snowsmooth",
             Some("clipboard" | "copy") => "worldedit.brush.clipboard",
+            Some("snow") => "worldedit.brush.snow",
+            Some("morph" | "erode" | "dilate") => "worldedit.brush.morph",
+            Some("butcher" | "kill") => "worldedit.brush.butcher",
+            Some("heightmap") => "worldedit.brush.heightmap",
             Some("extinguish" | "ex") => "worldedit.brush.ex",
             _ => return None,
         },
@@ -1251,7 +1311,7 @@ impl Engine {
                 Ok(vec!["History cleared.".into()])
             }
             "schem" | "schematic" => self.schem(world, actor, &args, env),
-            "brush" | "br" => self.brush(world, actor, &args),
+            "brush" | "br" => self.brush(world, actor, &args, env),
             "mask" => self.mask(world, actor, &args),
             "material" => self.material(world, actor, &args),
             "none" => self.unbind(actor, false),
@@ -2405,7 +2465,7 @@ impl Engine {
         "Run /brush unbind while holding the item to unbind it.".into()
     }
 
-    fn brush(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
+    fn brush(&mut self, world: &mut dyn World, actor: &Actor, args: &Args, env: &Env) -> R {
         let kind = args.get(0).ok_or_else(|| usage("brush"))?.to_ascii_lowercase();
         if matches!(kind.as_str(), "none" | "unbind") {
             return self.unbind(actor, false);
@@ -2471,24 +2531,64 @@ impl Engine {
             }
             "gravity" | "grav" => {
                 let height = match args.value('h') {
-                    Some(v) => Some(v.parse::<i32>().map_err(|_| number_error(v))?),
-                    None => None,
+                    Some("default-vertical-height") | None => self.config.default_vertical_height,
+                    Some(v) => v.parse::<i32>().map_err(|_| number_error(v))?,
                 };
-                (BrushShape::Gravity { radius: radius(1, 5.0)?, height }, None)
+                (BrushShape::Gravity { radius: radius(1, 5.0)?, height: Some(height) }, None)
             }
-            "set" | "raise" | "lower" => {
-                let shape = match args.get(1).map(|s| s.to_ascii_lowercase()).as_deref() {
-                    Some("sphere" | "s") => 0u8,
-                    Some("cylinder" | "cyl" | "c") => 1,
-                    Some("cuboid" | "cub") => 2,
-                    _ => return Err(usage(&format!("brush {kind}"))),
+            "set" | "raise" | "lower" | "snow" => {
+                let shape = Self::region_shape(args.get(1).ok_or_else(|| usage(&format!("brush {kind}")))?)?;
+                let radius = radius(2, 5.0)?;
+                match kind.as_str() {
+                    "set" => (BrushShape::Region { kind: 0, shape, radius, fill: Some(self.need_pattern(world, actor, args, 3, "brush set")?) }, None),
+                    "raise" => (BrushShape::Region { kind: 1, shape, radius, fill: None }, None),
+                    "lower" => (BrushShape::Region { kind: 2, shape, radius, fill: None }, None),
+                    _ => (BrushShape::Snow { shape, radius, stack: args.flag('s') }, None),
+                }
+            }
+            // `-h` takes the height (`@VertHeight`): without it the configured default vertical height, not the radius.
+            "morph" => {
+                let shape = BrushShape::Morph { radius: radius(1, 5.0)?, min_erode: args.int(2, 3)?, erode_iter: args.int(3, 1)?, min_dilate: args.int(4, 3)?, dilate_iter: args.int(5, 1)? };
+                (shape, None)
+            }
+            "erode" => (BrushShape::Morph { radius: radius(1, 5.0)?, min_erode: 2, erode_iter: 1, min_dilate: 5, dilate_iter: 1 }, None),
+            "dilate" => (BrushShape::Morph { radius: radius(1, 5.0)?, min_erode: 5, erode_iter: 1, min_dilate: 2, dilate_iter: 1 }, None),
+            // The radius limit of the butcher brush differs from the others (BrushCommands.butcherBrush): the
+            // larger of the brush limit and the butcher limit for those who may butcher.
+            "butcher" | "kill" => {
+                let r = radius(1, 5.0)?;
+                let max = if self.holds(actor, "worldedit.butcher") { self.config.max_brush_radius.max(f64::from(self.config.butcher_max_radius)) } else { self.config.max_brush_radius };
+                if r > max {
+                    return Err(format!("Maximum allowed brush radius: {}", java_double(max)));
+                }
+                use crate::horizon_worldedit_core::brushes::butcher_flags as f;
+                // `-f` first (no permission of its own), then each flag cut by its node.
+                let wanted = [('p', f::PETS, "pets"), ('n', f::NPCS, "npcs"), ('g', f::GOLEMS, "golems"), ('a', f::ANIMALS, "animals"), ('b', f::AMBIENT, "ambient"), ('t', f::TAGGED, "tagged"), ('r', f::ARMOR_STAND, "armorstands"), ('w', f::WATER, "water")];
+                let mut flags = if args.flag('f') { f::FRIENDLY } else { 0 };
+                for (c, bit, node) in wanted {
+                    if args.flag(c) {
+                        flags |= bit;
+                    }
+                    if flags & bit != 0 && !self.holds(actor, &format!("worldedit.butcher.{node}")) {
+                        flags &= !bit;
+                    }
+                }
+                (BrushShape::Butcher { radius: r, flags }, None)
+            }
+            "heightmap" => {
+                let name = args.get(1).ok_or_else(|| usage("brush heightmap"))?;
+                let dir = env.config_file.parent().map(|p| p.join("assets")).unwrap_or_else(|| PathBuf::from("assets"));
+                let Some(path) = crate::horizon_worldedit_core::heightmap::find(&dir, name) else {
+                    return Err(format!("Unknown heightmap brush: {name}."));
                 };
-                let (k, p) = if kind == "set" {
-                    (0u8, Some(self.need_pattern(world, actor, args, 3, "brush set")?))
-                } else {
-                    (if kind == "raise" { 1 } else { 2 }, None)
+                let r = radius(2, 5.0)?;
+                let intensity = match args.get(3) {
+                    Some(w) => w.parse::<f64>().map_err(|_| number_error(w))?,
+                    None => 5.0,
                 };
-                (BrushShape::Region { kind: k, shape, radius: radius(2, 5.0)? }, p)
+                self.check_brush_radius(r)?;
+                let image = crate::horizon_worldedit_core::heightmap::load(&path).ok_or("Failed to load asset")?;
+                (BrushShape::Heightmap { image: std::sync::Arc::new(image), radius: r, intensity, erase: args.flag('e'), flatten: args.flag('f'), randomize: args.flag('r') }, None)
             }
             // The fire extinguisher: a sphere of air over the fire it finds.
             "extinguish" | "ex" => {
@@ -2500,12 +2600,11 @@ impl Engine {
         let (r, h) = match &shape {
             BrushShape::Sphere { radius, .. } | BrushShape::Smooth { radius, .. } | BrushShape::SnowSmooth { radius, .. } => (*radius, 0),
             BrushShape::Paste { .. } => (0.0, 0),
-            BrushShape::Splatter { radius, .. } | BrushShape::Gravity { radius, .. } | BrushShape::Region { radius, .. } => (*radius, 0),
+            BrushShape::Splatter { radius, .. } | BrushShape::Gravity { radius, .. } | BrushShape::Region { radius, .. } | BrushShape::Snow { radius, .. } | BrushShape::Morph { radius, .. } | BrushShape::Heightmap { radius, .. } => (*radius, 0),
+            BrushShape::Butcher { .. } => (0.0, 0),
             BrushShape::Cylinder { radius, height, .. } => (*radius, *height),
         };
-        if r > self.config.max_brush_radius || f64::from(h) > self.config.max_brush_radius {
-            return Err(format!("Maximum brush radius (in configuration): {}", self.config.max_brush_radius as i64));
-        }
+        self.check_brush_radius(r.max(f64::from(h)))?;
         let arg_mask = if kind == "smooth" && args.words.len() > 3 { Some(args.rest(3)) } else { None };
         if let Some(text) = &arg_mask {
             Mask::parse(world, text, actor.held.as_deref())?;
@@ -2527,7 +2626,14 @@ impl Engine {
                 format!("Splatter brush shape equipped ({} with {decay} decay).", *radius as i64)
             }
             BrushShape::Gravity { radius, .. } => format!("Gravity brush equipped ({}).", *radius as i64),
-            BrushShape::Region { kind, radius, .. } => format!("{} brush equipped ({}).", ["Set", "Raise", "Lower"][*kind as usize], *radius as i64),
+            // `OperationFactoryBrush`: the operation's own description.
+            BrushShape::Region { kind: 0, .. } => "Set brush to set replace blocks.".to_owned(),
+            BrushShape::Region { kind: 1, .. } => "Set brush to deformation of y-=1.".to_owned(),
+            BrushShape::Region { .. } => "Set brush to deformation of y+=1.".to_owned(),
+            BrushShape::Snow { stack, .. } => format!("Set brush to set snow{}.", if *stack { " stacker" } else { "" }),
+            BrushShape::Morph { radius, .. } => format!("Morph brush shape equipped: {}.", *radius as i64),
+            BrushShape::Butcher { radius, .. } => format!("Butcher brush equipped ({}).", *radius as i64),
+            BrushShape::Heightmap { radius, .. } => format!("Heightmap brush equipped ({}).", *radius as i64),
             BrushShape::SnowSmooth { radius, iterations, layers, mask } => {
                 format!("SnowSmooth brush equipped ({} x {iterations}x using {}), {layers} snow blocks.", *radius as i64, if mask.is_some() { "filter" } else { "any block" })
             }
@@ -2546,6 +2652,24 @@ impl Engine {
         } else {
             Err("You have no brush bound to your current item. Try /brush sphere for a basic brush.".into())
         }
+    /// `WorldEdit.checkMaxBrushRadius`: only a positive limit limits.
+    fn check_brush_radius(&self, r: f64) -> Result<(), String> {
+        if self.config.max_brush_radius > 0.0 && r > self.config.max_brush_radius {
+            return Err(format!("Maximum brush radius (in configuration): {}", self.config.max_brush_radius as i64));
+        }
+        Ok(())
+    }
+
+    /// The `RegionFactory` argument of the operation brushes: `cuboid`, `sphere`, `cyl` or `cylinder`.
+    fn region_shape(word: &str) -> Result<u8, String> {
+        match word.to_ascii_lowercase().as_str() {
+            "sphere" => Ok(0),
+            "cyl" | "cylinder" => Ok(1),
+            "cuboid" => Ok(2),
+            _ => Err(format!("Not a known region type: {word}")),
+        }
+    }
+
     }
 
     fn mask(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
@@ -2721,6 +2845,10 @@ impl Engine {
         if self.queue.busy(actor.uuid) {
             return Some(Reply::err("Your last edit is still being written; wait a moment".into()));
         }
+            BrushShape::Snow { .. } => "worldedit.brush.snow",
+            BrushShape::Morph { .. } => "worldedit.brush.morph",
+            BrushShape::Butcher { .. } => "worldedit.brush.butcher",
+            BrushShape::Heightmap { .. } => "worldedit.brush.heightmap",
         let target = match pos {
             Some(p) => p,
             None => match ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.brush_range) {
@@ -2770,6 +2898,14 @@ impl Engine {
             (BrushShape::Sphere { radius, hollow }, Some(p)) => shapes::sphere(target, [*radius; 3], *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),
             (BrushShape::Cylinder { radius, height, hollow }, Some(p)) => shapes::cylinder(target, [*radius; 2], *height, *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),
             (BrushShape::Smooth { radius, iterations }, _) => {
+        // ButcherBrush.build: the entities in a full-height cylinder round the target, by the flags chosen at equip.
+        if let BrushShape::Butcher { radius, flags } = &brush.shape {
+            let r = *radius;
+            let all = world.entities_in([f64::from(target[0]) - r - 1.0, -4096.0, f64::from(target[2]) - r - 1.0], [f64::from(target[0]) + r + 2.0, 4096.0, f64::from(target[2]) + r + 2.0]);
+            let ids: Vec<u64> = brushes::in_butcher_cylinder(all, target, r).iter().filter(|m| extra::butcher_kills(m, *flags)).map(|m| m.id).collect();
+            world.remove_entities(&ids);
+            return Some(Reply::default());
+        }
                 let r = radius.ceil() as i32;
                 let region = Cuboid::new(sub(target, [r, r, r]), [target[0] + r, target[1] + r, target[2] + r]);
                 ops::smooth(world, &region, *iterations, mask.as_ref())
@@ -2798,35 +2934,24 @@ impl Engine {
                     .collect()
             }
             (BrushShape::Gravity { radius, height }, _) => {
-                let off = height.map_or(*radius, f64::from);
-                let ymax = (f64::from(target[1]) + off).min(f64::from(hi)) as i32;
-                let ymin = (f64::from(target[1]) - off).max(f64::from(lo)) as i32;
-                let r = *radius as i32;
-                let mut out = Vec::new();
-                for x in target[0] - r..=target[0] + r {
-                    for z in target[2] - r..=target[2] + r {
-                        let mut lowest: Option<i32> = None;
-                        let (mut put, mut gone) = (Vec::new(), Vec::new());
-                        for y in ymin..=ymax {
-                            let Some(s) = world.get([x, y, z]) else { continue };
-                            if world.is_air(s) {
-                                lowest.get_or_insert(y);
-                                continue;
-                            }
-                            let Some(l) = lowest else { continue };
-                            lowest = Some(l + 1);
-                            gone.retain(|g| *g != [x, l, z]);
-                            put.push(([x, l, z], s));
-                            gone.push([x, y, z]);
-                        }
-                        let air = world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0);
-                        out.extend(put.iter().copied());
-                        out.extend(gone.into_iter().map(|g| (g, air)));
-                    }
-                }
-                out
+                let off = f64::from(height.unwrap_or(self.config.default_vertical_height));
+                brushes::gravity(world, target, *radius, off).into_iter().filter(|(q, _)| keep(q, world)).collect()
             }
-            (BrushShape::Region { kind, shape, radius }, pat) => {
+            (BrushShape::Snow { shape, radius, stack }, _) => {
+                let (cols, y0, y1) = brushes::snow_columns(target, *radius, *shape);
+                brushes::snow(world, &cols, y0, y1, *stack).into_iter().filter(|(q, _)| keep(q, world)).collect()
+            }
+            (BrushShape::Morph { radius, min_erode, erode_iter, min_dilate, dilate_iter }, _) => {
+                match brushes::morph(world, target, *radius, *min_erode, *erode_iter, *min_dilate, *dilate_iter, SCAN_LIMIT) {
+                    Ok(v) => v.into_iter().filter(|(q, _)| keep(q, world)).collect(),
+                    Err(e) => return Some(Reply::err(e)),
+                }
+            }
+            (BrushShape::Heightmap { image, radius, intensity, erase, flatten, randomize }, _) => {
+                let random = (salt >> 11) as f64 / (1u64 << 53) as f64;
+                brushes::heightmap(world, mask.as_ref(), image, *intensity, *erase, *flatten, *randomize, target, *radius, random).into_iter().filter(|(q, _)| keep(q, world)).collect()
+            }
+            (BrushShape::Region { kind, shape, radius, fill }, _) => {
                 let cells = match shape {
                     0 => shapes::sphere(target, [*radius; 3], false),
                     1 => shapes::cylinder(target, [*radius; 2], 1, false),
@@ -2844,7 +2969,7 @@ impl Engine {
                     }
                 };
                 let cells: Vec<Pos> = cells.into_iter().filter(|q| keep(q, world)).collect();
-                match (kind, pat) {
+                match (kind, fill) {
                     (0, Some(p)) => cells.into_iter().map(|q| (q, p.pick(salt, q))).collect(),
                     // Deform "y-=1" / "y+=1" in raw coordinates: each block takes the one below (above).
                     (k, _) => {

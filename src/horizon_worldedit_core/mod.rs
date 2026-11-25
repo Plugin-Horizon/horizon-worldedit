@@ -9,11 +9,13 @@
 //! affiliated with EngineHub.
 pub mod block;
 pub mod clipboard;
+pub mod brushes;
 pub mod complete;
 pub mod config;
 pub mod edit;
 pub mod engine;
 pub mod nbt;
+pub mod heightmap;
 pub mod ops;
 pub mod pattern;
 pub mod region;

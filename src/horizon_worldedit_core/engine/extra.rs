@@ -97,6 +97,22 @@ fn remove_matches(word: &str, kind: &str) -> Option<bool> {
 const ANIMALS: &[&str] = &["cow", "pig", "sheep", "chicken", "horse", "donkey", "mule", "llama", "trader_llama", "rabbit", "cat", "wolf", "fox", "ocelot", "panda", "polar_bear", "turtle", "axolotl", "frog", "goat", "camel", "sniffer", "mooshroom", "parrot", "strider", "armadillo", "happy_ghast", "skeleton_horse", "zombie_horse"];
 const WATER: &[&str] = &["squid", "glow_squid", "cod", "salmon", "pufferfish", "tropical_fish", "dolphin", "tadpole"];
 
+/// Whether a butcher brush with `flags` (`brushes::butcher_flags`) kills this entity (`CreatureButcher.createFunction`).
+pub(super) fn butcher_kills(m: &EntityInfo, flags: u8) -> bool {
+    use crate::horizon_worldedit_core::brushes::butcher_flags as f;
+    let k = m.kind.trim_start_matches("minecraft:");
+    m.living
+        && k != "player"
+        && (flags & f::ANIMALS != 0 || !ANIMALS.contains(&k))
+        && (flags & f::PETS != 0 || !m.tamed)
+        && (flags & f::GOLEMS != 0 || !k.ends_with("_golem"))
+        && (flags & f::NPCS != 0 || !matches!(k, "villager" | "wandering_trader" | "zombie_villager_trader"))
+        && (flags & f::AMBIENT != 0 || k != "bat")
+        && (flags & f::TAGGED != 0 || !m.named)
+        && (flags & f::ARMOR_STAND != 0 || k != "armor_stand")
+        && (flags & f::WATER != 0 || !WATER.contains(&k))
+}
+
 impl Engine {
     fn expression_coords(&mut self, actor: &Actor, args: &Args, c: &Cuboid) -> Result<Coords, String> {
         let placement = self.placement(actor)?;
