@@ -19,6 +19,7 @@ fn actor(uuid: u128) -> Actor {
         pitch: 0.0,
         game_mode: 1,
         held: None,
+        offhand: None,
         granted: Default::default(),
         inventory: None,
     }

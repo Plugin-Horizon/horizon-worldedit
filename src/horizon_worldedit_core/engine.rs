@@ -231,6 +231,8 @@ pub struct Actor {
     pub game_mode: i32,
     /// The item id in the main hand, if any.
     pub held: Option<String>,
+    /// The item id in the off hand, if any (`offhand` as a block name).
+    pub offhand: Option<String>,
     /// The `worldedit.*` nodes the permission system grants this player (see `NODES`). Operators pass on their
     /// level instead; anyone else needs a node here.
     pub granted: BTreeSet<String>,
@@ -1422,7 +1424,7 @@ impl Engine {
         let timeout_ms = s.timeout_ms.unwrap_or(timeout_default);
         let primary = if s.dimension == actor.dimension { s.pos1 } else { None };
         let _ = crate::horizon_worldedit_core::pattern::take_pending_nbt();
-        set_ctx(MaskCtx { region, clipboard, timeout_ms, primary, salt: (now as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (actor.uuid as u64) });
+        set_ctx(MaskCtx { region, clipboard, timeout_ms, primary, offhand: actor.offhand.clone(), salt: (now as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (actor.uuid as u64) });
     }
 
     /// A typed command (`set stone`, `//set stone`, `rotate 90`).

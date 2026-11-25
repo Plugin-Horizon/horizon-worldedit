@@ -472,6 +472,7 @@ mod command_tests {
             pitch: 90.0,
             game_mode: 1,
             held: Some("minecraft:blaze_rod".into()),
+            offhand: None,
             granted: Default::default(),
             inventory: None,
         }

@@ -912,6 +912,7 @@ fn actor_of(host: &mut dyn ServerHost, player: PlayerRef) -> we::Actor {
         pitch,
         game_mode,
         held: held_item(host, player),
+        offhand: player.inventory_slot(&*host, 40).map(|s| s.item().id(&*host)).filter(|i| i.as_str() != "minecraft:air"),
         granted,
         inventory,
     }

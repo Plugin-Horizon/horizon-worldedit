@@ -199,7 +199,7 @@ fn parse_typed(world: &dyn World, input: &str, hand: Option<&str>) -> Result<Typ
     // The block the type names.
     let base: BlockState = match type_text.to_ascii_lowercase().as_str() {
         "hand" => BlockState::parse(hand.ok_or("This item is not a block.")?).ok_or("This item is not a block.")?,
-        "offhand" => return Err("This item is not a block.".into()),
+        "offhand" => BlockState::parse(&ctx().offhand.ok_or("This item is not a block.")?).ok_or("This item is not a block.")?,
         "pos1" => {
             let primary = ctx().primary.ok_or("Make a region selection first.")?;
             world.get(primary).map(|s| world.describe(s)).ok_or("Make a region selection first.")?
@@ -212,7 +212,7 @@ fn parse_typed(world: &dyn World, input: &str, hand: Option<&str>) -> Result<Typ
     };
     let default_id = world.resolve(&BlockState { name: base.name.clone(), properties: Default::default() }).ok_or_else(unknown_block)?;
     let default = world.describe(default_id);
-    let mut state = if matches!(type_text.to_ascii_lowercase().as_str(), "hand" | "pos1") { base.clone() } else { default.clone() };
+    let mut state = if matches!(type_text.to_ascii_lowercase().as_str(), "hand" | "offhand" | "pos1") { base.clone() } else { default.clone() };
     if let Some(text) = state_text {
         let mut seen: Vec<String> = Vec::new();
         for pair in text.split(',') {
@@ -659,6 +659,8 @@ pub struct MaskCtx {
     pub timeout_ms: i64,
     /// The first position of the selection (`pos1` as a block name).
     pub primary: Option<Pos>,
+    /// The item in the player's off hand (`offhand` as a block name).
+    pub offhand: Option<String>,
     /// A number that makes `%n` masks differ from one command to the next.
     pub salt: u64,
 }
