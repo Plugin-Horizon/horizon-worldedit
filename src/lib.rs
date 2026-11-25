@@ -980,7 +980,10 @@ fn env(data_version: i32) -> we::Env {
 /// Runs a typed line for `actor` against the level it stands in.
 fn execute(host: &mut dyn ServerHost, actor: &we::Actor, command: &str) -> we::Reply {
     let env = env(host.server_data_version());
-    let Some(mut world) = GameWorld::new(host, &actor.dimension) else { return we::Reply::default() };
+    let Some(mut world) = GameWorld::new(host, &actor.dimension) else {
+        // `//world` named a level that has been unloaded since.
+        return we::Reply { lines: vec![we::Line { text: "The world was unloaded already.".to_owned(), error: true }], ..we::Reply::default() };
+    };
     we::with(|e| e.command(&mut world, actor, command, &env))
 }
 

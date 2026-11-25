@@ -95,7 +95,7 @@ pub(super) fn biome_arg(world: &dyn World, name: &str) -> Result<String, String>
     let id = namespaced(name);
     let known = world.biome_names();
     if !known.is_empty() && !known.iter().any(|b| *b == id) {
-        return Err(format!("Biome '{name}' was not recognized."));
+        return Err(format!("Biome name '{name}' was not recognized."));
     }
     Ok(id)
 }

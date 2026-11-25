@@ -352,6 +352,10 @@ fn unknown(world: &dyn World, name: &str, hand: Option<&str>) -> String {
     let Some(state) = BlockState::parse(name) else {
         return format!("Block name '{name}' was not recognized.");
     };
+    // An item that is no block gets its own words.
+    if world.item_names().iter().any(|i| *i == state.name) && !world.block_names().iter().any(|b| *b == state.name) {
+        return format!("The item '{}' is not a block.", state.name);
+    }
     let Some(default) = world.resolve(&BlockState { name: state.name.clone(), properties: Default::default() }) else {
         return format!("Block name '{name}' was not recognized.");
     };

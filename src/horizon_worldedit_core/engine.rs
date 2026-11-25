@@ -1485,6 +1485,15 @@ impl Engine {
         if let Err(e) = self.permitted(actor, permission_node(&name, &args, actor).as_deref()).and(self.allowed(actor)) {
             return Reply::err(e);
         }
+        // Commands that act through a player's hands and eyes have no meaning for the console.
+        if actor.uuid == CONSOLE_UUID
+            && matches!(
+                name.as_str(),
+                "wand" | "up" | "ascend" | "descend" | "ceil" | "thru" | "jumpto" | "unstuck" | "brush" | "br" | "tool" | "none" | "superpickaxe" | "togglepickaxe" | "mask" | "material" | "range" | "brushsize" | "tracemask"
+            )
+        {
+            return Reply::err("This command must be used with a player.".into());
+        }
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
         self.log_command(&*world, actor, raw, env);
         let writes = !matches!(
@@ -2215,6 +2224,12 @@ impl Engine {
 
     fn line(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
         let c = self.sessions.get(actor.uuid).selection(&actor.dimension)?;
+        // Only a cuboid or a convex polyhedral selection has corners to draw between.
+        let vertices = match self.sessions.get(actor.uuid).shape.clone() {
+            None => None,
+            Some(crate::horizon_worldedit_core::selector::Shape::Convex { points }) => Some(points),
+            Some(_) => return Err("//line only works with cuboid selections or convex polyhedral selections".into()),
+        };
         let s = self.sessions.get(actor.uuid);
         let (a, b) = (s.pos1.unwrap_or(c.min), s.pos2.unwrap_or(c.max));
         let pattern = self.need_pattern(world, actor, args, 0, "line")?;
@@ -2227,7 +2242,15 @@ impl Engine {
         }
         self.check_radius(&[thickness])?;
         let salt = self.salt(actor);
-        let points = shapes::line(a, b, thickness, !args.flag('h'));
+        let points: Vec<Pos> = match &vertices {
+            // The segments between consecutive vertices make one set of blocks (`EditSession.drawLine` over a list).
+            Some(v) if v.len() > 1 => {
+                let mut seen = std::collections::HashSet::new();
+                v.windows(2).flat_map(|w| shapes::line(w[0], w[1], thickness, !args.flag('h'))).filter(|p| seen.insert(*p)).collect()
+            }
+            Some(_) => Vec::new(),
+            None => shapes::line(a, b, thickness, !args.flag('h')),
+        };
         let (lo, hi) = (world.min_y(), world.max_y());
         let ops = points.into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
@@ -2640,18 +2663,33 @@ impl Engine {
     }
 
     fn rotate(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {
-        let y: f64 = args.get(0).ok_or_else(|| usage("rotate"))?.parse().map_err(|_| number_error(args.get(0).unwrap_or("")))?;
-        for i in [1, 2] {
-            if args.get(i).and_then(|w| w.parse::<f64>().ok()).is_some_and(|v| v != 0.0) {
-                return Err("Only turns around y (up) are supported".into());
+        let angle = |i: usize| -> Result<f64, String> {
+            match args.get(i) {
+                Some(w) => w.parse::<f64>().map_err(|_| number_error(w)),
+                None => Ok(0.0),
             }
+        };
+        if args.get(0).is_none() {
+            return Err(usage("rotate"));
         }
-        if (y % 90.0).abs() > 0.001 && (90.0 - (y % 90.0).abs()).abs() > 0.001 {
-            return Err("Interpolation is not supported on this server: use a multiple of 90 degrees".into());
-        }
+        let (y, x, z) = (angle(0)?, angle(1)?, angle(2)?);
         let clip = self.sessions.get(actor.uuid).clipboard.as_mut().ok_or("Your clipboard is empty. Use //copy first.")?;
-        clip.rotate(world, (y / 90.0).round() as i32);
-        Ok(vec!["The clipboard copy has been rotated.".into()])
+        let mut lines = Vec::new();
+        // `abs(angle % 90) > 0.001`: an angle that is not a multiple of 90 is rounded to the nearest block.
+        if (y % 90.0).abs() > 0.001 || (x % 90.0).abs() > 0.001 || (z % 90.0).abs() > 0.001 {
+            lines.push("Note: Interpolation is not yet supported, so angles that are multiples of 90 is recommended.".to_owned());
+        }
+        // The transform is rotateY(-y), then rotateX(-x), then rotateZ(-z).
+        if (y % 90.0).abs() <= 0.001 {
+            clip.rotate(world, (y / 90.0).round() as i32);
+        } else {
+            clip.rotate_any(world, -y);
+        }
+        // Only whole quarter turns of x and z turn the blocks: another angle is rounded to the nearest quarter.
+        clip.rotate_xz(world, true, (-x / 90.0).round() as i32);
+        clip.rotate_xz(world, false, (-z / 90.0).round() as i32);
+        lines.push("The clipboard copy has been rotated.".into());
+        Ok(lines)
     }
 
     fn flip(&mut self, world: &mut dyn World, actor: &Actor, args: &Args) -> R {

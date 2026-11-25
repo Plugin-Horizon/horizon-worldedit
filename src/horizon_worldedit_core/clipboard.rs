@@ -257,6 +257,54 @@ impl Clipboard {
         let turn = 90.0 * f32::from(r.quarter_turns());
         self.map(world, |p| r.apply(p), |s| rotate_state(s, r), |yaw| yaw + turn);
     }
+    /// Turned `quarter_turns` times about the x axis (`about_x`) or the z axis, as `//rotate`'s x and z angles do: a point
+    /// (x, y, z) goes to (x, z, -y) round x and to (y, -x, z) round z; the `facing` and `axis` of the blocks turn with it
+    /// (stairs, slabs and other states with a half or a shape keep those).
+    pub fn rotate_xz(&mut self, world: &dyn World, about_x: bool, quarter_turns: i32) {
+        let q = quarter_turns.rem_euclid(4);
+        if q == 0 {
+            return;
+        }
+        let at = move |p: Pos| {
+            let mut p = p;
+            for _ in 0..q {
+                p = if about_x { [p[0], p[2], -p[1]] } else { [p[1], -p[0], p[2]] };
+            }
+            p
+        };
+        self.map(world, at, move |s| turn_state_xz(s, about_x, q), |yaw| yaw);
+    }
+
+    /// The clipboard turned by `degrees` about the y axis at any angle (`//rotate` with an angle that is not a multiple of 90):
+    /// every block goes to the nearest block, a later one over an earlier one, and the box is the box of what is left. Block
+    /// states turn only for whole quarter turns.
+    pub fn rotate_any(&mut self, world: &dyn World, degrees: f64) {
+        let (blocks, entities) = self.turned(world, degrees);
+        let mut last: HashMap<Pos, StateId> = HashMap::new();
+        for (p, s) in blocks {
+            last.insert(p, s);
+        }
+        let mut list: Vec<(Pos, StateId)> = last.into_iter().collect();
+        list.sort();
+        if let Some(first) = list.first() {
+            let (mut lo, mut hi) = (first.0, first.0);
+            for (p, _) in &list {
+                lo = [lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])];
+                hi = [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])];
+            }
+            self.bounds = Cuboid::new(lo, hi);
+        }
+        self.blocks = list;
+        self.entities = entities;
+        // Entities move as points about the origin and face the turned way.
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        for mob in &mut self.mobs {
+            let (x, z) = (mob.pos[0], mob.pos[2]);
+            mob.pos = [x * cos + z * sin, mob.pos[1], -x * sin + z * cos];
+            set_yaw(&mut mob.nbt, &|yaw| yaw - degrees as f32);
+        }
+    }
+
     /// Mirrored across the origin along `dir`'s axis (`//flip`).
     pub fn flip(&mut self, world: &dyn World, dir: Dir) {
         match dir.axis() {
@@ -298,6 +346,33 @@ impl Clipboard {
 }
 
 /// Moves the block position of a hanging entity (`block_pos`, or `TileX/Y/Z` in older data) through `f`.
+/// `facing` and `axis` of a block turned `q` quarter turns about x or z (see [`Clipboard::rotate_xz`]).
+fn turn_state_xz(s: &BlockState, about_x: bool, q: i32) -> BlockState {
+    let mut out = s.clone();
+    for _ in 0..q {
+        for key in ["facing", "axis"] {
+            let Some(v) = out.properties.get(key).cloned() else { continue };
+            let next = match (key, about_x, v.as_str()) {
+                ("axis", true, "y") => "z",
+                ("axis", true, "z") => "y",
+                ("axis", false, "x") => "y",
+                ("axis", false, "y") => "x",
+                ("facing", true, "north") => "down",
+                ("facing", true, "down") => "south",
+                ("facing", true, "south") => "up",
+                ("facing", true, "up") => "north",
+                ("facing", false, "east") => "down",
+                ("facing", false, "down") => "west",
+                ("facing", false, "west") => "up",
+                ("facing", false, "up") => "east",
+                _ => continue,
+            };
+            out.properties.insert(key.to_owned(), next.to_owned());
+        }
+    }
+    out
+}
+
 fn move_hanging(nbt: &mut Tag, f: impl Fn(Pos) -> Pos) {
     let Tag::Compound(map) = nbt else { return };
     if let Some(Tag::IntArray(p)) = map.get_mut("block_pos") {

@@ -238,14 +238,20 @@ impl Engine {
             let kind = SelKind::parse(word).ok_or_else(|| usage("pos"))?;
             out.extend(self.sel_type(actor, kind, false)?);
         }
-        if let Ok(lines) = self.corner_set(world, actor, true, first) {
-            out.extend(lines);
-        }
+        let _ = self.corner_set(world, actor, true, first);
         for p in rest {
-            if let Ok(lines) = self.corner_set(world, actor, false, p) {
-                out.extend(lines);
+            let _ = self.corner_set(world, actor, false, p);
+        }
+        // `SelectionCommands.pos` prints what the selector says of itself, then that the positions are updated.
+        let s = self.sessions.get(actor.uuid);
+        match (&s.shape, s.pos1, s.pos2) {
+            (Some(shape), _, _) => out.extend(Self::shape_info(shape, s.kind).into_iter().skip(1)),
+            (None, a, b) => {
+                out.extend(a.map(|p| format!("Position 1: {}", pt(p))));
+                out.extend(b.map(|p| format!("Position 2: {}", pt(p))));
             }
         }
+        out.push("Positions updated.".into());
         Ok(out)
     }
 
@@ -291,7 +297,7 @@ impl Engine {
                 let item = namespaced(words.get(at).ok_or_else(|| usage(&format!("{name} item")))?);
                 let known = world.item_names();
                 if !known.is_empty() && !known.iter().any(|i| *i == item) {
-                    return Err(format!("Item '{item}' was not recognized."));
+                    return Err(format!("Item name '{item}' was not recognized."));
                 }
                 let dir = match words.get(at + 1) {
                     Some(w) => direction_word(w).ok_or_else(|| format!("'{w}' is not a valid direction."))?,

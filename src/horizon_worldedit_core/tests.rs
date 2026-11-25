@@ -244,7 +244,7 @@ fn copy_paste_is_relative_to_where_you_stand() {
     run(&mut e, &mut w, &a, "/clearclipboard");
     assert_eq!(fails(&mut e, &mut w, &a, "//paste"), "Your clipboard is empty. Use //copy first.");
     run(&mut e, &mut w, &a, "//copy");
-    assert!(fails(&mut e, &mut w, &a, "//rotate 45").contains("90"));
+    assert_eq!(run(&mut e, &mut w, &a, "//rotate 45"), "Note: Interpolation is not yet supported, so angles that are multiples of 90 is recommended.\nThe clipboard copy has been rotated.");
 }
 
 #[test]
@@ -1433,13 +1433,13 @@ fn pos_sets_corners_and_the_selector() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();
     let a = actor(1);
-    assert_eq!(run(&mut e, &mut w, &a, "//pos 1,64,1 3,64,3"), "First position set to (1, 64, 1).\nSecond position set to (3, 64, 3) (9).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos 1,64,1 3,64,3"), "Position 1: (1, 64, 1)\nPosition 2: (3, 64, 3)\nPositions updated.");
     assert_eq!(e.selection_of(1), Some(("minecraft:overworld".to_owned(), [1, 64, 1], [3, 64, 3])));
     // Without coordinates both corners are where the player stands.
-    assert_eq!(run(&mut e, &mut w, &a, "//pos"), "First position set to (0, 64, 0).\nSecond position set to (0, 64, 0) (1).");
+    assert_eq!(run(&mut e, &mut w, &a, "//pos"), "Position 1: (0, 64, 0)\nPosition 2: (0, 64, 0)\nPositions updated.");
     // `-s` chooses the selector first, and a polygon says how many points it takes.
     let text = run(&mut e, &mut w, &a, "//pos -s poly 1,64,1");
-    assert!(text.starts_with("2D polygon selector: Left/right click to add a point.\n20 points maximum."), "{text}");
+    assert!(text.starts_with("2D polygon selector: Left/right click to add a point.\n20 points maximum.\n# points: "), "{text}");
 }
 
 #[test]
