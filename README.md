@@ -129,10 +129,10 @@ horizon-launcher native-build <path to this folder> --server-output <dir> --vers
 
 What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: ...)` in `src/lib.rs`):
 
-- The selection outline (WorldEdit CUI) is not drawn.
+- The selection outline for clients with the WorldEditCUI mod (`worldedit:cui`) is sent for every selector; clients without it get none (needs a block entity shown to one player, see audit ENGINE_NEEDS `player_show_block_entity`).
 - No selection API for other mods yet (WorldGuard on arismoko reports that it has no selection).
 - Not ported yet: the navwand left click (pass through walls), the super pickaxe, tree/deltree/stacker/lrbuild tools, snapshots and CraftScript (see Round 102 for `//regen`, `/delchunks`).
-- Entities (`-e`) and biomes (`-b`) are not copied: the host API has no entity spawn from saved data and no biome write for this mod.
+- `//copy`/`//cut`/`//paste` take `-e` and `-b` (entities, biomes per 4x4x4 cell); item frames and paintings are not copied (the host's entity walk skips them); hanging entities are not turned by `//rotate`. `/snapshot list|use|sel|before|after` and `//restore` read folders and .zip backups from `snapshots.directory` (`.tar*` not read); the navigation wand's left click passes through walls.
 - Block entities (chest contents, signs, spawners...) are copied, cut, pasted, stacked, moved, undone and saved in schematics
   (Sponge v3 `BlockEntities`; read from Sponge v2/v3, structure `.nbt` and Litematica files).
 

@@ -45,6 +45,11 @@ max_radius = 128
 # The largest range of /tool floodfill (limits.max-super-pickaxe-size).
 max_super_pickaxe_size = 5
 
+# Whether the super pickaxe drops items (super-pickaxe.drop-items), and its area and recursive modes do
+# (super-pickaxe.many-drop-items).
+super_pickaxe_drop = true
+super_pickaxe_many_drop = false
+
 # The height //snow, //thaw and //green work up and down from you when none is given
 # (defaults.default-vertical-height).
 default_vertical_height = 256
@@ -159,6 +164,8 @@ pub struct Config {
     pub brush_range: f64,
     pub max_radius: f64,
     pub max_super_pickaxe_size: i32,
+    pub super_pickaxe_drop: bool,
+    pub super_pickaxe_many_drop: bool,
     pub default_vertical_height: i32,
     pub schematics_dir: String,
     pub disallowed_blocks: Vec<String>,
@@ -195,6 +202,8 @@ impl Default for Config {
             brush_range: 300.0,
             max_radius: 128.0,
             max_super_pickaxe_size: 5,
+            super_pickaxe_drop: true,
+            super_pickaxe_many_drop: false,
             default_vertical_height: 256,
             schematics_dir: "worldedit/schematics".into(),
             disallowed_blocks: vec![
@@ -309,6 +318,8 @@ impl Config {
         keys.int("limits.vertical-height.default", &mut c.default_vertical_height);
         keys.float("limits.max-radius", &mut c.max_radius);
         keys.int("limits.max-super-pickaxe-size", &mut c.max_super_pickaxe_size);
+        keys.bool("super-pickaxe.drop-items", &mut c.super_pickaxe_drop);
+        keys.bool("super-pickaxe.many-drop-items", &mut c.super_pickaxe_many_drop);
         keys.float("limits.max-brush-radius", &mut c.max_brush_radius);
         keys.list("limits.disallowed-blocks", &mut c.disallowed_blocks);
         keys.usize("history.size", &mut c.history_size);
@@ -419,7 +430,7 @@ mod tests {
         )
     }
 
-    const ORIGINAL_KEYS: [&str; 16] = [
+    const ORIGINAL_KEYS: [&str; 18] = [
         "limits.butcher-radius.default",
         "limits.butcher-radius.maximum",
         "limits.max-blocks-changed.default",
@@ -427,6 +438,8 @@ mod tests {
         "limits.vertical-height.default",
         "limits.max-radius",
         "limits.max-super-pickaxe-size",
+        "super-pickaxe.drop-items",
+        "super-pickaxe.many-drop-items",
         "limits.max-brush-radius",
         "limits.disallowed-blocks",
         "history.size",
