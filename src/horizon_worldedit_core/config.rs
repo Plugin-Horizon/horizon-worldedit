@@ -555,7 +555,7 @@ mod tests {
         )
     }
 
-    const ORIGINAL_KEYS: [&str; 48] = [
+    const ORIGINAL_KEYS: [&str; 46] = [
         "limits.butcher-radius.default",
         "limits.butcher-radius.maximum",
         "limits.max-blocks-changed.default",
