@@ -25,6 +25,7 @@ pub mod schem;
 pub mod selector;
 pub mod session;
 pub mod shapes;
+pub mod snbt;
 pub mod snapshot;
 pub mod world;
 pub mod yaml; // vendored horizon-yaml: reads the original plugins/WorldEdit/config.yml

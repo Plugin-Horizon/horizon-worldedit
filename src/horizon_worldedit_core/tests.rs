@@ -1617,3 +1617,36 @@ fn a_timeout_above_the_maximum_is_refused() {
     assert_eq!(run(&mut e, &mut w, &a, "//timeout 200"), "Timeout time set to 200ms. (Use //timeout to go back to the default.)");
     assert_eq!(run(&mut e, &mut w, &a, "//timeout"), "Timeout time set to 100ms.");
 }
+
+#[test]
+fn block_strings_follow_the_block_parser() {
+    use crate::horizon_worldedit_core::nbt::Tag;
+    use crate::horizon_worldedit_core::pattern::take_pending_nbt;
+    let w = FakeWorld::new();
+    let name = |spec: &str| w.describe(Pattern::parse(&w, spec, None).unwrap().entries[0].1).name;
+    // Legacy ids: `1` is stone, `3` dirt, `1:1` granite is not in this world.
+    assert_eq!(name("1"), "minecraft:stone");
+    assert_eq!(name("3:0"), "minecraft:dirt");
+    // The block entity data goes with the block that was picked.
+    let p = Pattern::parse(&w, "stone{Foo:1b}", None).unwrap();
+    let _ = take_pending_nbt();
+    p.pick(0, [1, 2, 3]);
+    assert_eq!(take_pending_nbt().get(&[1, 2, 3]).and_then(|t| t.get("Foo")), Some(&Tag::Byte(1)));
+    // A comma inside the braces does not split the list.
+    assert_eq!(Pattern::parse(&w, "stone{a:1b,b:2b},dirt", None).unwrap().entries.len(), 2);
+    for (spec, message) in [
+        ("stone{a:1", "NBT is missing trailing '}'"),
+        ("oak_stairs[facing=east", "State is missing trailing ']'"),
+        ("stone{a:1}[x=y]", "Block state must come before NBT data, found '[x=y]'"),
+        ("stone[x=y][z=w]", "Only one block state section is allowed, found '[z=w]'"),
+        ("stone{a:1}{b:2}", "Only one NBT section is allowed, found '{b:2}'"),
+        ("oak_stairs[facing=nowhere]", "Unknown value 'nowhere' for property 'facing'"),
+        ("oak_stairs[facing]", "Bad state format in facing"),
+        ("oak_stairs[facing=east,facing=west]", "Duplicate property: facing"),
+        ("[facing=east]", "Missing block type in '[facing=east]'"),
+        ("stone{a 1}|x", "Invalid NBT Data in input: 'stone{a 1}|x'. Error: Expected ':' at position 3 of '{a 1}'"),
+        ("stone{a:1b}|x", "NBT data cannot be combined with '|' extra data, found 'x'"),
+    ] {
+        assert_eq!(Pattern::parse(&w, spec, None).unwrap_err(), message, "{spec}");
+    }
+}

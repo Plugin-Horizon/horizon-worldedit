@@ -6,6 +6,9 @@
 
 use crate::horizon_worldedit_core::block::BlockState;
 use crate::horizon_worldedit_core::engine::expr::Expr;
+use crate::horizon_worldedit_core::legacy::Legacy;
+use crate::horizon_worldedit_core::nbt::Tag;
+use crate::horizon_worldedit_core::snbt;
 use crate::horizon_worldedit_core::region::Cuboid;
 use crate::horizon_worldedit_core::selector::Shape;
 use crate::horizon_worldedit_core::world::{Pos, StateId, World};
@@ -21,8 +24,8 @@ pub fn split_entries(spec: &str) -> Vec<String> {
     let mut start = 0usize;
     for (i, ch) in spec.char_indices() {
         match ch {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 out.push(spec[start..i].to_owned());
                 start = i + 1;
@@ -52,13 +55,201 @@ fn weighted<'a>(part: &'a str, spec: &str) -> Result<(f64, &'a str), String> {
     Ok((1.0, t))
 }
 
-/// A typed block name as a state to look up: `0` is air, `hand` the held block.
-fn typed_state(name: &str, hand: Option<&str>) -> Option<BlockState> {
-    match name {
-        "0" => Some(BlockState::air()),
-        "hand" => BlockState::parse(hand?),
-        _ => BlockState::parse(name),
+/// What a block string names: the state as typed and the block entity data it brings (`chest{Items:[...]}`, a sign's text).
+struct Typed {
+    state: BlockState,
+    nbt: Option<Tag>,
+}
+
+/// Splits `stone|a|b` at the `|` and `;` outside brackets and braces, dropping empty parts at the end.
+fn split_extra(input: &str) -> Vec<String> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0usize, 0usize);
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth = depth.saturating_sub(1),
+            '|' | ';' if depth == 0 => {
+                parts.push(input[start..i].to_owned());
+                start = i + 1;
+            }
+            _ => {}
+        }
     }
+    parts.push(input[start..].to_owned());
+    while parts.len() > 1 && parts.last().is_some_and(String::is_empty) {
+        parts.pop();
+    }
+    parts
+}
+
+/// The wool a colour word names (`red` is `minecraft:red_wool`), as the legacy block syntax allows.
+fn wool(word: &str) -> String {
+    let colour = match word.to_ascii_lowercase().as_str() {
+        c @ ("white" | "black" | "blue" | "brown" | "cyan" | "green" | "lime" | "magenta" | "orange" | "pink" | "purple" | "yellow" | "red") => c.to_owned(),
+        "gray" | "grey" => "gray".to_owned(),
+        "light_blue" | "lightblue" => "light_blue".to_owned(),
+        "light_gray" | "light_grey" | "lightgray" | "lightgrey" => "light_gray".to_owned(),
+        _ => return word.to_owned(),
+    };
+    format!("minecraft:{colour}_wool")
+}
+
+/// `id` or `id:data` of the legacy block syntax (`35:5`).
+fn legacy_ids(word: &str) -> Option<(i32, i32)> {
+    let (id, data) = match word.split_once(':') {
+        Some((i, d)) => (i, d),
+        None => (word, "0"),
+    };
+    Some((id.parse().ok()?, data.parse().ok()?))
+}
+
+/// The index of the `]` or `}` that closes the bracket at `open`.
+fn closing(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, ch) in text.char_indices().skip_while(|(i, _)| *i < open) {
+        match ch {
+            '[' | '{' => depth += 1,
+            ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The sign text a `stone|a|b|c|d` entry carries (`SignBlock`), the spawner's mob and the skull's owner.
+fn extra_nbt(name: &str, extra: &[String]) -> Result<Option<Tag>, String> {
+    let n = name.trim_start_matches("minecraft:");
+    let compound = |items: Vec<(&str, Tag)>| Tag::Compound(items.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+    if n.ends_with("_sign") || n.ends_with("_hanging_sign") {
+        let line = |i: usize| compound(vec![("text", Tag::String(extra.get(i).cloned().unwrap_or_default()))]);
+        let side = |lines: Vec<Tag>| compound(vec![("messages", Tag::List(lines)), ("color", Tag::String("black".into())), ("has_glowing_text", Tag::Byte(0))]);
+        let blank = || compound(vec![("text", Tag::String(String::new()))]);
+        return Ok(Some(compound(vec![
+            ("front_text", side((0..4).map(line).collect())),
+            ("back_text", side((0..4).map(|_| blank()).collect())),
+            ("is_waxed", Tag::Byte(0)),
+        ])));
+    }
+    if n == "spawner" {
+        let mob = extra.first().map_or("pig".to_owned(), |m| m.to_ascii_lowercase());
+        let id = if mob.contains(':') { mob } else { format!("minecraft:{mob}") };
+        return Ok(Some(compound(vec![("SpawnData", compound(vec![("entity", compound(vec![("id", Tag::String(id))]))]))])));
+    }
+    if n == "player_head" || n == "player_wall_head" {
+        return Ok(extra.first().map(|owner| compound(vec![("profile", compound(vec![("name", Tag::String(owner.replace(' ', "_")))]))])));
+    }
+    Ok(None)
+}
+
+/// One block as `DefaultBlockParser` reads it: `stone`, `35:5`, `red`, `hand`, `pos1`, `oak_stairs[facing=east]`, `chest{...}`,
+/// `oak_sign|line one|line two`.
+fn parse_typed(world: &dyn World, input: &str, hand: Option<&str>) -> Result<Typed, String> {
+    let unknown_block = || format!("Block name '{input}' was not recognized.");
+    let parts = split_extra(input.trim());
+    let mut head = parts.first().cloned().unwrap_or_default();
+    if head.is_empty() {
+        return Err(unknown_block());
+    }
+    head = wool(&head);
+    if let Some((id, data)) = legacy_ids(&head) {
+        if let Some(state) = Legacy::build(world).state_of(id, data) {
+            return Ok(Typed { state: world.describe(state), nbt: None });
+        }
+    }
+    // The type up to a state or NBT section, then the state, then the NBT.
+    let end = head.find(['[', '{']).unwrap_or(head.len());
+    let type_text = head[..end].to_owned();
+    let mut cursor = end;
+    let mut state_text: Option<String> = None;
+    if head[cursor..].starts_with('[') {
+        if cursor + 1 >= head.len() {
+            return Err(format!("Invalid format. Hanging bracket at '{cursor}'."));
+        }
+        let close = closing(&head, cursor).ok_or("State is missing trailing ']'")?;
+        state_text = Some(head[cursor + 1..close].to_owned());
+        cursor = close + 1;
+    }
+    let mut nbt_text: Option<String> = None;
+    if head[cursor..].starts_with('{') {
+        if cursor + 1 >= head.len() {
+            return Err(format!("Invalid format. Hanging brace at '{cursor}'."));
+        }
+        let close = closing(&head, cursor).ok_or("NBT is missing trailing '}'")?;
+        nbt_text = Some(head[cursor..=close].to_owned());
+        cursor = close + 1;
+    }
+    if cursor < head.len() {
+        let rest = &head[cursor..];
+        return Err(if rest.starts_with('[') {
+            if state_text.is_none() { format!("Block state must come before NBT data, found '{rest}'") } else { format!("Only one block state section is allowed, found '{rest}'") }
+        } else if rest.starts_with('{') {
+            format!("Only one NBT section is allowed, found '{rest}'")
+        } else {
+            format!("Unexpected text after block: '{rest}'")
+        });
+    }
+    if type_text.is_empty() {
+        return Err(format!("Missing block type in '{head}'"));
+    }
+    // The block the type names.
+    let base: BlockState = match type_text.to_ascii_lowercase().as_str() {
+        "hand" => BlockState::parse(hand.ok_or("This item is not a block.")?).ok_or("This item is not a block.")?,
+        "offhand" => return Err("This item is not a block.".into()),
+        "pos1" => {
+            let primary = ctx().primary.ok_or("Make a region selection first.")?;
+            world.get(primary).map(|s| world.describe(s)).ok_or("Make a region selection first.")?
+        }
+        _ => {
+            let parsed = BlockState::parse(&type_text.to_ascii_lowercase()).ok_or_else(unknown_block)?;
+            let default = world.resolve(&BlockState { name: parsed.name.clone(), properties: Default::default() }).ok_or_else(unknown_block)?;
+            world.describe(default)
+        }
+    };
+    let default_id = world.resolve(&BlockState { name: base.name.clone(), properties: Default::default() }).ok_or_else(unknown_block)?;
+    let default = world.describe(default_id);
+    let mut state = if matches!(type_text.to_ascii_lowercase().as_str(), "hand" | "pos1") { base.clone() } else { default.clone() };
+    if let Some(text) = state_text {
+        let mut seen: Vec<String> = Vec::new();
+        for pair in text.split(',') {
+            let Some((k, v)) = pair.split_once('=').filter(|(k, v)| !k.is_empty() && !v.is_empty() && !v.contains('=')) else {
+                return Err(format!("Bad state format in {pair}"));
+            };
+            if !default.properties.contains_key(k) {
+                return Err(format!("Unknown property '{k}' for block '{}'", base.name));
+            }
+            if seen.iter().any(|s| s == k) {
+                return Err(format!("Duplicate property: {k}"));
+            }
+            seen.push(k.to_owned());
+            let mut probe = state.clone();
+            probe.properties.insert(k.to_owned(), v.to_owned());
+            if world.resolve(&probe).is_none() {
+                return Err(format!("Unknown value '{v}' for property '{k}'"));
+            }
+            state = probe;
+        }
+    }
+    let mut nbt = None;
+    if let Some(text) = nbt_text {
+        nbt = Some(snbt::parse_compound(&text).map_err(|e| format!("Invalid NBT Data in input: '{input}'. Error: {e}"))?);
+    }
+    if nbt.is_some() && parts.len() > 1 {
+        return Err(format!("NBT data cannot be combined with '|' extra data, found '{}'", parts[1]));
+    }
+    if nbt.is_none() && parts.len() > 1 {
+        nbt = extra_nbt(&state.name, &parts[1..])?;
+    }
+    Ok(Typed { state, nbt })
+}
+
+/// A typed block name as a state to look up (the state only: masks have no use for the block entity data).
+fn typed_state(world: &dyn World, name: &str, hand: Option<&str>) -> Option<BlockState> {
+    parse_typed(world, name, hand).ok().map(|t| t.state)
 }
 
 /// One block, or a weighted list picked per position.
@@ -69,6 +260,8 @@ pub struct Pattern {
     total: u32,
     /// What depends on the block that stands there: `^[state]`, `*block`, `#clipboard`. `entries` then holds one placeholder.
     dynamic: Option<Rc<Dynamic>>,
+    /// The block entity data of each entry (`chest{...}`, signs): the same length as `entries`, or empty when there is none.
+    nbts: Vec<Option<Tag>>,
 }
 
 /// The patterns that look at the world or the clipboard.
@@ -85,7 +278,7 @@ enum Dynamic {
 
 impl Pattern {
     pub fn single(state: StateId, text: &str) -> Self {
-        Self { text: text.to_owned(), entries: vec![(1, state)], total: 1, dynamic: None }
+        Self { text: text.to_owned(), entries: vec![(1, state)], total: 1, dynamic: None, nbts: Vec::new() }
     }
     /// The pattern `spec` names, or the entry that isn't a block.
     pub fn parse(world: &dyn World, spec: &str, hand: Option<&str>) -> Result<Self, String> {
@@ -100,23 +293,24 @@ impl Pattern {
             }
         }
         let mut chances = Vec::new();
+        let mut nbts = Vec::new();
         for part in split_entries(spec) {
             let (chance, name) = weighted(&part, spec)?;
-            let state = typed_state(name, hand)
-                .and_then(|s| world.resolve(&s))
-                .ok_or_else(|| unknown(world, name, hand))?;
+            let typed = parse_typed(world, name, hand).map_err(|e| if e.starts_with("Block name ") { unknown(world, name, hand) } else { e })?;
+            let state = world.resolve(&typed.state).ok_or_else(|| unknown(world, name, hand))?;
             chances.push((chance, state));
+            nbts.push(typed.nbt);
         }
         // Whole chances stay as they are; a fractional one scales every chance by 1000.
         let scale = if chances.iter().any(|(c, _)| c.fract() != 0.0) { 1000.0 } else { 1.0 };
         let entries: Vec<(u32, StateId)> = chances.into_iter().map(|(c, s)| ((c * scale).round().clamp(0.0, f64::from(u32::MAX / 64)) as u32, s)).collect();
         let total = entries.iter().fold(0u32, |t, (w, _)| t.saturating_add(*w));
-        Ok(Self { text: spec.trim().to_owned(), entries, total, dynamic: None })
+        Ok(Self { text: spec.trim().to_owned(), entries, total, dynamic: None, nbts })
     }
     /// `#clipboard`, `^...` and `*...`: `None` for any other input.
     fn dynamic_pattern(world: &dyn World, spec: &str, hand: Option<&str>) -> Option<Result<Self, String>> {
         let air = world.resolve(&BlockState::air()).unwrap_or(0);
-        let made = |dynamic: Dynamic| Self { text: spec.to_owned(), entries: vec![(1, air)], total: 1, dynamic: Some(Rc::new(dynamic)) };
+        let made = |dynamic: Dynamic| Self { text: spec.to_owned(), entries: vec![(1, air)], total: 1, dynamic: Some(Rc::new(dynamic)), nbts: Vec::new() };
         let lower = spec.to_ascii_lowercase();
         // `#clipboard`, `#copy`, each with `@[x,y,z]`.
         let (head, offset_text) = match spec.split_once('@') {
@@ -227,7 +421,7 @@ impl Pattern {
             }
             // All properties given: it is just the block.
             if states.len() == 1 {
-                return Some(Ok(Self { text: spec.to_owned(), entries: vec![(1, states[0])], total: 1, dynamic: None }));
+                return Some(Ok(Self { text: spec.to_owned(), entries: vec![(1, states[0])], total: 1, dynamic: None, nbts: Vec::new() }));
             }
             return Some(Ok(made(Dynamic::RandomState(states))));
         }
@@ -322,16 +516,26 @@ impl Pattern {
     /// depend on the order a region is walked in.
     pub fn pick(&self, salt: u64, pos: Pos) -> StateId {
         if self.entries.len() == 1 {
+            self.note_nbt(0, pos);
             return self.entries[0].1;
         }
         let mut roll = (mix(salt, pos) % u64::from(self.total.max(1))) as u32;
-        for &(weight, block) in &self.entries {
+        for (i, &(weight, block)) in self.entries.iter().enumerate() {
             if roll < weight {
+                self.note_nbt(i, pos);
                 return block;
             }
             roll -= weight;
         }
+        self.note_nbt(self.entries.len() - 1, pos);
         self.entries[self.entries.len() - 1].1
+    }
+
+    /// Remembers the block entity data of entry `i` for the block about to be written at `pos` (`take_pending_nbt`).
+    fn note_nbt(&self, i: usize, pos: Pos) {
+        if let Some(Some(tag)) = self.nbts.get(i) {
+            PENDING_NBT.with(|p| p.borrow_mut().insert(pos, tag.clone()));
+        }
     }
     /// What a report calls it: the block, or the list as typed.
     pub fn label(&self, world: &dyn World) -> String {
@@ -424,8 +628,15 @@ pub struct ClipView {
 }
 
 thread_local! {
+    /// The block entity data of the blocks patterns picked since the last `take_pending_nbt`, by position.
+    static PENDING_NBT: RefCell<HashMap<Pos, Tag>> = RefCell::new(HashMap::new());
     /// What `Mask::parse` and `Pattern::parse` know of the player whose command or click is being handled.
     static CTX: RefCell<MaskCtx> = RefCell::new(MaskCtx::default());
+}
+
+/// The block entity data patterns attached to the blocks they picked (a chest's items, a sign's text), by position; empties the list.
+pub fn take_pending_nbt() -> HashMap<Pos, Tag> {
+    PENDING_NBT.with(|p| std::mem::take(&mut *p.borrow_mut()))
 }
 
 /// Sets the session context for the masks and patterns parsed from now on (the engine does this for every command and click).
@@ -446,6 +657,8 @@ pub struct MaskCtx {
     pub clipboard: Option<Rc<ClipView>>,
     /// The player's expression timeout in milliseconds (negative: none).
     pub timeout_ms: i64,
+    /// The first position of the selection (`pos1` as a block name).
+    pub primary: Option<Pos>,
     /// A number that makes `%n` masks differ from one command to the next.
     pub salt: u64,
 }
@@ -653,7 +866,7 @@ impl Mask {
         let mut entries = Vec::new();
         for entry in split_entries(body) {
             let (_, name) = weighted(&entry, body).map_err(Some)?;
-            let state = typed_state(name, hand).ok_or(None::<String>)?;
+            let state = typed_state(world, name, hand).ok_or(None::<String>)?;
             // The name must be a block of this game, whatever properties it names.
             world.resolve(&BlockState { name: state.name.clone(), properties: Default::default() }).ok_or(None::<String>)?;
             entries.push(MaskEntry::Block(state));
@@ -765,7 +978,7 @@ mod tests {
         assert_eq!(Pattern::parse(&w, "hand", Some("minecraft:dirt")).unwrap().entries[0].1, w.id("dirt"));
         assert!(Pattern::parse(&w, "hand", None).is_err());
         assert_eq!(Pattern::parse(&w, "unobtainium", None).unwrap_err(), "Block name 'unobtainium' was not recognized.");
-        assert_eq!(Pattern::parse(&w, "oak_stairs[nonsense=1]", None).unwrap_err(), "Unknown property 'nonsense' for block 'oak_stairs'");
+        assert_eq!(Pattern::parse(&w, "oak_stairs[nonsense=1]", None).unwrap_err(), "Unknown property 'nonsense' for block 'minecraft:oak_stairs'");
         let frac = Pattern::parse(&w, "12.5%stone,87.5%gravel", None).unwrap();
         assert_eq!(frac.entries, vec![(12500, w.id("stone")), (87500, w.id("gravel"))]);
         assert!(Pattern::parse(&w, "50%", None).is_err());

@@ -1420,7 +1420,9 @@ impl Engine {
             None
         };
         let timeout_ms = s.timeout_ms.unwrap_or(timeout_default);
-        set_ctx(MaskCtx { region, clipboard, timeout_ms, salt: (now as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (actor.uuid as u64) });
+        let primary = if s.dimension == actor.dimension { s.pos1 } else { None };
+        let _ = crate::horizon_worldedit_core::pattern::take_pending_nbt();
+        set_ctx(MaskCtx { region, clipboard, timeout_ms, primary, salt: (now as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (actor.uuid as u64) });
     }
 
     /// A typed command (`set stone`, `//set stone`, `rotate 90`).
@@ -1655,7 +1657,17 @@ impl Engine {
     }
 
     /// [`Engine::commit`] for blocks that bring block entity data (`entities`, by world position).
-    fn commit_with(&mut self, world: &mut dyn World, actor: &Actor, mut ops: Vec<(Pos, StateId)>, entities: HashMap<Pos, Tag>) -> Result<(usize, String), String> {
+    fn commit_with(&mut self, world: &mut dyn World, actor: &Actor, mut ops: Vec<(Pos, StateId)>, mut entities: HashMap<Pos, Tag>) -> Result<(usize, String), String> {
+        // The block entity data the patterns attached (`chest{...}`, a sign's text) goes with the blocks that are written.
+        let attached = crate::horizon_worldedit_core::pattern::take_pending_nbt();
+        if !attached.is_empty() {
+            let written: std::collections::HashSet<Pos> = ops.iter().map(|(p, _)| *p).collect();
+            for (p, tag) in attached {
+                if written.contains(&p) {
+                    entities.insert(p, tag);
+                }
+            }
+        }
         // `//gmask`: only blocks the player's global mask accepts are changed.
         if let Some(text) = self.sessions.get(actor.uuid).global_mask.clone() {
             let mask = Mask::parse(world, &text, None)?;
