@@ -22,6 +22,7 @@ mod cui;
 mod expr;
 mod extra;
 mod help;
+mod logging;
 mod more;
 mod nav;
 mod select;
@@ -200,6 +201,8 @@ pub const NODES: &[&str] = &[
     "worldedit.update",
     "worldedit.wand.toggle",
     "worldedit.timeout.unrestricted",
+    "worldedit.override.data-cycler",
+    "worldedit.inventory.unrestricted",
 ];
 
 /// Nodes that lift a limit and need operator level 4 where `node_levels` names no other level (the original's `default: op`
@@ -1440,6 +1443,7 @@ impl Engine {
             return Reply::err(e);
         }
         self.names.insert(actor.name.to_ascii_lowercase(), actor.uuid);
+        self.log_command(&*world, actor, raw, env);
         let writes = !matches!(
             name.as_str(),
             "we" | "worldedit" | "wand" | "pos" | "toggleeditwand" | "pos1" | "pos2" | "hpos1" | "hpos2" | "sel" | "desel" | "size" | "expand" | "contract" | "shift" | "outset" | "inset" | "chunk" | "count" | "distr" | "copy" | "rot" | "flip" | "clearclipboard" | "clearhistory" | "schem" | "schematic" | "brush" | "br" | "mask" | "material" | "range" | "brushsize" | "tracemask" | "superpickaxe" | "togglepickaxe" | "none" | "tool" | "help" | "limit" | "gmask" | "toggleplace" | "placement" | "searchitem" | "calc" | "trim" | "chunkinfo" | "listchunks" | "biomelist" | "biomeinfo" | "world" | "butcher" | "remove" | "timeout" | "fast" | "perf" | "reorder" | "drawsel" | "watchdog" | "registry" | "snapshot"
@@ -2646,7 +2650,7 @@ impl Engine {
                     Some(p) => p.parse().map_err(|_| number_error(p))?,
                     None => 1,
                 };
-                list_schematics(dir, page, args.flag('d'), args.flag('n'))
+                list_schematics(dir, page, args.flag('d'), args.flag('n'), self.config.allow_symlinks)
             }
             Some("formats" | "listformats" | "f") => Ok(vec![
                 "Available clipboard formats (Name: Lookup names)".into(),
@@ -2660,7 +2664,7 @@ impl Engine {
                 if name.is_empty() {
                     return Err(usage("schem load"));
                 }
-                let path = find_schematic(dir, &name)?;
+                let path = find_schematic(dir, &name, self.config.allow_symlinks)?;
                 let bytes = std::fs::read(&path).map_err(|e| format!("Failed to load schematic: {e}"))?;
                 let max_blocks = self.max_blocks(actor);
                 let max = if max_blocks >= 0 { (max_blocks as u64).min(SCAN_LIMIT) } else { SCAN_LIMIT };
@@ -2715,7 +2719,7 @@ impl Engine {
                 if name.is_empty() {
                     return Err(usage("schem delete"));
                 }
-                let path = find_schematic(dir, &name)?;
+                let path = find_schematic(dir, &name, self.config.allow_symlinks)?;
                 std::fs::remove_file(&path).map_err(|_| format!("Deletion of {name} failed! Is it read-only?"))?;
                 Ok(vec![format!("{name} has been deleted.")])
             }
@@ -3269,12 +3273,12 @@ fn safe_name(name: &str) -> Result<&str, String> {
 }
 
 /// The file `name` means: as typed, or with one of the extensions.
-fn find_schematic(dir: &Path, name: &str) -> Result<PathBuf, String> {
+fn find_schematic(dir: &Path, name: &str, links: bool) -> Result<PathBuf, String> {
     let name = safe_name(name)?;
     for ext in std::iter::once("").chain(EXTENSIONS) {
         let path = dir.join(format!("{name}{ext}"));
-        // No links out of the folder (WorldEdit's files.allow-symbolic-links: false).
-        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        // No links out of the folder unless `files.allow-symbolic-links` says so.
+        if let Ok(meta) = if links { std::fs::metadata(&path) } else { std::fs::symlink_metadata(&path) } {
             if meta.is_file() {
                 return Ok(path);
             }
@@ -3293,7 +3297,7 @@ fn save_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// `//schem list [-p page] [-d|-n]`: eight a page, oldest (`-d`) or newest (`-n`) first, or by name.
-fn list_schematics(dir: &Path, page: usize, oldest_first: bool, newest_first: bool) -> R {
+fn list_schematics(dir: &Path, page: usize, oldest_first: bool, newest_first: bool, links: bool) -> R {
     if oldest_first && newest_first {
         return Err("Cannot sort by oldest and newest.".into());
     }
@@ -3301,7 +3305,7 @@ fn list_schematics(dir: &Path, page: usize, oldest_first: bool, newest_first: bo
     let mut walk = vec![dir.to_path_buf()];
     while let Some(d) = walk.pop() {
         for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            let Ok(meta) = (if links { std::fs::metadata(entry.path()) } else { std::fs::symlink_metadata(entry.path()) }) else { continue };
             if meta.is_dir() && files.len() < 5000 {
                 walk.push(entry.path());
             } else if meta.is_file() {

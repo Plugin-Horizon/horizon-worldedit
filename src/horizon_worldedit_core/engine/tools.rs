@@ -751,6 +751,10 @@ impl Engine {
     /// selects the next property. (Properties go by name here; WorldEdit's go by the game's order.)
     fn cycle(&mut self, world: &mut dyn World, actor: &Actor, item: &str, selected: Option<String>, forward: bool, pos: Pos) -> R {
         let Some(state) = world.get(pos).map(|s| world.describe(s)) else { return Ok(Vec::new()) };
+        // `limits.allowed-data-cycle-blocks`: when the list is not empty only those blocks may be cycled, unless the player overrides.
+        if !self.config.allowed_data_cycle_blocks.is_empty() && !self.holds(actor, "worldedit.override.data-cycler") && !self.config.allowed_data_cycle_blocks.contains(&state.name) {
+            return Err("You are not permitted to cycle the data value of that block.".into());
+        }
         let keys: Vec<String> = state.properties.keys().cloned().collect();
         if keys.is_empty() {
             return Err("That block's data cannot be cycled!".into());

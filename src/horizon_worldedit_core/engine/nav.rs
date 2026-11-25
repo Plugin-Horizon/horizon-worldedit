@@ -185,7 +185,8 @@ impl Engine {
     /// `floatAt`: glass under the feet when the block there lets the player fall (or always with `-g`).
     fn float_at(&mut self, world: &mut dyn World, p: Pos, always_glass: bool) -> Reply {
         let below = [p[0], p[1] - 1, p[2]];
-        if always_glass || !world.get(below).is_some_and(|s| !passes(&world.describe(s))) {
+        // `AbstractPlayerActor.floatAt`: glass goes under the feet when the block there is not solid (flight is not available here).
+        if always_glass && !world.get(below).is_some_and(|s| !passes(&world.describe(s))) {
             if let Some(glass) = world.resolve(&BlockState::new("minecraft:glass", &[])) {
                 world.write(&[(below, glass)]);
             }
@@ -258,7 +259,7 @@ impl Engine {
                 let distance: i32 = word.parse().map_err(|_| number_error(word))?;
                 // -f (keep flying) needs a player-ability hook this server lacks: it is accepted and changes nothing.
                 let y = (here[1] + distance).clamp(world.min_y(), world.max_y());
-                let r = self.float_at(world, [here[0], y, here[2]], args.flag('g'));
+                let r = self.float_at(world, [here[0], y, here[2]], args.flag('g') || (self.config.navigation_use_glass && !args.flag('f')));
                 Ok(say(r, "Whoosh!"))
             }
             "ceil" => {
@@ -270,7 +271,7 @@ impl Engine {
                     while y <= world.max_y() {
                         if !passable(world, [here[0], y, here[2]]) {
                             let platform = initial_y.max(y - 3 - clearance);
-                            let r = self.float_at(world, [here[0], platform + 1, here[2]], args.flag('g'));
+                            let r = self.float_at(world, [here[0], platform + 1, here[2]], args.flag('g') || (self.config.navigation_use_glass && !args.flag('f')));
                             return Ok(say(r, "Whoosh!"));
                         }
                         y += 1;
