@@ -1009,7 +1009,7 @@ fn tools_bind_and_click() {
     let mut w = FakeWorld::new();
     let mut a = actor(1);
     a.held = Some("minecraft:stick".into());
-    assert_eq!(run(&mut e, &mut w, &a, "/tool selwand"), "Selection wand bound to Stick.");
+    assert_eq!(run(&mut e, &mut w, &a, "/tool selwand"), "Selection wand bound to Stick.\nRun /tool unbind while holding the item to unbind it.");
     // Left click is position 1, right click position 2, on any item.
     assert_eq!(e.tool_click(&mut w, &a, true, [1, 64, 1], 0).unwrap().text(), "First position set to (1, 64, 1).");
     assert_eq!(e.tool_click(&mut w, &a, false, [3, 64, 3], 1000).unwrap().text(), "Second position set to (3, 64, 3) (9).");
@@ -1020,7 +1020,7 @@ fn tools_bind_and_click() {
     // Info.
     w.fill([5, 64, 5], [5, 64, 5], "oak_stairs[facing=east,half=bottom]");
     run(&mut e, &mut w, &a, "/tool info");
-    assert_eq!(e.tool_click(&mut w, &a, false, [5, 64, 5], 6000).unwrap().text(), "@(5, 64, 5): Oak Stairs (minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false])");
+    assert_eq!(e.tool_click(&mut w, &a, false, [5, 64, 5], 6000).unwrap().text(), "@(5, 64, 5): Oak Stairs (minecraft:oak_stairs[facing=east,half=bottom,shape=straight,waterlogged=false])  (0/0)");
     assert!(e.tool_click(&mut w, &a, true, [5, 64, 5], 7000).is_none(), "the left click digs");
     // Replacer: right click places, left click takes the block as the pattern.
     run(&mut e, &mut w, &a, "/tool repl gold_block");
@@ -1048,8 +1048,6 @@ fn tools_bind_and_click() {
     // A tool and a brush never share an item.
     run(&mut e, &mut w, &a, "/brush sphere stone 2");
     assert!(e.tool_click(&mut w, &a, false, [0, 70, 0], 20_000).is_none());
-    // What this server cannot do says why.
-    assert!(fails(&mut e, &mut w, &a, "/tool tree").contains("not available"));
     assert_eq!(fails(&mut e, &mut w, &a, "/tool bogus"), "The sub-command 'bogus' under 'tool' could not be found.");
     a.held = None;
     assert_eq!(fails(&mut e, &mut w, &a, "/tool info"), "Can't bind tool to Air: Blocks can't be used.");
@@ -1297,4 +1295,107 @@ fn session_options_say_what_worldedit_says() {
     a.held = Some("minecraft:stick".into());
     assert!(run(&mut e, &mut w, &a, "//tool farwand").starts_with("Far wand tool bound to"));
     a.held = None;
+}
+
+#[test]
+fn brush_settings_range_size_tracemask() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    a.held = Some("minecraft:blaze_rod".into());
+    for c in ["/range 5", "/size 2", "/tracemask stone", "/mask air", "/material stone"] {
+        assert_eq!(fails(&mut e, &mut w, &a, c), "You have no brush bound to your current item. Try /brush sphere for a basic brush.");
+    }
+    run(&mut e, &mut w, &a, "/brush sphere dirt 1");
+    assert_eq!(run(&mut e, &mut w, &a, "/range 5"), "Brush range set.");
+    assert_eq!(run(&mut e, &mut w, &a, "/size 3"), "Brush size set.");
+    assert_eq!(fails(&mut e, &mut w, &a, "/size 9"), "Maximum brush radius (in configuration): 5");
+    assert_eq!(run(&mut e, &mut w, &a, "/tracemask stone"), "Trace mask set.");
+    assert_eq!(run(&mut e, &mut w, &a, "/tracemask"), "Trace mask disabled.");
+    assert_eq!(run(&mut e, &mut w, &a, "/material gold_block"), "Brush material set.");
+    // The selection's `//size` still works beside `/size 3`.
+    assert!(fails(&mut e, &mut w, &a, "//size").contains("selection"));
+    // Size 3 replaces the radius 1: a sphere of 3 is bigger than one of 1.
+    w.fill([-10, 60, -10], [10, 60, 10], "stone");
+    a.position = [0.5, 61.0, 0.5];
+    a.pitch = 90.0;
+    e.brush_use(&mut w, &a, Some([0, 60, 0]), 0).unwrap();
+    assert!(w.count("gold_block") > 7, "{}", w.count("gold_block"));
+    // A trace along the view: straight down it hits the floor.
+    let hit = crate::horizon_worldedit_core::engine::tools_target(&w, &a, 500);
+    assert_eq!(hit, Some([0, 60, 0]));
+}
+
+#[test]
+fn super_pickaxe_modes() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    a.held = Some("minecraft:iron_pickaxe".into());
+    w.fill([0, 60, 0], [2, 62, 2], "stone");
+    assert_eq!(run(&mut e, &mut w, &a, "//"), "Super pickaxe enabled.");
+    assert_eq!(fails(&mut e, &mut w, &a, "/, on"), "Super pickaxe already enabled.");
+    assert_eq!(run(&mut e, &mut w, &a, "/, off"), "Super pickaxe disabled.");
+    assert_eq!(fails(&mut e, &mut w, &a, "/, off"), "Super pickaxe already disabled.");
+    assert_eq!(fails(&mut e, &mut w, &a, "/, maybe"), "Not a boolean value: maybe");
+    assert!(e.tool_click(&mut w, &a, true, [1, 61, 1], 0).is_none());
+    assert_eq!(run(&mut e, &mut w, &a, "/sp single"), "Mode is now single. Left click with a pickaxe. // to disable.");
+    assert!(e.tool_click(&mut w, &a, true, [1, 61, 1], 1000).is_some());
+    assert_eq!(w.name_at([1, 61, 1]), "minecraft:air");
+    assert_eq!(w.count("stone"), 26);
+    run(&mut e, &mut w, &a, "//undo");
+    assert_eq!(w.count("stone"), 27);
+    assert_eq!(fails(&mut e, &mut w, &a, "/sp area 6"), "Maximum range is 5.");
+    assert_eq!(run(&mut e, &mut w, &a, "/sp area 1"), "Mode is now area. Left click with a pickaxe. // to disable.");
+    e.tool_click(&mut w, &a, true, [1, 61, 1], 2000);
+    assert_eq!(w.count("stone"), 0);
+    run(&mut e, &mut w, &a, "//undo");
+    assert_eq!(run(&mut e, &mut w, &a, "/pickaxe recur 1"), "Mode is now recursive. Left click with a pickaxe. // to disable.");
+    e.tool_click(&mut w, &a, true, [1, 61, 1], 3000);
+    // Within distance 1 of the clicked block: it and its six neighbours.
+    assert_eq!(w.count("stone"), 27 - 7);
+    // A pickaxe off the list does nothing; bedrock is left to the game.
+    a.held = Some("minecraft:stick".into());
+    assert!(e.tool_click(&mut w, &a, true, [0, 60, 0], 4000).is_none());
+}
+
+#[test]
+fn tree_deltree_stacker_lrbuild() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    w.states.push(crate::horizon_worldedit_core::block::BlockState::new("minecraft:oak_leaves", &[]));
+    let mut a = actor(1);
+    a.held = Some("minecraft:stick".into());
+    w.fill([-5, 60, -5], [5, 60, 5], "stone");
+    assert_eq!(run(&mut e, &mut w, &a, "/tool tree"), "Tree tool bound to Stick.\nRun /tool unbind while holding the item to unbind it.");
+    assert!(e.tool_click(&mut w, &a, false, [0, 60, 0], 0).unwrap().lines.is_empty());
+    assert_eq!(w.planted, vec!["minecraft:oak".to_string()]);
+    assert_eq!(w.name_at([0, 61, 0]), "minecraft:oak_log[axis=y]");
+    run(&mut e, &mut w, &a, "//undo");
+    assert_eq!(w.name_at([0, 61, 0]), "minecraft:air");
+    assert_eq!(fails(&mut e, &mut w, &a, "/tool tree Bad Type"), "Not a valid tree type: Bad");
+    run(&mut e, &mut w, &a, "/tool tree bigtree");
+    e.tool_click(&mut w, &a, false, [3, 60, 3], 1000);
+    assert_eq!(w.planted[1], "minecraft:fancy_oak");
+    // deltree: a tree standing on the ground is not floating; a floating one goes.
+    run(&mut e, &mut w, &a, "/tool deltree");
+    assert_eq!(e.tool_click(&mut w, &a, false, [3, 61, 3], 2000).unwrap().text(), "That's not a floating tree.");
+    assert_eq!(e.tool_click(&mut w, &a, false, [4, 60, 4], 2500).unwrap().text(), "That's not a tree.");
+    w.fill([20, 80, 20], [20, 82, 20], "oak_log[axis=y]");
+    e.tool_click(&mut w, &a, false, [20, 81, 20], 3000);
+    assert_eq!(w.count("oak_log[axis=y]") , 4 + 4);
+    // stacker: the clicked block along the clicked face, until something is in the way.
+    run(&mut e, &mut w, &a, "/tool stacker 3");
+    w.fill([10, 61, 10], [10, 61, 10], "gold_block");
+    e.tool_click_face(&mut w, &a, false, [10, 61, 10], Some([1, 0, 0]), 4000);
+    assert_eq!(w.count("gold_block"), 4);
+    assert!(e.tool_click(&mut w, &a, false, [10, 61, 10], 5000).is_none(), "no face, no stack");
+    // lrbuild: right click places the first pattern on top of the block in sight.
+    run(&mut e, &mut w, &a, "/tool lrbuild stone dirt");
+    a.position = [0.5, 70.0, 0.5];
+    a.pitch = 90.0;
+    assert!(e.tool_click(&mut w, &a, false, [0, 0, 0], 6000).unwrap().lines.is_empty());
+    assert_eq!(w.name_at([0, 61, 0]), "minecraft:stone");
+    e.tool_click(&mut w, &a, true, [0, 0, 0], 7000);
+    assert_eq!(w.name_at([0, 61, 0]), "minecraft:stone", "left click: dirt goes above the stone it sees");
 }
