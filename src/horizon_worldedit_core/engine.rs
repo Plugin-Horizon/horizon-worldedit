@@ -211,6 +211,9 @@ pub const NODES: &[&str] = &[
 /// would give them to level 2; a server whose operators are trusted that far can set the level in `node_levels`).
 pub const FULL_OPERATOR_NODES: &[&str] = &["worldedit.limit.unrestricted", "worldedit.anyblock"];
 
+/// The session of the server console and RCON: no player has this UUID, and such an actor has no position.
+pub const CONSOLE_UUID: u128 = 0xC0C0_C0C0_C0C0_C0C0_C0C0_C0C0_C0C0_C0C0;
+
 /// The player a command, a click or a brush belongs to, as the server sees them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Actor {
@@ -1811,6 +1814,9 @@ impl Engine {
 
     fn pos(&mut self, world: &dyn World, actor: &Actor, first: bool, args: &Args) -> R {
         let p = if args.words.is_empty() {
+            if actor.uuid == CONSOLE_UUID {
+                return Err("You must provide coordinates as console.".into());
+            }
             actor.block()
         } else {
             let text = args.rest(0).replace(',', " ");
@@ -1834,6 +1840,9 @@ impl Engine {
     }
 
     fn hpos(&mut self, world: &dyn World, actor: &Actor, first: bool) -> R {
+        if actor.uuid == CONSOLE_UUID {
+            return Err("Raytracing commands require a player!".into());
+        }
         let dir = ops::look_vector(actor.yaw, actor.pitch);
         let hit = ops::raycast(world, actor.eye(), dir, self.config.brush_range).ok_or("No block in sight!")?;
         self.corner_set(world, actor, first, hit)
@@ -1921,6 +1930,16 @@ impl Engine {
         };
         let dir = Self::dir_arg(actor, args.get(dir_at))?;
         Self::shape_resizable(shape.as_ref(), name, Some(dir))?;
+        // An ellipsoid and a cylinder grow and shrink round their centre: the net change along an axis must be even.
+        if name != "shift" && (amount - reverse) & 1 != 0 {
+            match shape.as_ref() {
+                Some(crate::horizon_worldedit_core::selector::Shape::Ellipsoid { .. }) => return Err("Ellipsoid changes must be even for each dimension.".into()),
+                Some(crate::horizon_worldedit_core::selector::Shape::Cyl { .. }) if !matches!(dir, Dir::Up | Dir::Down) => {
+                    return Err("Cylinders changes must be even for each horizontal dimension.".into());
+                }
+                _ => {}
+            }
+        }
         let next = match name {
             "expand" => c.expand(dir, amount).and_then(|c| c.expand(dir.opposite(), reverse)),
             "contract" => c.contract(dir, amount).and_then(|c| c.contract(dir.opposite(), reverse)),

@@ -115,6 +115,9 @@ impl Engine {
 
     /// `/biomeinfo [-t] [-p]`: the biomes of the block in sight, of your block, or of the selection.
     pub(super) fn biome_info(&mut self, world: &dyn World, actor: &Actor, args: &Args) -> R {
+        if actor.uuid == CONSOLE_UUID && (args.flag('p') || args.flag('t')) {
+            return Err(if args.flag('t') { "Raytracing commands require a player!" } else { "Command sender must be present in the world to use the -p flag." }.into());
+        }
         let (message, cells): (&str, Vec<Pos>) = if args.flag('t') {
             let Some(target) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), 300.0) else {
                 return Err("No block in sight!".into());
@@ -144,6 +147,9 @@ impl Engine {
             Some(m) => Some(Mask::parse(world, m, actor.held.as_deref())?),
             None => None,
         };
+        if args.flag('p') && actor.uuid == CONSOLE_UUID {
+            return Err("Command sender must be present in the world to use the -p flag.".into());
+        }
         let c = if args.flag('p') {
             let b = actor.block();
             Cuboid::new(b, b)

@@ -305,7 +305,16 @@ impl Engine {
                 out.push(format!("Center: {}", pt([center[0], 0, center[1]])));
                 out.push(format!("Radius: {}", calc::format_number(radius[0])));
             }
-            Shape::Convex { points } => out.push(format!("Vertices: {}", points.len())),
+            Shape::Convex { points } => {
+                out.push(format!("Vertices: {}", points.len()));
+                // The hull is triangulated: with V corner points it has 2V - 4 triangles (a point inside the hull of the others
+                // is no corner).
+                let corners = (0..points.len()).filter(|&i| {
+                    let others: Vec<Pos> = points.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| *p).collect();
+                    others.len() < 4 || !Shape::Convex { points: others }.contains(points[i])
+                });
+                out.push(format!("Triangles: {}", (2 * corners.count()).saturating_sub(4)));
+            }
         }
         out
     }

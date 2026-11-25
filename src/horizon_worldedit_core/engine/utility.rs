@@ -409,6 +409,9 @@ impl Engine {
 
     /// `//toggleplace`: shapes and fills are made at position 1 instead of at your feet, and back.
     pub(super) fn toggle_place(&mut self, actor: &Actor) -> R {
+        if actor.uuid == CONSOLE_UUID {
+            return Err("Cannot toggle placing in this context.".into());
+        }
         let s = self.sessions.get(actor.uuid);
         s.place_kind = if s.place_kind == PlaceKind::Pos1 { PlaceKind::Player } else { PlaceKind::Pos1 };
         s.place_offset = [0; 3];

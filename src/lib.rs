@@ -35,8 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 const ID: &str = "worldedit";
-/// The editor session of the server console and RCON (no player has this UUID).
-const CONSOLE_UUID: u128 = 0xC0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0;
+use we::CONSOLE_UUID;
 const CONFIG_FILE: &str = "worldedit.toml";
 const ORIGINAL_DIR: &str = "plugins/WorldEdit";
 
@@ -723,7 +722,7 @@ impl we::World for GameWorld<'_> {
             if update {
                 if let Some(next) = self.level.update_from_neighbour_shapes(&mut *self.host, p) {
                     if next != state {
-                        self.write(&[(p, intern(next))]);
+                        we::World::write(self, &[(p, intern(next))]);
                     }
                 }
             }
