@@ -3,6 +3,7 @@
 
 use crate::horizon_worldedit_core::engine::{Actor, Engine, Env};
 use crate::horizon_worldedit_core::world::fake::FakeWorld;
+use crate::horizon_worldedit_core::pattern::{Mask, Pattern};
 use crate::horizon_worldedit_core::world::World;
 use crate::horizon_worldedit_core::Config;
 use std::path::PathBuf;
@@ -1145,7 +1146,7 @@ fn up_floats_on_glass_and_unstuck_frees() {
     w.fill([-2, 63, -2], [2, 63, 2], "stone");
     let a = actor(5);
     let r = e.command(&mut w, &a, "//up 10", &env("none"));
-    assert_eq!(r.text(), "Whoosh!");
+    assert_eq!(r.text(), "Woosh!");
     assert_eq!(r.teleport, Some([0.5, 74.0, 0.5]));
     assert_eq!(w.name_at([0, 73, 0]), "minecraft:glass");
     // Stuck in stone: the first free spot above.
@@ -1164,7 +1165,7 @@ fn ascend_and_ceil_find_the_floor_and_the_ceiling() {
     w.fill([-2, 70, -2], [2, 70, 2], "stone");
     let a = actor(6);
     let r = e.command(&mut w, &a, "ceil", &env("none"));
-    assert_eq!(r.text(), "Whoosh!");
+    assert_eq!(r.text(), "Woosh!");
     assert_eq!(r.teleport, Some([0.5, 68.0, 0.5]));
     assert_eq!(fails(&mut e, &mut w, &a, "/descend"), "No free spot below you found.");
 }
@@ -1423,4 +1424,196 @@ fn size_reaches_every_brush_with_a_radius() {
     let mut shape = BrushShape::Morph { radius: 1.0, min_erode: 0, erode_iter: 0, min_dilate: 0, dilate_iter: 0 };
     e.apply_size(&a, "minecraft:blaze_rod", &mut shape);
     assert!(matches!(shape, BrushShape::Morph { radius, .. } if radius == 4.0));
+}
+
+// ---- round 6 ----
+
+#[test]
+fn pos_sets_corners_and_the_selector() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    assert_eq!(run(&mut e, &mut w, &a, "//pos 1,64,1 3,64,3"), "First position set to (1, 64, 1).\nSecond position set to (3, 64, 3) (9).");
+    assert_eq!(e.selection_of(1), Some(("minecraft:overworld".to_owned(), [1, 64, 1], [3, 64, 3])));
+    // Without coordinates both corners are where the player stands.
+    assert_eq!(run(&mut e, &mut w, &a, "//pos"), "First position set to (0, 64, 0).\nSecond position set to (0, 64, 0) (1).");
+    // `-s` chooses the selector first, and a polygon says how many points it takes.
+    let text = run(&mut e, &mut w, &a, "//pos -s poly 1,64,1");
+    assert!(text.starts_with("2D polygon selector: Left/right click to add a point.\n20 points maximum."), "{text}");
+}
+
+#[test]
+fn toggleeditwand_reminds_that_the_wand_is_a_tool() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    assert_eq!(
+        run(&mut e, &mut w, &a, "/toggleeditwand"),
+        "The selection wand is now a normal tool. You can disable it with /tool none and rebind it to any item with /tool selwand or get a new wand with //wand."
+    );
+}
+
+#[test]
+fn update_applies_the_side_effects_to_the_selection() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    run(&mut e, &mut w, &a, "//pos 0,64,0 1,64,1");
+    assert_eq!(run(&mut e, &mut w, &a, "//update"), "Applied side effects to the selection.");
+    assert_eq!(w.side_effects.len(), 4);
+    assert!(w.side_effects.iter().all(|s| (s.1, s.2, s.3) == (true, true, true)));
+    w.side_effects.clear();
+    run(&mut e, &mut w, &a, "//update lighting");
+    assert!(w.side_effects.iter().all(|s| (s.1, s.2, s.3) == (true, false, false)));
+    assert!(fails(&mut e, &mut w, &a, "//update nonsense").contains("Unknown side effect"));
+}
+
+#[test]
+fn feature_and_structure_use_the_placement_position() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    assert_eq!(run(&mut e, &mut w, &a, "//feature oak"), "Feature created.");
+    assert_eq!(w.planted, vec!["minecraft:oak".to_owned()]);
+    assert_eq!(run(&mut e, &mut w, &a, "//structure village_plains"), "Structure created.");
+    assert_eq!(w.structures, vec!["minecraft:village_plains".to_owned()]);
+    assert_eq!(fails(&mut e, &mut w, &a, "//structure nothing"), "Failed to generate structure. Is it a valid spot for it?");
+}
+
+#[test]
+fn generatebiome_sets_the_biome_where_the_expression_holds() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    run(&mut e, &mut w, &a, "//pos 0,64,0 7,64,7");
+    // The right half of the box (x above the middle).
+    assert_eq!(run(&mut e, &mut w, &a, "//generatebiome plains x>0"), "32 biomes affected.");
+    assert_eq!(run(&mut e, &mut w, &a, "//gb minecraft:plains 1"), "64 biomes affected.");
+    assert!(fails(&mut e, &mut w, &a, "//gb plains").contains("Usage"));
+}
+
+#[test]
+fn forestgen_and_pumpkins_report_their_counts() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    w.fill([-12, 60, -12], [12, 63, 12], "minecraft:grass_block");
+    let text = run(&mut e, &mut w, &a, "/forestgen 5 tree 100");
+    assert!(text.ends_with(" trees created."), "{text}");
+    assert!(!w.planted.is_empty());
+    assert!(fails(&mut e, &mut w, &a, "/forestgen 5 tree 101").contains("Density must be between 0 and 100"));
+    let text = run(&mut e, &mut w, &a, "/pumpkins 5");
+    assert!(text.ends_with(" pumpkin patches created."), "{text}");
+}
+
+#[test]
+fn apply_and_paint_brushes_bind_and_place() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    a.held = Some("minecraft:stick".into());
+    assert_eq!(run(&mut e, &mut w, &a, "/brush apply sphere 2 set stone"), "Set brush to set replace blocks.\nRun /brush unbind while holding the item to unbind it.");
+    assert!(e.brush_use(&mut w, &a, Some([0, 64, 0]), 0).is_some());
+    assert!(w.count("stone") > 20);
+    let text = run(&mut e, &mut w, &a, "/brush apply sphere 2 item minecraft:bone_meal");
+    assert!(text.starts_with("WARNING: This brush simulates item usages."), "{text}");
+    assert!(text.contains("Set brush to set application of the item minecraft:bone_meal."), "{text}");
+    e.brush_use(&mut w, &a, Some([0, 64, 0]), 5000);
+    assert!(w.used.iter().all(|(_, item)| item == "minecraft:bone_meal") && !w.used.is_empty());
+    run(&mut e, &mut w, &a, "/brush paint cylinder 3 100 set glass");
+    assert!(e.brush_use(&mut w, &a, Some([0, 64, 0]), 9000).is_some());
+    assert!(w.count("glass") > 0);
+    assert_eq!(run(&mut e, &mut w, &a, "/brush deform sphere 3 y-=1"), "Set brush to deformation of y-=1.\nRun /brush unbind while holding the item to unbind it.");
+    assert!(fails(&mut e, &mut w, &a, "/brush apply sphere 2 nonsense stone").contains("could not be found"));
+}
+
+#[test]
+fn the_expression_language_runs_loops_and_the_calc_follows_the_grammar() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    assert_eq!(run(&mut e, &mut w, &a, "//calc 2^3^2"), "[2^3^2] = 64");
+    assert_eq!(run(&mut e, &mut w, &a, "//calc s = 0; for (i = 1, 10) { s += i } s"), "[s, =, 0;, for, (i, =, 1,, 10), {, s, +=, i, }, s] = 55");
+    assert!(fails(&mut e, &mut w, &a, "//calc 1 +").contains("could not be parsed"));
+    run(&mut e, &mut w, &a, "//pos 0,64,0 7,64,7");
+    let text = run(&mut e, &mut w, &a, "//generate stone x*x + y*y + z*z < 1 && z > -0.5");
+    assert!(text.ends_with("blocks have been created."), "{text}");
+    assert!(w.count("stone") > 0);
+}
+
+#[test]
+fn masks_that_need_a_position() {
+    use crate::horizon_worldedit_core::pattern::{set_ctx, Area, MaskCtx};
+    let mut w = FakeWorld::new();
+    w.fill([0, 60, 0], [2, 60, 2], "stone");
+    let stone = w.id("stone");
+    let air = w.id("air");
+    let exposed = Mask::parse(&w, "#exposed", None).unwrap();
+    assert!(exposed.hits_at(&w, [1, 60, 1], stone) && !exposed.hits_at(&w, [1, 61, 1], air));
+    // `>stone`: the block below is stone; `<stone`: the block above; `~stone`: any neighbour.
+    assert!(Mask::parse(&w, ">stone", None).unwrap().hits_at(&w, [1, 61, 1], air));
+    assert!(!Mask::parse(&w, ">stone", None).unwrap().hits_at(&w, [1, 62, 1], air));
+    assert!(Mask::parse(&w, "<stone", None).unwrap().hits_at(&w, [1, 59, 1], air));
+    assert!(Mask::parse(&w, "~stone", None).unwrap().hits_at(&w, [3, 60, 1], air));
+    assert!(Mask::parse(&w, "%100", None).unwrap().hits_at(&w, [1, 61, 1], air));
+    assert!(!Mask::parse(&w, "%0", None).unwrap().hits_at(&w, [1, 61, 1], air));
+    let expr = Mask::parse(&w, "=x>1", None).unwrap();
+    assert!(expr.hits_at(&w, [2, 60, 0], stone) && !expr.hits_at(&w, [0, 60, 0], stone));
+    assert!(Mask::parse(&w, "=x >", None).is_err());
+    assert!(Mask::parse(&w, "#region", None).is_err());
+    set_ctx(MaskCtx { region: Some(Area::Box(crate::horizon_worldedit_core::region::Cuboid::new([0, 60, 0], [1, 60, 1]))), ..MaskCtx::default() });
+    let region = Mask::parse(&w, "#region", None).unwrap();
+    assert!(region.hits_at(&w, [1, 60, 1], stone) && !region.hits_at(&w, [2, 60, 2], stone));
+    set_ctx(MaskCtx::default());
+    assert!(Mask::parse(&w, "#fullcube", None).unwrap().hits(&w, stone));
+}
+
+#[test]
+fn patterns_that_look_at_the_world() {
+    let mut w = FakeWorld::new();
+    w.blocks.insert([0, 64, 0], w.id("oak_stairs[facing=east,half=bottom]"));
+    // `^[half=top]` turns the block that stands there.
+    let flip = Pattern::parse(&w, "^[half=top]", None).unwrap();
+    assert!(flip.is_dynamic());
+    let turned = w.describe(flip.pick_with(&w, 0, [0, 64, 0]));
+    assert_eq!((turned.prop("half"), turned.prop("facing")), (Some("top"), Some("east")));
+    // `^stone_slab` makes the block a slab and keeps the properties that fit.
+    let to_slab = Pattern::parse(&w, "^stone_slab", None).unwrap();
+    assert_eq!(w.describe(to_slab.pick_with(&w, 0, [0, 64, 0])).name, "minecraft:stone_slab");
+    // `*oak_stairs[facing=east]` is any of the four east states.
+    let any = Pattern::parse(&w, "*oak_stairs[facing=east]", None).unwrap();
+    for x in 0..20 {
+        let s = w.describe(any.pick_with(&w, 5, [x, 64, 0]));
+        assert_eq!((s.name.as_str(), s.prop("facing")), ("minecraft:oak_stairs", Some("east")));
+    }
+    assert_eq!(Pattern::parse(&w, "^[a=b,a=c]", None).unwrap_err(), "Duplicate property: a");
+    assert_eq!(Pattern::parse(&w, "^[half]", None).unwrap_err(), "Missing '=' separator");
+    assert!(Pattern::parse(&w, "#clipboard", None).is_err());
+}
+
+#[test]
+fn polygon_and_polyhedron_points_are_limited() {
+    let mut e = Engine::default();
+    e.config.max_polygonal_max = 3;
+    e.config.max_polygonal_default = -1;
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    run(&mut e, &mut w, &a, "//sel poly");
+    run(&mut e, &mut w, &a, "//pos1 0,64,0");
+    for i in 1..=6 {
+        let _ = e.command(&mut w, &a, &format!("//pos2 {i},64,{}", i * 2), &env("none"));
+    }
+    // The selector takes a point while it holds no more than the limit, so limit + 1 points at most.
+    let size = run(&mut e, &mut w, &a, "//size");
+    assert!(size.lines().any(|l| l == "# points: 4"), "{size}");
+}
+
+#[test]
+fn a_timeout_above_the_maximum_is_refused() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    assert_eq!(fails(&mut e, &mut w, &a, "//timeout 500"), "Your maximum allowable timeout is 300ms.");
+    assert_eq!(run(&mut e, &mut w, &a, "//timeout 200"), "Timeout time set to 200ms. (Use //timeout to go back to the default.)");
+    assert_eq!(run(&mut e, &mut w, &a, "//timeout"), "Timeout time set to 100ms.");
 }

@@ -94,7 +94,7 @@ impl Pattern {
         }
         let trimmed = spec.trim();
         // The parsers that take the whole input: `#clipboard`, `^...`, `*...` (the random list comes first, as in WorldEdit).
-        if !trimmed.contains(',') || trimmed.starts_with('^') || trimmed.starts_with('*') {
+        if !trimmed.contains(',') || trimmed.starts_with('^') || trimmed.starts_with('*') || trimmed.starts_with("##") {
             if let Some(found) = Self::dynamic_pattern(world, trimmed, hand) {
                 return found;
             }
@@ -142,6 +142,52 @@ impl Pattern {
             }
             let Some(view) = ctx().clipboard else { return Some(Err("Your clipboard is empty. Use //copy first.".into())) };
             return Some(Ok(made(Dynamic::Tile { view, offset })));
+        }
+        if let Some(tag) = spec.strip_prefix("##") {
+            // `##tag`: a random block of the tag (its default state); `##*tag`: a random state of a random block.
+            let (all_states, name) = match tag.strip_prefix('*') {
+                Some(t) => (true, t),
+                None => (false, tag),
+            };
+            let id = if name.contains(':') { name.to_ascii_lowercase() } else { format!("minecraft:{}", name.to_ascii_lowercase()) };
+            if world.block_in_tag(air, &id).is_none() {
+                return Some(Err(format!("Tag name '{name}' was not recognized.")));
+            }
+            let mut states = Vec::new();
+            for block in world.block_names() {
+                let Some(default) = world.resolve(&BlockState { name: block.clone(), properties: Default::default() }) else { continue };
+                if world.block_in_tag(default, &id) != Some(true) {
+                    continue;
+                }
+                if all_states {
+                    let described = world.describe(default);
+                    let mut axes: Vec<(String, Vec<String>)> = Vec::new();
+                    for key in described.properties.keys() {
+                        axes.push((key.clone(), world.property_values(&block, key)));
+                    }
+                    let total: usize = axes.iter().map(|(_, v)| v.len().max(1)).product();
+                    for i in 0..total.min(4096) {
+                        let mut n = i;
+                        let mut props = std::collections::BTreeMap::new();
+                        for (k, values) in &axes {
+                            if values.is_empty() {
+                                continue;
+                            }
+                            props.insert(k.clone(), values[n % values.len()].clone());
+                            n /= values.len();
+                        }
+                        if let Some(state) = world.resolve(&BlockState { name: block.clone(), properties: props }) {
+                            states.push(state);
+                        }
+                    }
+                } else {
+                    states.push(default);
+                }
+            }
+            if states.is_empty() {
+                return Some(Err(format!("Tag name '{name}' has no contents.")));
+            }
+            return Some(Ok(made(Dynamic::RandomState(states))));
         }
         if let Some(rest) = spec.strip_prefix('*') {
             // `*block[state]`: every state of the block that has the given properties.
@@ -428,6 +474,8 @@ enum MaskEntry {
     Area(Option<Area>),
     /// `#clipboard`: the block equals the clipboard's block at the same position.
     Clipboard(Rc<ClipView>),
+    /// `##tag`: a block of the block tag.
+    Tag(String),
 }
 
 /// One space-separated part of a mask: any entry of its comma list, turned round by `!`.
@@ -527,7 +575,7 @@ impl Mask {
         if components.is_empty() {
             return Err(format!("No match for '{text}'."));
         }
-        let positional = components.iter().any(|c| c.entries.iter().any(|e| !matches!(e, MaskEntry::Block(_) | MaskEntry::Existing | MaskEntry::Air | MaskEntry::Solid | MaskEntry::FullCube | MaskEntry::State { .. })));
+        let positional = components.iter().any(|c| c.entries.iter().any(|e| !matches!(e, MaskEntry::Block(_) | MaskEntry::Existing | MaskEntry::Air | MaskEntry::Solid | MaskEntry::FullCube | MaskEntry::State { .. } | MaskEntry::Tag(_))));
         Ok(Self { text: text.to_owned(), components, seen: RefCell::new(HashMap::new()), positional })
     }
 
@@ -566,6 +614,15 @@ impl Mask {
         if let Some(text) = body.strip_prefix('=') {
             let expr = Expr::parse_with(text, &["x", "y", "z"]).map_err(|_| Some("Invalid expression".to_owned()))?;
             return Ok(vec![MaskEntry::Expression { expr: Rc::new(expr), timeout_ms: ctx.timeout_ms }]);
+        }
+        if let Some(tag) = body.strip_prefix("##") {
+            let id = if tag.contains(':') { tag.to_ascii_lowercase() } else { format!("minecraft:{}", tag.to_ascii_lowercase()) };
+            // The game answers `None` for a tag it cannot look at.
+            let air = world.resolve(&BlockState::air()).unwrap_or(0);
+            if world.block_in_tag(air, &id).is_none() {
+                return Err(Some(format!("Tag name '{tag}' was not recognized.")));
+            }
+            return Ok(vec![MaskEntry::Tag(id)]);
         }
         if let Some(list) = body.strip_prefix('$') {
             let known = world.biome_names();
@@ -635,7 +692,10 @@ impl Mask {
                 MaskEntry::Existing => !described.is_air(),
                 MaskEntry::Air => described.is_air(),
                 MaskEntry::Solid => is_solid_name(&described.name),
-                MaskEntry::FullCube => is_full_cube_name(&described.name),
+                MaskEntry::FullCube => match world.state_outline(state) {
+                    Some(boxes) => boxes.len() == 1 && boxes[0] == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    None => is_full_cube_name(&described.name),
+                },
                 MaskEntry::Block(b) => described.matches(b) || (b.is_air() && b.properties.is_empty() && described.is_air()),
                 MaskEntry::State { props, strict } => {
                     let known: Vec<_> = props.iter().filter(|(k, _)| described.properties.contains_key(k)).collect();
@@ -661,6 +721,7 @@ impl Mask {
                     expr.run_in(&mut vars, &crate::horizon_worldedit_core::engine::expr::NoEnvPublic, Some(*timeout_ms)).is_ok_and(|v| v > 0.0)
                 }),
                 MaskEntry::Biomes(list) => pos.is_some_and(|p| world.biome_at(p).is_some_and(|b| list.iter().any(|x| *x == b))),
+                MaskEntry::Tag(tag) => world.block_in_tag(state, tag).unwrap_or(false),
                 MaskEntry::Area(area) => pos.is_some_and(|p| area.as_ref().is_some_and(|a| a.contains(p))),
                 MaskEntry::Clipboard(view) => pos.is_some_and(|p| {
                     let air = world.resolve(&BlockState::air()).unwrap_or(0);

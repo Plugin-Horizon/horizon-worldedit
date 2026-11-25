@@ -1305,6 +1305,8 @@ pub struct Engine {
     now_ms: i64,
     /// Players whose `useServerCUI` is off (their session file): no selection outline for them.
     cui_off: BTreeSet<u128>,
+    /// How many blocks the edits of the command being run changed (for `debug`'s timing line).
+    changed_now: usize,
     /// The inventory change and the blocks missing from a bag edit, by player, until `take_bag` hands them over.
     bag: HashMap<u128, (std::collections::BTreeMap<String, i64>, std::collections::BTreeMap<String, u32>)>,
 }
@@ -1328,6 +1330,7 @@ impl Engine {
             outline_due: Vec::new(),
             now_ms: 0,
             cui_off: BTreeSet::new(),
+            changed_now: 0,
             bag: HashMap::new(),
         }
     }
@@ -1420,6 +1423,8 @@ impl Engine {
     /// A typed command (`set stone`, `//set stone`, `rotate 90`).
     pub fn command(&mut self, world: &mut dyn World, actor: &Actor, line: &str, env: &Env) -> Reply {
         self.now_ms = env.now_ms;
+        self.changed_now = 0;
+        let started = std::time::Instant::now();
         self.enter_session(actor, line);
         let raw = line.trim();
         let line = raw.trim_start_matches('/');
@@ -1598,7 +1603,15 @@ impl Engine {
             _ => Err(format!("The command '{name}' could not be found.")),
         };
         match result {
-            Ok(lines) => Reply::ok(lines),
+            Ok(mut lines) => {
+                // `debug: true`: the time the command took and how fast it changed blocks (`PlatformCommandManager`).
+                if self.config.debug && self.changed_now > 0 {
+                    let seconds = started.elapsed().as_millis() as f64 / 1000.0;
+                    let rate = if seconds == 0.0 { self.changed_now as f64 } else { self.changed_now as f64 / seconds };
+                    lines.push(format!("{}s elapsed (history: {} changed; {} blocks/sec).", java_double(seconds), self.changed_now, rate.round() as i64));
+                }
+                Reply::ok(lines)
+            }
             Err(e) => Reply::err(e),
         }
     }
@@ -1645,6 +1658,7 @@ impl Engine {
             return Err(format!("Max blocks changed in an operation reached ({}).", self.max_blocks(actor)));
         }
         let n = change.len();
+        self.changed_now += n;
         let note = self.write(world, actor, change.forward(), change.forward_entities());
         let size = self.config.history_size;
         self.sessions.get(actor.uuid).remember(change, size);

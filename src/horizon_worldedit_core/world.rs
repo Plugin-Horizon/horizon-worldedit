@@ -108,6 +108,14 @@ pub trait World {
     fn generate_tree(&mut self, _p: Pos, _feature: &str) -> bool {
         false
     }
+    /// Whether the block of `state` is in the block tag `tag` (`minecraft:logs`; `None` when the game cannot say).
+    fn block_in_tag(&self, _state: StateId, _tag: &str) -> Option<bool> {
+        None
+    }
+    /// The collision boxes of `state` in its own space (`[min x, y, z, max x, y, z]`), if the game can say.
+    fn state_outline(&self, _state: StateId) -> Option<Vec<[f64; 6]>> {
+        None
+    }
     /// Generates the structure `structure` (a `minecraft:` structure id: a village, a shipwreck...) with its start at `p`, as
     /// `/place structure` does; whether it placed anything. Where the game cannot say, nothing is placed.
     fn generate_structure(&mut self, _p: Pos, _structure: &str) -> bool {
@@ -383,6 +391,14 @@ pub mod fake {
             for (p, t) in entities {
                 self.entities.insert(*p, t.clone());
             }
+        }
+        fn block_in_tag(&self, state: StateId, tag: &str) -> Option<bool> {
+            let name = self.describe(state).name;
+            Some(match tag {
+                "minecraft:logs" => name.ends_with("_log"),
+                "minecraft:stairs" => name.ends_with("_stairs"),
+                _ => false,
+            })
         }
         fn generate_structure(&mut self, _p: Pos, structure: &str) -> bool {
             self.structures.push(structure.to_owned());

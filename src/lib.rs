@@ -701,6 +701,16 @@ impl we::World for GameWorld<'_> {
         self.level.generate_tree(&mut *self.host, p, feature).unwrap_or(false)
     }
 
+    fn block_in_tag(&self, state: we::StateId, tag: &str) -> Option<bool> {
+        let block = host_state(state)?.block();
+        let tag = if tag.contains(':') { tag.to_owned() } else { format!("minecraft:{tag}") };
+        self.host.block_in_tag(block, &tag)
+    }
+
+    fn state_outline(&self, state: we::StateId) -> Option<Vec<[f64; 6]>> {
+        self.host.state_outline(host_state(state)?)
+    }
+
     fn use_item(&mut self, p: we::Pos, item: &str, _face: [i32; 3]) -> bool {
         // Bone meal is the one item the host can use without a player (as a dispenser does); other items need a use-on-block call.
         item == "minecraft:bone_meal" && self.level.bone_meal(&mut *self.host, p)

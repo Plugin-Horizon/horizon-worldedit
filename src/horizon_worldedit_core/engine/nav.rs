@@ -240,7 +240,7 @@ impl Engine {
                 Some(p) => {
                     let mut r = Reply::default();
                     r.teleport = Some(center(p));
-                    Ok(say(r, "Whoosh!"))
+                    Ok(say(r, "Woosh!"))
                 }
                 None => Err("No free spot ahead of you found.".into()),
             },
@@ -257,10 +257,24 @@ impl Engine {
             "up" => {
                 let Some(word) = args.get(0) else { return Err(usage("up")) };
                 let distance: i32 = word.parse().map_err(|_| number_error(word))?;
-                // -f (keep flying) needs a player-ability hook this server lacks: it is accepted and changes nothing.
-                let y = (here[1] + distance).clamp(world.min_y(), world.max_y());
-                let r = self.float_at(world, [here[0], y, here[2]], args.flag('g') || (self.config.navigation_use_glass && !args.flag('f')));
-                Ok(say(r, "Whoosh!"))
+                // `-f` (keep flying) needs a player-ability hook this server lacks: it is accepted and changes nothing.
+                let glass = args.flag('g') || (self.config.navigation_use_glass && !args.flag('f'));
+                // `AbstractPlayerActor.ascendUpwards`: walk up to the target; a solid block on the way stops it.
+                let initial_y = here[1].max(world.min_y());
+                let mut y = (here[1] + 1).max(world.min_y());
+                let max_y = (world.max_y() + 1).min(initial_y.saturating_add(distance));
+                while y <= world.max_y() + 2 {
+                    let solid = world.get([here[0], y, here[2]]).is_some_and(|s| !passes(&world.describe(s)));
+                    if solid || y > max_y + 1 {
+                        break;
+                    }
+                    if y == max_y + 1 {
+                        let r = self.float_at(world, [here[0], y - 1, here[2]], glass);
+                        return Ok(say(r, "Woosh!"));
+                    }
+                    y += 1;
+                }
+                Err("You would hit something above you.".into())
             }
             "ceil" => {
                 let clearance = args.int(0, 0)?.max(0);
@@ -272,7 +286,7 @@ impl Engine {
                         if !passable(world, [here[0], y, here[2]]) {
                             let platform = initial_y.max(y - 3 - clearance);
                             let r = self.float_at(world, [here[0], platform + 1, here[2]], args.flag('g') || (self.config.navigation_use_glass && !args.flag('f')));
-                            return Ok(say(r, "Whoosh!"));
+                            return Ok(say(r, "Woosh!"));
                         }
                         y += 1;
                     }
