@@ -1074,7 +1074,7 @@ mod tests {
         assert!(said.starts_with("Set brush to set biome of type minecraft:desert."), "{said}");
         e.brush_use(&mut w, &a, Some([8, 6, 8]), 1000).expect("a brush");
         assert_eq!(w.biome_at([8, 6, 8]).as_deref(), Some("minecraft:desert"));
-        let said = run(&mut e, &mut w, &a, "/brush forest sphere 6 100 birch");
+        let said = run(&mut e, &mut w, &a, "/brush forest sphere 5 100 birch");
         assert!(said.starts_with("Set brush to scatter tree of type BIRCH."), "{said}");
         e.brush_use(&mut w, &a, Some([8, 6, 8]), 2000).expect("a brush");
         assert!(!w.inner.planted.is_empty());
@@ -1083,6 +1083,6 @@ mod tests {
         let before = w.inner.planted.len();
         e.brush_use(&mut w, &a, Some([8, 7, 8]), 3000).expect("a brush");
         assert!(w.inner.planted.len() > before);
-        fails(&mut e, &mut w, &a, "/brush forest sphere 6 100 palm");
+        fails(&mut e, &mut w, &a, "/brush forest sphere 5 100 palm");
     }
 }

@@ -1321,9 +1321,9 @@ fn brush_settings_range_size_tracemask() {
     a.pitch = 90.0;
     e.brush_use(&mut w, &a, Some([0, 60, 0]), 0).unwrap();
     assert!(w.count("gold_block") > 7, "{}", w.count("gold_block"));
-    // A trace along the view: straight down it hits the floor.
+    // A trace along the view: straight down it hits the top of what the brush put there.
     let hit = crate::horizon_worldedit_core::engine::tools_target(&w, &a, 500);
-    assert_eq!(hit, Some([0, 60, 0]));
+    assert_eq!(hit, Some([0, 61, 0]));
 }
 
 #[test]
@@ -1373,7 +1373,7 @@ fn tree_deltree_stacker_lrbuild() {
     assert_eq!(w.name_at([0, 61, 0]), "minecraft:oak_log[axis=y]");
     run(&mut e, &mut w, &a, "//undo");
     assert_eq!(w.name_at([0, 61, 0]), "minecraft:air");
-    assert_eq!(fails(&mut e, &mut w, &a, "/tool tree Bad Type"), "Not a valid tree type: Bad");
+    assert_eq!(fails(&mut e, &mut w, &a, "/tool tree Bad!Type"), "Not a valid tree type: Bad!Type");
     run(&mut e, &mut w, &a, "/tool tree bigtree");
     e.tool_click(&mut w, &a, false, [3, 60, 3], 1000);
     assert_eq!(w.planted[1], "minecraft:fancy_oak");

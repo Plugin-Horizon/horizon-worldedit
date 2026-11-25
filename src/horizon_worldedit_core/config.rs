@@ -430,7 +430,7 @@ mod tests {
         )
     }
 
-    const ORIGINAL_KEYS: [&str; 18] = [
+    const ORIGINAL_KEYS: [&str; 20] = [
         "limits.butcher-radius.default",
         "limits.butcher-radius.maximum",
         "limits.max-blocks-changed.default",
@@ -449,6 +449,8 @@ mod tests {
         "saving.dir",
         "wand-item",
         "server-side-cui",
+        "snapshots.directory",
+        "snapshots.experimental",
     ];
 
     #[test]
