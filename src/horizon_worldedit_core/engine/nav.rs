@@ -142,7 +142,7 @@ fn ray_blocks(eye: [f64; 3], dir: [f64; 3], range: f64) -> Vec<Pos> {
 }
 
 /// `passThroughForwardWall`: the block to stand under on the far side of the wall ahead.
-fn pass_through(world: &dyn World, actor: &Actor, range: f64) -> Option<Pos> {
+pub(super) fn pass_through(world: &dyn World, actor: &Actor, range: f64) -> Option<Pos> {
     let blocks = ray_blocks(actor.eye(), ops::look_vector(actor.yaw, actor.pitch), range);
     let (mut first, mut free_to_find, mut in_free, mut searched) = (true, 2, false, 0);
     for block in blocks {
@@ -177,7 +177,7 @@ fn pass_through(world: &dyn World, actor: &Actor, range: f64) -> Option<Pos> {
     None
 }
 
-fn center(p: Pos) -> [f64; 3] {
+pub(super) fn center(p: Pos) -> [f64; 3] {
     [f64::from(p[0]) + 0.5, f64::from(p[1]), f64::from(p[2]) + 0.5]
 }
 
@@ -280,5 +280,96 @@ impl Engine {
             }
             _ => Err(format!("The command '{name}' could not be found.")),
         }
+    }
+}
+
+/// In `last_click`, the mark of the navigation wand's clicks: a right click or a left click on a block sets it, and the
+/// arm swing that every click sends after it is then not taken for a left click in the air.
+const NAV_MARK: Pos = [i32::MIN, 0, 0];
+
+impl Engine {
+    /// Whether a player with `held` in hand holds the navigation wand: the configured item, or an item bound with
+    /// `/tool navwand`. Cheap, for the arm swing hook that hears every swing.
+    pub fn holds_nav(&mut self, player: u128, held: Option<&str>) -> bool {
+        let item = held.unwrap_or_default();
+        matches!(self.sessions.get(player).tools.get(item), Some(Tool::NavWand)) || held == Some(self.config.nav_wand_item.as_str())
+    }
+
+    fn holds_nav_wand(&mut self, actor: &Actor) -> bool {
+        self.holds_nav(actor.uuid, actor.held.as_deref())
+    }
+
+    /// Notes a click of the navigation wand that `nav_use` handled (a right click).
+    pub(super) fn nav_clicked(&mut self, actor: &Actor, now_ms: i64) {
+        self.last_click.insert(actor.uuid, (NAV_MARK, false, now_ms));
+    }
+
+    /// A left click with the navigation wand: the player passes through the wall in front of them
+    /// (`NavigationWand.actPrimary`, `passThroughForwardWall` with the wand's range less ten). `air` is true for the arm
+    /// swing of a click that hit no block; the swing that follows a click already handled is ignored. `None`: not the
+    /// navigation wand, no `worldedit.navigation.thru.tool`, or the wand is switched off (`max-distance` 0): the click
+    /// is left to the game.
+    pub fn nav_thru(&mut self, world: &dyn World, actor: &Actor, air: bool, now_ms: i64) -> Option<Reply> {
+        if !self.holds_nav_wand(actor) || self.permitted(actor, Some("worldedit.navigation.thru.tool")).is_err() || self.allowed(actor).is_err() {
+            return None;
+        }
+        let max = self.config.nav_wand_max_distance;
+        if max <= 0.0 {
+            return None;
+        }
+        self.now_ms = now_ms;
+        let recent = self.last_click.get(&actor.uuid).is_some_and(|&(p, _, t)| p == NAV_MARK && now_ms - t < 150);
+        if air && recent {
+            return None;
+        }
+        self.last_click.insert(actor.uuid, (NAV_MARK, true, now_ms));
+        match pass_through(world, actor, (max - 10.0).max(1.0)) {
+            Some(p) => {
+                let mut reply = Reply::default();
+                reply.teleport = Some(center(p));
+                Some(reply)
+            }
+            None => Some(Reply::err("No free spot ahead of you found.".into())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::horizon_worldedit_core::world::fake::FakeWorld;
+
+    #[test]
+    fn the_left_click_of_the_navigation_wand_passes_through_the_wall() {
+        let mut e = Engine::default();
+        let mut w = FakeWorld::new();
+        // The way the player faces at yaw 0 is south (+z): a wall of stone two blocks high at z = 2, a floor to land on.
+        assert!(ops::look_vector(0.0, 0.0)[2] > 0.99);
+        w.fill([0, 63, 0], [0, 63, 6], "stone");
+        w.fill([0, 64, 2], [0, 65, 2], "stone");
+        let mut a = Actor { uuid: 4, name: "Builder".into(), permission: 4, dimension: "minecraft:overworld".into(), position: [0.5, 64.0, 0.5], ..Actor::default() };
+        // Another item is left to the game.
+        a.held = Some("minecraft:stone".into());
+        assert!(e.nav_thru(&w, &a, false, 1000).is_none());
+        a.held = Some("minecraft:compass".into());
+        let r = e.nav_thru(&w, &a, false, 1000).expect("the compass is the navigation wand");
+        assert_eq!(r.teleport, Some([0.5, 64.0, 3.5]));
+        // The swing that follows a click is not a second click; a later swing in the air is one.
+        assert!(e.nav_thru(&w, &a, true, 1100).is_none());
+        assert!(e.nav_thru(&w, &a, true, 2000).is_some());
+        // A right click marks the swing after it the same way.
+        e.nav_use(&w, &a, 3000);
+        assert!(e.nav_thru(&w, &a, true, 3100).is_none());
+        // No wall in range: the answer WorldEdit gives.
+        let mut open = FakeWorld::new();
+        open.fill([0, 63, 0], [0, 63, 6], "stone");
+        assert_eq!(e.nav_thru(&open, &a, false, 5000).unwrap().text(), "No free spot ahead of you found.");
+        // Without the node, and not an operator: left to the game. Switched off by `max-distance`: the same.
+        a.permission = 0;
+        assert!(e.nav_thru(&w, &a, false, 6000).is_none());
+        a.granted.insert("worldedit.navigation.thru.tool".into());
+        assert!(e.nav_thru(&w, &a, false, 7000).is_some());
+        e.config.nav_wand_max_distance = 0.0;
+        assert!(e.nav_thru(&w, &a, false, 8000).is_none());
     }
 }

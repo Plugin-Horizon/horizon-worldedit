@@ -132,6 +132,12 @@ history_expiration_minutes = 10
 nav_wand_item = "minecraft:compass"
 nav_wand_max_distance = 100.0
 
+# Where the world backups for /snapshot and //restore are (snapshots.directory): a folder of world folders and .zip
+# files, relative to the server's folder. Empty = not configured. snapshots_experimental is WorldEdit's
+# snapshots.experimental.
+snapshots_dir = ""
+snapshots_experimental = true
+
 # Minimum operator level per worldedit.* node (a node not listed uses permission_level).
 # Example: let every player make selections (0 = everyone):
 # [node_levels]
@@ -166,6 +172,12 @@ pub struct Config {
     pub nav_wand_item: String,
     /// `navigation-wand.max-distance`: how far the navigation wand looks, in blocks.
     pub nav_wand_max_distance: f64,
+    /// `snapshots.directory`: where the world backups are (a folder, relative to the server's); empty: snapshots are
+    /// not configured and `/snapshot` and `//restore` say so.
+    pub snapshots_dir: String,
+    /// `snapshots.experimental`: WorldEdit's newer snapshot database (the default). Both kinds read the same folders
+    /// here; the old one lists a world's backups by the world's folder name only.
+    pub snapshots_experimental: bool,
 }
 
 impl Default for Config {
@@ -253,6 +265,8 @@ impl Default for Config {
             history_expiration_minutes: 10,
             nav_wand_item: "minecraft:compass".into(),
             nav_wand_max_distance: 100.0,
+            snapshots_dir: String::new(),
+            snapshots_experimental: true,
         }
     }
 }
@@ -304,6 +318,8 @@ impl Config {
         keys.string("saving.dir", &mut c.schematics_dir);
         keys.string("wand-item", &mut c.wand_item);
         keys.bool("server-side-cui", &mut c.server_side_cui);
+        keys.string("snapshots.directory", &mut c.snapshots_dir);
+        keys.bool("snapshots.experimental", &mut c.snapshots_experimental);
         Ok((c.normalised(), keys.read))
     }
 

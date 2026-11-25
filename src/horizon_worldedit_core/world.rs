@@ -21,6 +21,17 @@ pub struct EntityInfo {
     pub tamed: bool,
 }
 
+/// An entity with its saved data, for `//copy -e`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityData {
+    pub id: u64,
+    /// `minecraft:cow`.
+    pub kind: String,
+    pub pos: [f64; 3],
+    /// What `/summon` takes as data: the entity's saved compound.
+    pub nbt: Tag,
+}
+
 /// A block state id, as the game's registry numbers them.
 pub type StateId = u32;
 
@@ -41,6 +52,10 @@ pub trait World {
     }
     /// Writes `writes` (each one differs from what is there), and says how many changed.
     fn write(&mut self, writes: &[(Pos, StateId)]) -> usize;
+    /// The name of the world folder the level is saved in (`world`), which `/snapshot` looks its backups up by.
+    fn name(&self) -> String {
+        "world".to_owned()
+    }
     /// Every block name of the game (`minecraft:stone`), for `//searchitem`. Empty where unknown.
     fn block_names(&self) -> Vec<String> {
         Vec::new()
@@ -62,6 +77,22 @@ pub trait World {
     fn entities_in(&mut self, _min: [f64; 3], _max: [f64; 3]) -> Vec<EntityInfo> {
         Vec::new()
     }
+    /// The entities (never players) whose box meets the box `min`..`max`, with their saved data. Empty where the game cannot say.
+    fn entities_data(&mut self, _min: [f64; 3], _max: [f64; 3]) -> Vec<EntityData> {
+        Vec::new()
+    }
+    /// Creates an entity of `kind` at `pos` from saved data (`/summon`'s); its id, `None` where the game refuses.
+    fn spawn_entity(&mut self, _kind: &str, _pos: [f64; 3], _nbt: &Tag) -> Option<u64> {
+        None
+    }
+    /// The biome (`minecraft:plains`) at `p`; `None` where the game cannot say.
+    fn biome_at(&self, _p: Pos) -> Option<String> {
+        None
+    }
+    /// Sets the biome of the 4x4x4 cell that holds `p`; whether it changed.
+    fn set_biome(&mut self, _p: Pos, _biome: &str) -> bool {
+        false
+    }
     /// Removes these entities (by `EntityInfo::id`) without drops; how many went.
     fn remove_entities(&mut self, _ids: &[u64]) -> usize {
         0
@@ -71,6 +102,57 @@ pub trait World {
     /// Block entity data saved at `data_version` (a schematic's) brought up to the game's version.
     fn upgrade_block_entity(&self, _data_version: i32, data: Tag) -> Tag {
         data
+    }
+    /// Plants the configured feature `feature` (`minecraft:oak`, a tree or a giant mushroom) with its base at `p`, as
+    /// `/place feature` does; whether it placed anything. Where the game cannot say, nothing is planted.
+    fn generate_tree(&mut self, _p: Pos, _feature: &str) -> bool {
+        false
+    }
+    /// Breaks the block at `p` the way a tool does: with its drops when `drop`, none otherwise. Whether a block broke.
+    /// The default writes air and drops nothing.
+    fn break_block(&mut self, p: Pos, _drop: bool) -> bool {
+        let Some(air) = self.resolve(&BlockState::air()) else { return false };
+        match self.get(p) {
+            Some(s) if s != air => self.write(&[(p, air)]) > 0,
+            _ => false,
+        }
+    }
+    /// The stored block light at `p`, 0 to 15 (0 where unknown).
+    fn block_light(&self, _p: Pos) -> i32 {
+        0
+    }
+    /// Every biome id (`minecraft:plains`) of the level, for `/biomelist`. Empty where the game cannot say.
+    fn biome_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Sets the biome of every 4x4x4 cell that holds a block of the box `min..=max` (inclusive corners); how many
+    /// cells changed. The default sets the cells one by one; a game with a box call (one resend a column) overrides it.
+    fn fill_biome(&mut self, min: Pos, max: Pos, biome: &str) -> Result<u32, String> {
+        let mut changed = 0;
+        for x in (min[0] >> 2)..=(max[0] >> 2) {
+            for y in (min[1] >> 2)..=(max[1] >> 2) {
+                for z in (min[2] >> 2)..=(max[2] >> 2) {
+                    if self.set_biome([x << 2, y << 2, z << 2], biome) {
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        Ok(changed)
+    }
+    /// Generates these loaded chunks (chunk x, z) again from the level's generator and seed, in place; how many were
+    /// replaced. `Err` with the reason when the game refuses (no such API, a chunk not loaded, too many chunks).
+    fn regenerate_chunks(&mut self, _chunks: &[[i32; 2]]) -> Result<u32, String> {
+        Err("This game cannot regenerate chunks".into())
+    }
+    /// Erases these chunks (chunk x, z) from the level's saved data; how many were erased. Chunks that are loaded now
+    /// are left alone (`Err` is for a refusal of the whole call).
+    fn delete_chunks(&mut self, _chunks: &[[i32; 2]]) -> Result<u32, String> {
+        Err("This game cannot delete chunks while the server runs".into())
+    }
+    /// The ids of the levels this server has (`minecraft:overworld`), for `//world`. Empty where the game cannot say.
+    fn level_names(&self) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -90,6 +172,13 @@ pub mod fake {
         pub entities: HashMap<Pos, Tag>,
         /// Entities for `//butcher` and `//remove`.
         pub mobs: Vec<EntityInfo>,
+        /// Entities with their data (`//copy -e`), and what `spawn_entity` made.
+        pub mob_data: Vec<EntityData>,
+        pub spawned: Vec<(String, [f64; 3], Tag)>,
+        /// The feature ids `generate_tree` was asked for.
+        pub planted: Vec<String>,
+        /// Biomes by 4x4x4 cell (`p >> 2`); a cell not here is plains.
+        pub biomes: HashMap<Pos, String>,
         /// How many `write` calls there were, and how many blocks they carried.
         pub write_calls: usize,
         pub written: usize,
@@ -139,7 +228,7 @@ pub mod fake {
             for t in ["bottom", "top", "double"] {
                 states.push(BlockState::new("minecraft:stone_slab", &[("type", t), ("waterlogged", "false")]));
             }
-            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), entities: HashMap::new(), mobs: Vec::new(), write_calls: 0, written: 0 }
+            Self { states, blocks: HashMap::new(), min_y: -64, max_y: 319, unloaded: Vec::new(), entities: HashMap::new(), mobs: Vec::new(), mob_data: Vec::new(), spawned: Vec::new(), planted: Vec::new(), biomes: HashMap::new(), write_calls: 0, written: 0 }
         }
         pub fn id(&self, spec: &str) -> StateId {
             self.resolve(&BlockState::parse(spec).unwrap()).unwrap_or_else(|| panic!("no state {spec}"))
@@ -215,15 +304,51 @@ pub mod fake {
         fn entities_in(&mut self, min: [f64; 3], max: [f64; 3]) -> Vec<EntityInfo> {
             self.mobs.iter().filter(|m| (0..3).all(|a| m.pos[a] >= min[a] && m.pos[a] <= max[a])).cloned().collect()
         }
+        fn entities_data(&mut self, min: [f64; 3], max: [f64; 3]) -> Vec<EntityData> {
+            self.mob_data.iter().filter(|m| (0..3).all(|a| m.pos[a] >= min[a] && m.pos[a] <= max[a])).cloned().collect()
+        }
+        fn spawn_entity(&mut self, kind: &str, pos: [f64; 3], nbt: &Tag) -> Option<u64> {
+            self.spawned.push((kind.to_owned(), pos, nbt.clone()));
+            let id = 1000 + self.spawned.len() as u64;
+            self.mob_data.push(EntityData { id, kind: kind.to_owned(), pos, nbt: nbt.clone() });
+            Some(id)
+        }
+        fn biome_at(&self, p: Pos) -> Option<String> {
+            Some(self.biomes.get(&[p[0] >> 2, p[1] >> 2, p[2] >> 2]).cloned().unwrap_or_else(|| "minecraft:plains".to_owned()))
+        }
+        fn set_biome(&mut self, p: Pos, biome: &str) -> bool {
+            let cell = [p[0] >> 2, p[1] >> 2, p[2] >> 2];
+            let before = self.biome_at(p);
+            self.biomes.insert(cell, biome.to_owned());
+            before.as_deref() != Some(biome)
+        }
         fn remove_entities(&mut self, ids: &[u64]) -> usize {
-            let before = self.mobs.len();
+            let before = self.mobs.len() + self.mob_data.len();
             self.mobs.retain(|m| !ids.contains(&m.id));
-            before - self.mobs.len()
+            self.mob_data.retain(|m| !ids.contains(&m.id));
+            before - self.mobs.len() - self.mob_data.len()
         }
         fn set_block_entities(&mut self, entities: &[(Pos, Tag)]) {
             for (p, t) in entities {
                 self.entities.insert(*p, t.clone());
             }
+        }
+        fn generate_tree(&mut self, p: Pos, feature: &str) -> bool {
+            // A trunk of four logs with a cap of leaves, where the way is free; the feature id is only recorded.
+            self.planted.push(feature.to_owned());
+            if self.get(p).is_none_or(|s| s != 0) {
+                return false;
+            }
+            let log = self.id("oak_log[axis=y]");
+            for y in 0..4 {
+                self.blocks.insert([p[0], p[1] + y, p[2]], log);
+            }
+            if let Some(leaves) = self.resolve(&BlockState::new("minecraft:oak_leaves", &[])) {
+                for d in [[1, 3, 0], [-1, 3, 0], [0, 3, 1], [0, 3, -1], [0, 4, 0]] {
+                    self.blocks.entry([p[0] + d[0], p[1] + d[1], p[2] + d[2]]).or_insert(leaves);
+                }
+            }
+            true
         }
         fn write(&mut self, writes: &[(Pos, StateId)]) -> usize {
             self.write_calls += 1;

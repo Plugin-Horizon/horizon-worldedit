@@ -20,7 +20,7 @@ use mod_api::{
     CommandArgumentKind, CommandArgumentType, CommandSuggestion, Config,
     ConfigKind, ConfigLoadingEvent, ConfigReloadingEvent, Flow, GameMode, Hand,
     HostBlockStates, HostSide, Hooks, Identifier, InteractionResult, ItemStack, LeftClickBlockEvent, LevelRef,
-    LevelTickPostEvent, PlayerCommandEvent, PlayerCommandsSentEvent, PlayerRef, RegisterCommandsEvent,
+    LevelTickPostEvent, PlayerArmSwingEvent, PlayerCommandEvent, PlayerCommandsSentEvent, PlayerRef, RegisterCommandsEvent,
     RegisterConfigsEvent, RightClickBlockEvent, ServerHost, ServerStoppedEvent, StateConstraint,
     Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext,
 };
@@ -168,61 +168,37 @@ impl CommandArgumentType for WeArgument {
 
 // --- selection outline (WorldEditCUI) ---------------------------------------------------------------
 //
-// A client with the WorldEditCUI mod says hello on `worldedit:cui` (`v|<version>`); from then on the server sends
-// it `s|cuboid` and `p|<0|1>|x|y|z|volume` whenever the player's corners change (checked every level tick).
+// A client with the WorldEditCUI mod says hello on `worldedit:cui` (`v|<protocol version>`; or runs `/we cui`); from
+// then on the editor describes the player's selection to it (`s|<shape>`, points, radii, triangles: see
+// `engine/cui.rs`) whenever it changes, checked every level tick. Older protocols get boxes.
 
 const CUI_CHANNEL: &str = "worldedit:cui";
-
-type Corners = (Option<[i32; 3]>, Option<[i32; 3]>);
-
-/// Players who said hello, with the corners last sent to them (`None`: nothing yet).
-static CUI_PLAYERS: Mutex<Option<HashMap<u128, Option<Corners>>>> = Mutex::new(None);
-
-fn cui_players<R>(f: impl FnOnce(&mut HashMap<u128, Option<Corners>>) -> R) -> R {
-    let mut guard = CUI_PLAYERS.lock().unwrap_or_else(|e| e.into_inner());
-    f(guard.get_or_insert_with(HashMap::new))
-}
 
 /// Receives the CUI's hello: that player is sent their selection from now on (again, if they say hello again).
 struct CuiInbox;
 
 impl IPayloadHandler for CuiInbox {
-    fn handle(&self, _payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), PayloadHandleError> {
+    fn handle(&self, payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), PayloadHandleError> {
         let player = context.player().map_err(|e| PayloadHandleError::Failed(format!("{e:?}")))?;
         let uuid = player.uuid();
-        cui_players(|m| m.insert(uuid, None));
+        let text = String::from_utf8_lossy(&payload.0).into_owned();
+        we::with(|e| e.cui_hello(uuid, &text));
         Ok(())
     }
 }
 
-/// Sends each CUI player the corners that changed since the last send.
+/// Sends each CUI player the description of their selection when it changed since the last send.
 fn send_outlines(host: &mut dyn ServerHost) {
-    let uuids: Vec<u128> = cui_players(|m| m.keys().copied().collect());
+    let uuids = we::with(|e| e.cui_players());
     for uuid in uuids {
-        let (a, b) = we::with(|e| e.corners_of(uuid));
-        let now: Corners = (a, b);
-        if cui_players(|m| m.get(&uuid).cloned().flatten()) == Some(now) {
-            continue;
-        }
         let Some(player) = player_by_uuid(&*host, uuid) else {
-            cui_players(|m| m.remove(&uuid));
+            we::with(|e| e.cui_forget(uuid));
             continue;
         };
-        let volume: i64 = match (a, b) {
-            (Some(a), Some(b)) => (0..3).map(|i| i64::from((a[i] - b[i]).abs()) + 1).product(),
-            _ => -1,
-        };
-        let mut lines = vec!["s|cuboid".to_owned()];
-        for (index, corner) in [a, b].into_iter().enumerate() {
-            if let Some(p) = corner {
-                lines.push(format!("p|{index}|{}|{}|{}|{volume}", p[0], p[1], p[2]));
-            }
-        }
         let id = PayloadId(CUI_CHANNEL.to_string());
-        for text in lines {
+        for text in we::with(|e| e.cui_update(uuid)) {
             let _ = player.send_payload(&mut *host, &id, PayloadBytes(text.into_bytes()));
         }
-        cui_players(|m| m.insert(uuid, Some(now)));
     }
 }
 
@@ -508,6 +484,94 @@ impl we::World for GameWorld<'_> {
         out
     }
 
+    fn name(&self) -> String {
+        // The open world's folder (`level-name`): what `/snapshot` looks its backups up by.
+        self.host.world_dir().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "world".to_owned())
+    }
+
+    fn entities_data(&mut self, min: [f64; 3], max: [f64; 3]) -> Vec<we::EntityData> {
+        let mut out = Vec::new();
+        for e in self.level.entities_in(&*self.host, min, max).unwrap_or_default() {
+            let (Some(kind), Some(pos)) = (e.kind(&*self.host), e.position(&*self.host)) else { continue };
+            let kind = kind.id(&*self.host).to_string();
+            // WorldEdit copies no player: a player has no saved state it could make again.
+            if kind == "minecraft:player" {
+                continue;
+            }
+            let Some(nbt) = e.nbt(&mut *self.host) else { continue };
+            out.push(we::EntityData { id: u64::from(e.id()), kind, pos, nbt: from_host_tag(&HostTag::Compound(nbt)) });
+        }
+        out
+    }
+
+    fn spawn_entity(&mut self, kind: &str, pos: [f64; 3], nbt: &we::nbt::Tag) -> Option<u64> {
+        let HostTag::Compound(data) = to_host_tag(nbt) else { return None };
+        self.host.summon(&self.dimension, kind, pos, data).map(u64::from)
+    }
+
+    fn biome_at(&self, p: we::Pos) -> Option<String> {
+        self.level.biome_at(&*self.host, p)
+    }
+
+    fn set_biome(&mut self, p: we::Pos, biome: &str) -> bool {
+        self.level.set_biome(&mut *self.host, p, biome)
+    }
+
+    fn biome_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.host.registry_entries("minecraft:worldgen/biome").unwrap_or_default().iter().map(|id| id.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    fn fill_biome(&mut self, min: we::Pos, max: we::Pos, biome: &str) -> Result<u32, String> {
+        use mod_api::BiomeFillRefusal as Refusal;
+        // The corners are inclusive here, the box call's maximum is not.
+        let end = [max[0] + 1, max[1] + 1, max[2] + 1];
+        self.level.fill_biome(&mut *self.host, min, end, biome).map_err(|e| match e {
+            Refusal::NotLoaded => "a column of the selection is not loaded, or it leaves the build height".to_owned(),
+            Refusal::UnknownBiome => format!("biome '{biome}' is not known to this world"),
+            Refusal::NotInPlace => "this level is not the one the server is ticking".to_owned(),
+            Refusal::TooManyCells { asked, max } => format!("{asked} biome cells in one call; at most {max}"),
+            other => format!("{other:?}"),
+        })
+    }
+
+    fn level_names(&self) -> Vec<String> {
+        self.host.levels().list_levels().iter().map(|l| l.dimension_id().to_string()).collect()
+    }
+
+    // `rec-regen` (level.regenerate_chunks) and `rec-world-data` (level.delete_chunks): engine branches not merged yet.
+    #[cfg(feature = "next-engine")]
+    fn regenerate_chunks(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
+        use mod_api::RegenRefusal as Refusal;
+        self.level.regenerate_chunks(&mut *self.host, chunks).map_err(|e| match e {
+            Refusal::NotLoaded => "a chunk of the selection is not loaded".to_owned(),
+            Refusal::NoGenerator => "this level has no generator of the game's own to regenerate from".to_owned(),
+            Refusal::NotInPlace => "this level is not the one the server is ticking".to_owned(),
+            Refusal::TooManyChunks { asked, max } => format!("{asked} chunks in one call; at most {max}"),
+            other => format!("{other:?}"),
+        })
+    }
+
+    #[cfg(feature = "next-engine")]
+    fn delete_chunks(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
+        let list: Vec<(i32, i32)> = chunks.iter().map(|c| (c[0], c[1])).collect();
+        self.level.delete_chunks(&mut *self.host, &list).map(|n| n as u32).ok_or_else(|| "the level is not the one in place, or the list is too long".to_owned())
+    }
+
+    fn generate_tree(&mut self, p: we::Pos, feature: &str) -> bool {
+        self.level.generate_tree(&mut *self.host, p, feature).unwrap_or(false)
+    }
+
+    fn break_block(&mut self, p: we::Pos, drop: bool) -> bool {
+        // `Level.destroyBlock` with no tool in hand: the drops (when asked) are spawned as the game does.
+        matches!(self.level.destroy_block(&mut *self.host, p, drop, None, false), Ok(Some(_)))
+    }
+
+    fn block_light(&self, p: we::Pos) -> i32 {
+        self.level.brightness(&*self.host, mod_api::LightLayer::Block, p).unwrap_or(0)
+    }
+
     fn remove_entities(&mut self, ids: &[u64]) -> usize {
         let mut n = 0;
         for id in ids {
@@ -658,7 +722,8 @@ fn actor_of(host: &mut dyn ServerHost, player: PlayerRef) -> we::Actor {
         uuid: player.uuid(),
         name: player.name(host).unwrap_or_default(),
         permission,
-        dimension: entity.level(host).map(|l| l.dimension_id().to_string()).unwrap_or_default(),
+        // `//world` sends the player's commands to another level.
+        dimension: we::world_override(player.uuid()).unwrap_or_else(|| entity.level(host).map(|l| l.dimension_id().to_string()).unwrap_or_default()),
         position: entity.position(host).unwrap_or_default(),
         yaw,
         pitch,
@@ -889,7 +954,11 @@ impl Hooks for Mod {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
             we::with(|e| match e.wand_click(&world, &actor, true, pos, now_ms()) {
                 Some(r) => Some(r),
-                None => e.tool_click(&mut world, &actor, true, pos, now_ms()),
+                None => match e.tool_click(&mut world, &actor, true, pos, now_ms()) {
+                    Some(r) => Some(r),
+                    // The navigation wand's left click passes through the wall in front of the player.
+                    None => e.nav_thru(&world, &actor, false, now_ms()),
+                },
             })
         };
         if let Some(reply) = reply {
@@ -897,6 +966,32 @@ impl Hooks for Mod {
             return Flow::Cancel;
         }
         Flow::Continue
+    }
+
+    // A left click in the air sends no click event to the server, only the arm swing every click sends; the swing that
+    // follows a click `nav_thru` or `nav_use` already handled is ignored there.
+    fn player_arm_swing(&self, host: &mut dyn ServerHost, event: &mut PlayerArmSwingEvent<'_>) {
+        if event.hand != "mainhand" {
+            return;
+        }
+        let Some(player) = player_by_uuid(&*host, event.player) else { return };
+        // Every swing comes here: only the navigation wand's holder is worth building an actor for.
+        let held = held_item(&*host, player);
+        if !we::with(|e| e.holds_nav(event.player, held.as_deref()) || e.holds_trace_tool(event.player, held.as_deref())) {
+            return;
+        }
+        let actor = actor_of(&mut *host, player);
+        let reply = {
+            let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return };
+            // The far wand and the long-range build tool answer a left click in the air; the navigation wand has its own.
+            we::with(|e| match e.swing_click(&mut world, &actor, now_ms()) {
+                Some(r) => Some(r),
+                None => e.nav_thru(&world, &actor, true, now_ms()),
+            })
+        };
+        if let Some(reply) = reply {
+            finish(host, player, &actor, &reply);
+        }
     }
 
     fn right_click_block(&self, host: HostSide, event: &mut RightClickBlockEvent) -> Flow {
@@ -909,11 +1004,13 @@ impl Hooks for Mod {
         let mut actor = actor_of(&mut *host, player);
         actor.held = event.click.stack.map(|s| s.item().id(&*host)).filter(|i| i != "minecraft:air");
         let pos = event.click.pos;
+        // The side that was clicked (`[0, 1, 0]` the top): the stack tool goes that way.
+        let face = event.click.hit.face;
         let reply = {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
             we::with(|e| match e.wand_click(&world, &actor, false, pos, now_ms()) {
                 Some(r) => Some(r),
-                None => match e.tool_click(&mut world, &actor, false, pos, now_ms()) {
+                None => match e.tool_click_face(&mut world, &actor, false, pos, Some(face), now_ms()) {
                     Some(r) => Some(r),
                     None => match e.brush_use(&mut world, &actor, Some(pos), now_ms()) {
                         Some(r) => Some(r),
@@ -941,7 +1038,7 @@ impl Hooks for Mod {
         actor.held = Some(event.click.stack.item().id(&*host));
         let reply = {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
-            we::with(|e| match e.far_wand_air(&world, &actor, now_ms()) {
+            we::with(|e| match e.far_wand_air(&mut world, &actor, now_ms()) {
                 Some(r) => Some(r),
                 None => match e.brush_use(&mut world, &actor, None, now_ms()) {
                     Some(r) => Some(r),
@@ -981,8 +1078,9 @@ impl Hooks for Mod {
 
     fn server_stopped(&self, _: &mut dyn ServerHost, _: &mut ServerStoppedEvent) {
         // Selections, clipboards, history and queued writes go with the world.
-        // TODO(arismoko-api: player_show_blocks): the selection outline (WorldEdit's CUI structure block, only the
-        // player sees it) is not drawn, and nothing is cleared from it here.
+        // TODO(arismoko-api: player_show_block_entity): the outline for clients WITHOUT the WorldEditCUI mod (WorldEdit's
+        // `ServerCUIHandler`: a structure block with the selection's box, shown to that player only) needs a block entity
+        // shown to one player; `player_show_block` sends a block state without its data. Nothing is drawn for them.
         we::with(|e| e.closed());
     }
 }

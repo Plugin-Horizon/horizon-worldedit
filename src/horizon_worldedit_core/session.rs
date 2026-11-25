@@ -51,6 +51,9 @@ pub enum BrushShape {
     /// `/brush clipboard [-a -v -o -m mask]`: the clipboard as it was when the brush was equipped (WorldEdit keeps
     /// the holder, not a copy of it later). `structure_void`: `-v`, paste structure voids too.
     Paste { clip: Clipboard, ignore_air: bool, use_origin: bool, structure_void: bool, mask: Option<String> },
+    /// `/brush forest|feature|biome <shape> [radius] [density] <type>` (`kind` 0, 1, 2; `shape` as `Region`): `arg` is the
+    /// tree type, the feature id or the biome; `density` in percent; `column` is `-c` of the biome brush (the whole height).
+    Terrain { kind: u8, shape: u8, radius: f64, density: f64, arg: String, column: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,6 +86,41 @@ pub enum Tool {
     /// `/tool farwand`: the wand's corners, taken from the block the player looks at (WorldEdit's `DistanceWand`).
     /// Left click is position #1, right click position #2, as with the wand; a right click in the air works too.
     FarWand,
+    /// `/tool tree [type]`: right click plants a tree on the block (`TreePlanter`); `kind` is the feature id.
+    Tree { kind: String },
+    /// `/tool deltree`: right click removes the floating tree the block belongs to (`FloatingTreeRemover`).
+    DelTree,
+    /// `/tool stacker [range] [mask]`: right click stacks the block along the clicked face (`StackTool`).
+    Stacker { range: i32, mask: String },
+    /// `/tool lrbuild <primary> <secondary>`: right click places `primary`, left click `secondary`, at the block in
+    /// sight (`LongRangeBuildTool`, whose two patterns are used in that order).
+    LrBuild { primary: Pattern, secondary: Pattern },
+}
+
+/// What `/mask`, `/material`, `/range`, `/size` and `/tracemask` keep for an item that has a brush (`BrushTool`),
+/// or a far wand or long-range build tool, which are `BrushTool`s too. The brush's own mask and material live in
+/// `Brush`; these are for the tools that have no `Brush`, and for the settings a `Brush` does not have.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BrushOpts {
+    /// `/range`: the longest trace (`None`: the default, 500; negative also means the default).
+    pub range: Option<i32>,
+    /// `/size`: the brush radius; cleared when the item is bound to a new brush.
+    pub size: Option<f64>,
+    /// `/tracemask`: the blocks that stop the trace (`None`: any block that is not air).
+    pub trace_mask: Option<String>,
+    /// `/mask` for a tool that is not a brush.
+    pub mask: Option<String>,
+    /// `/material` for a tool that is not a brush.
+    pub material: Option<Pattern>,
+}
+
+/// The super pickaxe's mode (`//`, `/sp single|area|recursive`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Pickaxe {
+    #[default]
+    Single,
+    Area(i32),
+    Recursive(f64),
 }
 
 /// The state of one side effect (`//perf`): WorldEdit's `SideEffect.State`.
@@ -135,6 +173,14 @@ pub enum PlaceKind {
     Max,
 }
 
+/// A player whose client has the WorldEditCUI mod: the protocol version it said it speaks, and what the player's
+/// selection looked like when it was last described to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CuiClient {
+    pub version: i32,
+    pub sent: Option<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct Session {
     pub pos1: Option<Pos>,
@@ -158,6 +204,11 @@ pub struct Session {
     pub distribution: Option<Vec<(String, u64)>>,
     /// Tools by item id (`/tool ...`); an item has a brush or a tool, never both.
     pub tools: HashMap<String, Tool>,
+    /// `/mask`, `/range`, `/size`, `/tracemask` and `/material` of the item's tool, by item id.
+    pub brush_opts: HashMap<String, BrushOpts>,
+    /// The super pickaxe mode, and whether it is on (`//`).
+    pub pickaxe: Pickaxe,
+    pub pickaxe_on: bool,
     /// `//placement`, `//toggleplace`: where shapes and the like are made, and the offset from it.
     pub place_kind: PlaceKind,
     pub place_offset: Pos,
@@ -177,6 +228,10 @@ pub struct Session {
     pub side_effects: BTreeMap<String, SideState>,
     /// `//reorder`: `multi`, `fast` or `none` (`None`: `multi`). Recorded only.
     pub reorder: Option<&'static str>,
+    /// `/snapshot use|sel|before|after`: the name of the snapshot `//restore` takes (`None`: the newest).
+    pub snapshot: Option<String>,
+    /// The WorldEditCUI client of this connection (`None`: the player has no such client, or has not said hello).
+    pub cui: Option<CuiClient>,
 }
 
 impl Session {
@@ -237,6 +292,10 @@ impl Sessions {
     }
     pub fn clear(&mut self) {
         self.map.clear();
+    }
+    /// The players whose client said hello on the CUI channel.
+    pub fn with_cui(&self) -> Vec<u128> {
+        self.map.iter().filter(|(_, s)| s.cui.is_some()).map(|(&id, _)| id).collect()
     }
     pub fn len(&self) -> usize {
         self.map.len()

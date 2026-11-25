@@ -27,6 +27,15 @@ pub(crate) const ENTRIES: &[Entry] = &[
     Entry { name: "/trim", aliases: &[], desc: "Minimize the selection to encompass matching blocks" },
     Entry { name: "chunkinfo", aliases: &[], desc: "Get information about the chunk you're inside" },
     Entry { name: "listchunks", aliases: &[], desc: "List chunks that your selection includes" },
+    Entry { name: "biomelist", aliases: &["biomels"], desc: "Gets all biomes available." },
+    Entry { name: "biomeinfo", aliases: &[], desc: "Get the biome of the targeted block." },
+    Entry { name: "/setbiome", aliases: &[], desc: "Sets the biome of your current block or region." },
+    Entry { name: "/replacebiome", aliases: &[], desc: "Replaces the biome of your current block or region." },
+    Entry { name: "/regen", aliases: &[], desc: "Regenerates the contents of the selection" },
+    Entry { name: "/forest", aliases: &[], desc: "Make a forest within the region" },
+    Entry { name: "/flora", aliases: &[], desc: "Make flora within the region" },
+    Entry { name: "delchunks", aliases: &[], desc: "Delete chunks that your selection includes" },
+    Entry { name: "/world", aliases: &[], desc: "Sets the world override" },
     Entry { name: "/count", aliases: &[], desc: "Counts the number of blocks matching a mask" },
     Entry { name: "/distr", aliases: &[], desc: "Get the distribution of blocks in the selection" },
     Entry { name: "/wand", aliases: &[], desc: "Get the wand item" },
@@ -104,6 +113,8 @@ pub(crate) const ENTRIES: &[Entry] = &[
     Entry { name: "/drawsel", aliases: &[], desc: "Toggle drawing the current selection" },
     Entry { name: "/watchdog", aliases: &[], desc: "Changes watchdog hook state" },
     Entry { name: "/registry", aliases: &[], desc: "Search through the given registry" },
+    Entry { name: "snapshot", aliases: &["snap"], desc: "Snapshot commands for restoring backups" },
+    Entry { name: "restore", aliases: &["/restore"], desc: "Restore the selection from a snapshot" },
     Entry { name: "worldedit", aliases: &["we"], desc: "WorldEdit commands" },
 ];
 
@@ -117,6 +128,16 @@ const SUBS: &[(&str, &[(&str, &str)])] = &[
             ("list", "List saved schematics"),
             ("load", "Load a schematic into your clipboard"),
             ("save", "Save your clipboard into a schematic file"),
+        ],
+    ),
+    (
+        "snapshot",
+        &[
+            ("after", "Choose the first snapshot that occurred after the given date"),
+            ("before", "Choose the first snapshot that occurred before the given date"),
+            ("list", "List snapshots"),
+            ("sel", "Choose the snapshot based on the list id"),
+            ("use", "Choose a snapshot to use"),
         ],
     ),
     (
@@ -323,7 +344,10 @@ impl Engine {
                 Ok(vec![if now { "Trace mode now active." } else { "Trace mode now inactive." }.into()])
             }
             // The CUI handshake of the WorldEdit client mod: this server has no plugin channel to answer on.
-            "cui" => Ok(Vec::new()),
+            "cui" => {
+                self.cui_enable(actor);
+                Ok(Vec::new())
+            }
             "tz" => self.timezone(actor, args, env),
             other => Err(format!("The sub-command '{other}' under 'worldedit' could not be found.")),
         }

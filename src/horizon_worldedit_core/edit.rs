@@ -5,6 +5,29 @@ use crate::horizon_worldedit_core::nbt::Tag;
 use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::HashMap;
 
+/// An entity an edit created (`//paste -e`), kept so `//undo` can remove it and `//redo` make it again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spawned {
+    pub id: u64,
+    pub kind: String,
+    pub pos: [f64; 3],
+    pub nbt: Tag,
+}
+
+/// What an edit did besides blocks: the entities it created and the biome cells it set.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Extras {
+    pub spawned: Vec<Spawned>,
+    /// A position in the cell, the biome before and the biome after.
+    pub biomes: Vec<(Pos, String, String)>,
+}
+
+impl Extras {
+    pub fn is_empty(&self) -> bool {
+        self.spawned.is_empty() && self.biomes.is_empty()
+    }
+}
+
 /// One edit, as `//undo` and `//redo` replay it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Change {
@@ -17,6 +40,8 @@ pub struct Change {
     pub entities_before: HashMap<Pos, Tag>,
     /// Block entity data the edit brought (`//redo` puts it back).
     pub entities_after: HashMap<Pos, Tag>,
+    /// Entities and biomes the edit made.
+    pub extras: Extras,
 }
 
 impl Change {
@@ -24,7 +49,7 @@ impl Change {
         self.blocks.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.blocks.is_empty()
+        self.blocks.is_empty() && self.extras.is_empty()
     }
     /// The writes that make it.
     pub fn forward(&self) -> Vec<(Pos, StateId)> {
@@ -76,7 +101,7 @@ pub fn plan_with(world: &dyn World, dimension: &str, ops: impl IntoIterator<Item
         }
     }
     let entities_after = entities.into_iter().filter(|(p, _)| index.contains_key(p)).collect();
-    Change { dimension: dimension.to_owned(), blocks, at_ms: 0, entities_before, entities_after }
+    Change { dimension: dimension.to_owned(), blocks, at_ms: 0, entities_before, entities_after, extras: Extras::default() }
 }
 
 /// A run of blocks up a column: `height` blocks from `y`, all palette entry `block`.
