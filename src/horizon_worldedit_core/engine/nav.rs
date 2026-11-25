@@ -8,7 +8,7 @@ use crate::horizon_worldedit_core::block::BlockState;
 
 /// Whether a player walks through the block at `p` (WorldEdit: not a movement blocker). Above the
 /// build height is open sky; an unloaded chunk or the void below the world stops a search.
-fn passable(world: &dyn World, p: Pos) -> bool {
+pub(super) fn passable(world: &dyn World, p: Pos) -> bool {
     match world.get(p) {
         Some(s) => passes(&world.describe(s)),
         None => p[1] > world.max_y(),

@@ -3252,3 +3252,9 @@ mod node_tests {
     }
 }
 
+
+/// The block a straight trace along the actor's view hits (solid, non-passable), for tests.
+#[cfg(test)]
+pub(crate) fn tools_target(world: &dyn World, actor: &Actor, max: i32) -> Option<Pos> {
+    tools::target_block(world, actor, max, &|p| world.get(p).is_some() && !nav::passable(world, p), false)
+}

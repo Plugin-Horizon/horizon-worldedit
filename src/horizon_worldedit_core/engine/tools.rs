@@ -369,7 +369,7 @@ impl Engine {
     }
 
     /// `/size` for a brush: the radius it was bound with is replaced (the brush's own height stays).
-    pub(super) fn apply_size(&mut self, actor: &Actor, item: &str, shape: &mut BrushShape) {
+    pub(crate) fn apply_size(&mut self, actor: &Actor, item: &str, shape: &mut BrushShape) {
         let Some(size) = self.opts_of(actor, item).size else { return };
         match shape {
             BrushShape::Sphere { radius, .. }
@@ -851,7 +851,7 @@ impl Engine {
         }
         let blocks: Vec<(Pos, StateId, StateId)> = before.into_iter().filter_map(|(p, old)| world.get(p).filter(|&new| new != old).map(|new| (p, old, new))).collect();
         if !blocks.is_empty() {
-            let change = Change { dimension: actor.dimension.clone(), blocks, at_ms: self.now_ms, entities_before: HashMap::new(), entities_after: HashMap::new() };
+            let change = Change { dimension: actor.dimension.clone(), blocks, at_ms: self.now_ms, entities_before: HashMap::new(), entities_after: HashMap::new(), extras: crate::horizon_worldedit_core::edit::Extras::default() };
             let size = self.config.history_size;
             self.sessions.get(actor.uuid).remember(change, size);
         }
