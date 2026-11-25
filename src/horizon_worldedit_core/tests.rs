@@ -1381,9 +1381,10 @@ fn tree_deltree_stacker_lrbuild() {
     run(&mut e, &mut w, &a, "/tool deltree");
     assert_eq!(e.tool_click(&mut w, &a, false, [3, 61, 3], 2000).unwrap().text(), "That's not a floating tree.");
     assert_eq!(e.tool_click(&mut w, &a, false, [4, 60, 4], 2500).unwrap().text(), "That's not a tree.");
+    let logs_before = w.count("oak_log[axis=y]");
     w.fill([20, 80, 20], [20, 82, 20], "oak_log[axis=y]");
     e.tool_click(&mut w, &a, false, [20, 81, 20], 3000);
-    assert_eq!(w.count("oak_log[axis=y]") , 4 + 4);
+    assert_eq!(w.count("oak_log[axis=y]"), logs_before, "the floating tree is removed");
     // stacker: the clicked block along the clicked face, until something is in the way.
     run(&mut e, &mut w, &a, "/tool stacker 3");
     w.fill([10, 61, 10], [10, 61, 10], "gold_block");
