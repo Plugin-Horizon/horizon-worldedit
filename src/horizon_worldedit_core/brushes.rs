@@ -473,6 +473,7 @@ mod command_tests {
             game_mode: 1,
             held: Some("minecraft:blaze_rod".into()),
             granted: Default::default(),
+            inventory: None,
         }
     }
 

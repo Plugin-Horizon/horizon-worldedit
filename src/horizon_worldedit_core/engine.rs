@@ -16,6 +16,7 @@ use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+mod bag;
 mod calc;
 mod clipx;
 mod cui;
@@ -229,6 +230,8 @@ pub struct Actor {
     /// The `worldedit.*` nodes the permission system grants this player (see `NODES`). Operators pass on their
     /// level instead; anyone else needs a node here.
     pub granted: BTreeSet<String>,
+    /// The item counts of the player's inventory when their edits use it (`use-inventory`); `None` when they do not.
+    pub inventory: Option<std::collections::BTreeMap<String, u32>>,
 }
 
 impl Actor {
@@ -1301,6 +1304,8 @@ pub struct Engine {
     now_ms: i64,
     /// Players whose `useServerCUI` is off (their session file): no selection outline for them.
     cui_off: BTreeSet<u128>,
+    /// The inventory change and the blocks missing from a bag edit, by player, until `take_bag` hands them over.
+    bag: HashMap<u128, (std::collections::BTreeMap<String, i64>, std::collections::BTreeMap<String, u32>)>,
 }
 
 impl Default for Engine {
@@ -1322,6 +1327,7 @@ impl Engine {
             outline_due: Vec::new(),
             now_ms: 0,
             cui_off: BTreeSet::new(),
+            bag: HashMap::new(),
         }
     }
 
@@ -1602,6 +1608,8 @@ impl Engine {
             let w: &dyn World = &*world;
             ops.retain(|&(p, _)| w.get(p).is_some_and(|s| mask.hits(w, s)));
         }
+        // `use-inventory`: the blocks come out of the player's inventory.
+        self.bag_filter(&*world, actor, &mut ops);
         let mut change = plan_with(world, &actor.dimension, ops, entities);
         change.at_ms = self.now_ms;
         if !self.allows(actor, change.len() as u64) {

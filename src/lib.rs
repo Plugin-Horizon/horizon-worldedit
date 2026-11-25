@@ -22,7 +22,7 @@ use mod_api::{
     HostBlockStates, HostSide, Hooks, Identifier, InteractionResult, ItemStack, LeftClickBlockEvent, LevelRef,
     LevelTickPostEvent, PlayerArmSwingEvent, PlayerCommandEvent, PlayerCommandsSentEvent, PlayerRef, RegisterCommandsEvent,
     RegisterConfigsEvent, RightClickBlockEvent, ServerHost, ServerStoppedEvent, StateConstraint,
-    Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext,
+    Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext, ConsoleCommandEvent,
 };
 use mod_api::Tag as HostTag;
 use mod_api::{CommandSender, NodeDefault, PayloadHandleError, PermissionGatherNodesEvent, PermissionLevel, PermissionNode, PermissionValueType};
@@ -35,6 +35,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 const ID: &str = "worldedit";
+/// The editor session of the server console and RCON (no player has this UUID).
+const CONSOLE_UUID: u128 = 0xC0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0_C0;
 const CONFIG_FILE: &str = "worldedit.toml";
 const ORIGINAL_DIR: &str = "plugins/WorldEdit";
 
@@ -881,6 +883,15 @@ fn actor_of(host: &mut dyn ServerHost, player: PlayerRef) -> we::Actor {
         .map(|n| n.to_string())
         .collect();
     let [yaw, pitch] = entity.rotation(host).unwrap_or([0.0, 0.0]);
+    let game_mode = game_mode_id(player.game_mode(host));
+    // `use-inventory`: what the player carries, when their edits take their blocks from it.
+    let inventory = we::with(|e| e.wants_inventory(&granted, permission, game_mode)).then(|| {
+        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+        for (_, stack) in player.inventory_slots(&*host).unwrap_or_default() {
+            *counts.entry(stack.item().id(&*host)).or_insert(0) += stack.count();
+        }
+        counts
+    });
     we::Actor {
         uuid: player.uuid(),
         name: player.name(host).unwrap_or_default(),
@@ -890,10 +901,39 @@ fn actor_of(host: &mut dyn ServerHost, player: PlayerRef) -> we::Actor {
         position: entity.position(host).unwrap_or_default(),
         yaw,
         pitch,
-        game_mode: game_mode_id(player.game_mode(host)),
+        game_mode,
         held: held_item(host, player),
         granted,
+        inventory,
     }
+}
+
+/// `use-inventory`: puts the inventory change of the last edit into effect (blocks placed are taken, blocks broken given) and
+/// returns the report of the blocks that were missing.
+fn settle_bag(host: &mut dyn ServerHost, player: PlayerRef, uuid: u128) -> Vec<String> {
+    let (delta, notes) = we::with(|e| e.take_bag(uuid));
+    for (item, n) in delta {
+        let Some(key) = Identifier::parse(&item).ok().and_then(|id| host.item_key(&id)) else { continue };
+        if n > 0 {
+            if let Some(stack) = ItemStack::new(key, n as u32) {
+                let _ = player.give_stack(host, stack);
+            }
+            continue;
+        }
+        let mut left = n.unsigned_abs() as u32;
+        for (slot, stack) in player.inventory_slots(&*host).unwrap_or_default() {
+            if left == 0 {
+                break;
+            }
+            if stack.item().id(&*host) != item {
+                continue;
+            }
+            let take = left.min(stack.count());
+            left -= take;
+            let _ = player.set_inventory_slot(host, slot, stack.shrink(take));
+        }
+    }
+    notes
 }
 
 fn line(l: &we::Line) -> Text {
@@ -948,6 +988,9 @@ fn finish(host: &mut dyn ServerHost, player: PlayerRef, actor: &we::Actor, reply
     }
     for l in &reply.lines {
         let _ = player.tell(&mut *host, line(l));
+    }
+    for note in settle_bag(&mut *host, player, actor.uuid) {
+        let _ = player.tell(&mut *host, Text::literal(note));
     }
     if let Some([x, y, z]) = reply.teleport {
         let _ = player.entity().teleport_to(host, [x, y, z], Some([actor.yaw, actor.pitch]));
@@ -1060,12 +1103,39 @@ impl Hooks for Mod {
         let actor = actor_of(&mut *host, player);
         let reply = execute(&mut *host, &actor, event.command);
         event.replies.extend(reply.lines.iter().map(line));
+        event.replies.extend(settle_bag(&mut *host, player, actor.uuid).into_iter().map(Text::literal));
         if let Some(to) = reply.teleport {
             TELEPORTS.with(|t| t.borrow_mut().push((actor.uuid, to, [actor.yaw, actor.pitch])));
         }
         // The lines are answered through `replies` above (no player is swapped in here); the items are given now.
         for item in &reply.give {
             host.commands().run_command(&format!("give {} {} 1", actor.name, item));
+        }
+        Flow::Cancel
+    }
+
+    // The server console and RCON run WorldEdit commands too (`//pos x,y,z`, `//world`): they have no position and need a level
+    // by `//world` first, as in WorldEdit. Replies go to the server log. A command block's command is not heard here.
+    fn console_command(&self, host: &mut dyn ServerHost, event: &mut ConsoleCommandEvent<'_>) -> Flow {
+        let double = event.line.starts_with('/');
+        if !we::is_command(event.line) || !we::form_allows(event.line, double) {
+            return Flow::Continue;
+        }
+        event.cancelled = true;
+        ensure_block_ids(&*host);
+        let name = if event.source == "rcon" { "Rcon" } else { "Console" };
+        let dimension = we::world_override(CONSOLE_UUID).unwrap_or_default();
+        let first = event.line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if dimension.is_empty() && !matches!(first.as_str(), "world" | "we" | "worldedit" | "help") {
+            log("You need to provide a world (Try //world)");
+            return Flow::Cancel;
+        }
+        // The commands that need no level run in the overworld, where the console is bound.
+        let dimension = if dimension.is_empty() { "minecraft:overworld".to_owned() } else { dimension };
+        let actor = we::Actor { uuid: CONSOLE_UUID, name: name.to_owned(), permission: 4, dimension, game_mode: 1, ..we::Actor::default() };
+        let reply = execute(&mut *host, &actor, event.line);
+        for l in &reply.lines {
+            log(&l.text);
         }
         Flow::Cancel
     }

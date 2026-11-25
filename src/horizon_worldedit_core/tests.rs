@@ -19,6 +19,7 @@ fn actor(uuid: u128) -> Actor {
         game_mode: 1,
         held: None,
         granted: Default::default(),
+        inventory: None,
     }
 }
 
