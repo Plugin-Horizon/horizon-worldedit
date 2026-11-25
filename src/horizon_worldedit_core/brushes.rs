@@ -669,7 +669,7 @@ mod command_tests {
         // -s is the snow brush's; the sphere brush does not know it.
         assert!(refused(&mut e, &mut w, &a, "/brush sphere stone 2 -s").contains("Usage"));
         assert_eq!(say(&mut e, &mut w, &a, "/brush sphere stone 2 -h"), format!("Sphere brush shape equipped (2).\n{HINT}"));
-        // The clipboard brush's entity and biome flags are known and refused by name.
-        assert_eq!(refused(&mut e, &mut w, &a, "/brush clipboard -e"), "-e is not supported on this server");
+        // The clipboard brush's entity and biome flags are supported now: -e gets as far as the empty clipboard.
+        assert_eq!(refused(&mut e, &mut w, &a, "/brush clipboard -e"), "Your clipboard is empty. Use //copy first.");
     }
 }

@@ -1206,7 +1206,7 @@ fn non_cuboid_selectors() {
     assert_eq!(run(&mut e, &mut w, &a, "//pos1 20,70,20"), "Starting a new cylindrical selection at (20, 70, 20).");
     assert_eq!(run(&mut e, &mut w, &a, "//pos2 22,72,20"), "Radius set to 2/0 blocks. (11)");
     // Polygon: a triangle, walls only on its sides.
-    assert_eq!(run(&mut e, &mut w, &a, "//sel poly"), "2D polygon selector: Left/right click to add a point.");
+    assert_eq!(run(&mut e, &mut w, &a, "//sel poly"), "2D polygon selector: Left/right click to add a point.\n20 points maximum.");
     assert_eq!(run(&mut e, &mut w, &a, "//pos1 40,64,40"), "Starting a new polygon at (40, 64, 40).");
     assert_eq!(run(&mut e, &mut w, &a, "//pos2 44,64,40"), "Added point #2 at (44, 64, 40).");
     assert_eq!(run(&mut e, &mut w, &a, "//pos2 40,64,44"), "Added point #3 at (40, 64, 44).");
@@ -1218,7 +1218,7 @@ fn non_cuboid_selectors() {
     assert_eq!(fails(&mut e, &mut w, &a, "//expand 2 east"), "Polygons can only be expanded vertically.");
     assert_eq!(run(&mut e, &mut w, &a, "//expand 2 up"), "Region expanded 30 blocks");
     // Convex hull.
-    assert_eq!(run(&mut e, &mut w, &a, "//sel convex"), "Convex polyhedral selector: Left click=First vertex, right click to add more.");
+    assert_eq!(run(&mut e, &mut w, &a, "//sel convex"), "Convex polyhedral selector: Left click=First vertex, right click to add more.\n20 points maximum.");
     assert_eq!(run(&mut e, &mut w, &a, "//pos1 60,64,60"), "Started new selection with vertex (60, 64, 60).");
     assert_eq!(run(&mut e, &mut w, &a, "//pos2 68,64,60"), "Added vertex (68, 64, 60) to the selection.");
     assert_eq!(fails(&mut e, &mut w, &a, "//expand 1 up"), "Cannot expand a convex polyhedral region.");
@@ -1242,7 +1242,7 @@ fn generate_and_deform_with_expressions() {
     // Raw coordinates: the plane x == 2.
     run(&mut e, &mut w, &a, "//generate -r gold_block x==2");
     assert_eq!(w.name_at([2, 70, 5]), "minecraft:gold_block");
-    assert_eq!(fails(&mut e, &mut w, &a, "//generate stone foo>1"), "Variable 'foo' not found");
+    assert_eq!(fails(&mut e, &mut w, &a, "//generate stone foo>1"), "Evaluation error at 1: Variable 'foo' is not bound");
     // Deform: shift every block's source one east (raw), so the gold plane moves west.
     run(&mut e, &mut w, &a, "//deform -r x += 1");
     assert_eq!(w.name_at([1, 70, 5]), "minecraft:gold_block");
@@ -1521,9 +1521,13 @@ fn apply_and_paint_brushes_bind_and_place() {
     assert!(text.contains("Set brush to set application of the item minecraft:bone_meal."), "{text}");
     e.brush_use(&mut w, &a, Some([0, 64, 0]), 5000);
     assert!(w.used.iter().all(|(_, item)| item == "minecraft:bone_meal") && !w.used.is_empty());
-    run(&mut e, &mut w, &a, "/brush paint cylinder 3 100 set glass");
-    assert!(e.brush_use(&mut w, &a, Some([0, 64, 0]), 9000).is_some());
-    assert!(w.count("glass") > 0);
+    // A paint brush paints the ground of its (one block high) layer and skips columns that are buried (`LayerVisitor`:
+    // "abort if we are underground"), so it needs open ground: a fresh world with stone up to the layer, air above.
+    let mut ground = FakeWorld::new();
+    ground.fill([-4, 60, -4], [4, 64, 4], "stone");
+    run(&mut e, &mut ground, &a, "/brush paint cylinder 3 100 set glass");
+    assert!(e.brush_use(&mut ground, &a, Some([0, 64, 0]), 9000).is_some());
+    assert!(ground.count("glass") > 0);
     assert_eq!(run(&mut e, &mut w, &a, "/brush deform sphere 3 y-=1"), "Set brush to deformation of y-=1.\nRun /brush unbind while holding the item to unbind it.");
     assert!(fails(&mut e, &mut w, &a, "/brush apply sphere 2 nonsense stone").contains("could not be found"));
 }
@@ -1560,7 +1564,9 @@ fn masks_that_need_a_position() {
     assert!(!Mask::parse(&w, "%0", None).unwrap().hits_at(&w, [1, 61, 1], air));
     let expr = Mask::parse(&w, "=x>1", None).unwrap();
     assert!(expr.hits_at(&w, [2, 60, 0], stone) && !expr.hits_at(&w, [0, 60, 0], stone));
-    assert!(Mask::parse(&w, "=x >", None).is_err());
+    // "=x >" is two parts in WorldEdit too (the expression and a lone ">", the block below exists), so it is no error.
+    assert!(Mask::parse(&w, "=x >", None).is_ok());
+    assert!(Mask::parse(&w, "=(x", None).is_err());
     assert!(Mask::parse(&w, "#region", None).is_err());
     set_ctx(MaskCtx { region: Some(Area::Box(crate::horizon_worldedit_core::region::Cuboid::new([0, 60, 0], [1, 60, 1]))), ..MaskCtx::default() });
     let region = Mask::parse(&w, "#region", None).unwrap();

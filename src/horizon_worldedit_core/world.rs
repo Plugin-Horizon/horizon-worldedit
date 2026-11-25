@@ -338,6 +338,7 @@ pub mod fake {
         fn item_names(&self) -> Vec<String> {
             let mut names = self.block_names();
             names.push("minecraft:stick".into());
+            names.push("minecraft:bone_meal".into());
             names
         }
         fn block_names(&self) -> Vec<String> {

@@ -212,7 +212,7 @@ pub const NODES: &[&str] = &[
 
 /// Nodes that lift a limit and need operator level 4 where `node_levels` names no other level (the original's `default: op`
 /// would give them to level 2; a server whose operators are trusted that far can set the level in `node_levels`).
-pub const FULL_OPERATOR_NODES: &[&str] = &["worldedit.limit.unrestricted", "worldedit.anyblock"];
+pub const FULL_OPERATOR_NODES: &[&str] = &["worldedit.limit.unrestricted", "worldedit.timeout.unrestricted", "worldedit.anyblock"];
 
 /// The session of the server console and RCON: no player has this UUID, and such an actor has no position.
 pub const CONSOLE_UUID: u128 = 0xC0C0_C0C0_C0C0_C0C0_C0C0_C0C0_C0C0_C0C0;

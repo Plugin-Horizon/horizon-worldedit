@@ -868,7 +868,17 @@ impl Mask {
         let mut entries = Vec::new();
         for entry in split_entries(body) {
             let (_, name) = weighted(&entry, body).map_err(Some)?;
-            let state = typed_state(world, name, hand).ok_or(None::<String>)?;
+            let mut state = typed_state(world, name, hand).ok_or(None::<String>)?;
+            // A mask prefers wildcards (`ParserContext.setPreferringWildcard`): only the properties it names must match.
+            let head = name.trim().to_ascii_lowercase();
+            if !matches!(head.split(['[', '{', '|']).next().unwrap_or(""), "hand" | "offhand" | "pos1") && legacy_ids(&wool(&head)).is_none() {
+                let named: Vec<String> = head
+                    .find('[')
+                    .and_then(|open| closing(&head, open).map(|close| head[open + 1..close].to_owned()))
+                    .map(|t| t.split(',').filter_map(|p| p.split_once('=').map(|(k, _)| k.to_owned())).collect())
+                    .unwrap_or_default();
+                state.properties.retain(|k, _| named.contains(k));
+            }
             // The name must be a block of this game, whatever properties it names.
             world.resolve(&BlockState { name: state.name.clone(), properties: Default::default() }).ok_or(None::<String>)?;
             entries.push(MaskEntry::Block(state));

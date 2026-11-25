@@ -76,9 +76,24 @@ mod tests {
             let mut seen = Vec::new();
             for i in 0..2 {
                 let (mut s, _) = l.accept().unwrap();
-                let mut buf = [0u8; 4096];
-                let n = s.read(&mut buf).unwrap();
-                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                // Headers and body may arrive in separate segments: read until Content-Length is satisfied.
+                let mut data = Vec::new();
+                loop {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap();
+                    data.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&data).to_string();
+                    if let Some(h) = text.find("\r\n\r\n") {
+                        let want = text[..h].to_ascii_lowercase().lines().find_map(|l| l.strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                        if data.len() >= h + 4 + want {
+                            break;
+                        }
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let req = String::from_utf8_lossy(&data).to_string();
                 seen.push(req);
                 let (status, body) = if i == 0 {
                     (
