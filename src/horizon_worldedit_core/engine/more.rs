@@ -102,7 +102,7 @@ impl Engine {
         if let Some(text) = self.sessions.get(actor.uuid).global_mask.clone() {
             let mask = Mask::parse(world, &text, None)?;
             let w: &dyn World = &*world;
-            positions.retain(|&p| w.get(p).is_some_and(|s| mask.hits(w, s)));
+            positions.retain(|&p| w.get(p).is_some_and(|s| mask.hits_at(w, p, s)));
         }
         let limit = self.max_blocks(actor);
         if limit >= 0 {
@@ -315,7 +315,7 @@ impl Engine {
         }
         let (lo, hi) = (world.min_y(), world.max_y());
         let cells: Vec<Pos> = region_cells(target, *shape, *radius).into_iter().filter(|p| (lo..=hi).contains(&p[1])).collect();
-        let pass = |w: &dyn World, p: &Pos| mask.is_none_or(|m| w.get(*p).is_some_and(|s| m.hits(w, s)));
+        let pass = |w: &dyn World, p: &Pos| mask.is_none_or(|m| w.get(*p).is_some_and(|s| m.hits_at(w, *p, s)));
         let salt = self.salt(actor);
         let mut rng = Rng(salt ^ (self.now_ms as u64));
         // The cells an operation acts on: all of them (apply), or the ground of a share of the columns (paint).
@@ -329,7 +329,7 @@ impl Engine {
         let targets: Vec<Pos> = targets.into_iter().filter(|p| pass(&*world, p)).collect();
         let reply = match op {
             ApplyOp::Set(pattern) => {
-                let ops: Vec<(Pos, StateId)> = targets.into_iter().map(|p| (p, pattern.pick(salt, p))).collect();
+                let ops: Vec<(Pos, StateId)> = targets.into_iter().map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
                 return match self.commit(world, actor, ops) {
                     Ok(_) => Reply::default(),
                     Err(e) if e.starts_with("Max blocks changed") => Reply::err("Max blocks change limit reached.".into()),

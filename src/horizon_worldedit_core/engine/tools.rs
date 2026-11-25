@@ -405,7 +405,7 @@ impl Engine {
         };
         let stop = |p: Pos| match world.get(p) {
             Some(s) => match &mask {
-                Some(m) => m.hits(world, s),
+                Some(m) => m.hits_at(world, p, s),
                 None => !world.is_air(s),
             },
             None => false,
@@ -432,6 +432,7 @@ impl Engine {
 
     /// [`Engine::tool_click`] with the face that was clicked (`[0, 1, 0]` the top), which the stack tool needs.
     pub fn tool_click_face(&mut self, world: &mut dyn World, actor: &Actor, left: bool, pos: Pos, face: Option<[i32; 3]>, now_ms: i64) -> Option<Reply> {
+        self.enter_session(actor, "");
         self.now_ms = now_ms;
         let item = actor.held.clone()?;
         if left {
@@ -492,7 +493,8 @@ impl Engine {
                     }
                 } else {
                     let salt = self.salt(actor);
-                    self.commit(world, actor, vec![(pos, pattern.pick(salt, pos))]).map(|_| Vec::new())
+                    let picked = pattern.pick_with(&*world, salt, pos);
+                    self.commit(world, actor, vec![(pos, picked)]).map(|_| Vec::new())
                 }
             }
             Tool::Cycler { property } => self.cycle(world, actor, &item, property, !left, pos),
@@ -567,8 +569,8 @@ impl Engine {
                 let salt = self.salt(actor);
                 // A pattern that places air breaks the block hit; any other goes on top of it
                 // (`pos.toVector().subtract(pos.getDirection())`, where the trace's location points straight down).
-                let at = if world.is_air(pattern.pick(salt, target)) { target } else { [target[0], target[1] + 1, target[2]] };
-                let mut ops = vec![(at, pattern.pick(salt, at))];
+                let at = if world.is_air(pattern.pick_with(&*world, salt, target)) { target } else { [target[0], target[1] + 1, target[2]] };
+                let mut ops = vec![(at, pattern.pick_with(&*world, salt, at))];
                 self.cap(actor, &mut ops);
                 Some(match self.commit(world, actor, ops) {
                     Ok(_) => Reply::default(),
@@ -720,7 +722,7 @@ impl Engine {
             match Mask::parse(&*world, &text, None) {
                 Ok(mask) => {
                     let w: &dyn World = &*world;
-                    targets.retain(|&p| w.get(p).is_some_and(|s| mask.hits(w, s)));
+                    targets.retain(|&p| w.get(p).is_some_and(|s| mask.hits_at(w, p, s)));
                 }
                 Err(e) => return Reply::err(e),
             }
@@ -818,7 +820,7 @@ impl Engine {
             }
         }
         let salt = self.salt(actor);
-        let ops = found.into_iter().map(|p| (p, pattern.pick(salt, p))).collect();
+        let ops = found.into_iter().map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         self.commit(world, actor, ops)?;
         Ok(Vec::new())
     }
@@ -974,7 +976,7 @@ impl Engine {
         for _ in 0..range {
             p = [p[0] + face[0], p[1] + face[1], p[2] + face[2]];
             let w: &dyn World = &*world;
-            if !w.get(p).is_some_and(|s| mask.hits(w, s)) {
+            if !w.get(p).is_some_and(|s| mask.hits_at(w, p, s)) {
                 break;
             }
             ops.push((p, state));

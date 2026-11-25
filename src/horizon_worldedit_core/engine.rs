@@ -20,12 +20,13 @@ mod bag;
 mod calc;
 mod clipx;
 mod cui;
-mod expr;
+pub mod expr;
 mod extra;
 mod help;
 mod logging;
 mod more;
 mod nav;
+mod noise;
 mod select;
 mod snap;
 mod terrain;
@@ -1389,9 +1390,37 @@ impl Engine {
         s.redo.retain(|c| c.at_ms >= cutoff);
     }
 
+    /// Tells the mask and pattern parsers about this player's selection, clipboard and timeout (`hint` is the text about to be
+    /// parsed: the clipboard is only copied into the context when it names one).
+    pub(crate) fn enter_session(&mut self, actor: &Actor, hint: &str) {
+        use crate::horizon_worldedit_core::pattern::{set_ctx, Area, ClipView, MaskCtx};
+        let (timeout_default, now) = (self.config.calculation_timeout, self.now_ms);
+        let s = self.sessions.get(actor.uuid);
+        let region = if s.dimension == actor.dimension {
+            match (&s.shape, s.pos1, s.pos2) {
+                (Some(shape), _, _) => Some(Area::Shape(shape.clone())),
+                (None, Some(a), Some(b)) => Some(Area::Box(Cuboid::new(a, b))),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let lower = hint.to_ascii_lowercase();
+        let clipboard = if lower.contains("#clipboard") || lower.contains("#copy") {
+            s.clipboard.as_ref().map(|c| {
+                std::rc::Rc::new(ClipView { blocks: c.blocks.iter().copied().collect(), origin: c.origin.as_ref().map_or([0; 3], |(_, o)| *o), min: c.bounds.min, size: c.bounds.size() })
+            })
+        } else {
+            None
+        };
+        let timeout_ms = s.timeout_ms.unwrap_or(timeout_default);
+        set_ctx(MaskCtx { region, clipboard, timeout_ms, salt: (now as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (actor.uuid as u64) });
+    }
+
     /// A typed command (`set stone`, `//set stone`, `rotate 90`).
     pub fn command(&mut self, world: &mut dyn World, actor: &Actor, line: &str, env: &Env) -> Reply {
         self.now_ms = env.now_ms;
+        self.enter_session(actor, line);
         let raw = line.trim();
         let line = raw.trim_start_matches('/');
         let mut words: Vec<&str> = line.split_whitespace().collect();
@@ -1492,7 +1521,7 @@ impl Engine {
             "world" => self.world_cmd(world, actor, &args),
             "listchunks" => self.list_chunks(actor, &args),
             "searchitem" => self.search_item(world, &args),
-            "calc" => self.calc(&args),
+            "calc" => self.calc(actor, &args),
             "generate" => self.generate(world, actor, &args),
             "deform" => self.deform(world, actor, &args),
             "butcher" => self.butcher(world, actor, &args),
@@ -1606,7 +1635,7 @@ impl Engine {
         if let Some(text) = self.sessions.get(actor.uuid).global_mask.clone() {
             let mask = Mask::parse(world, &text, None)?;
             let w: &dyn World = &*world;
-            ops.retain(|&(p, _)| w.get(p).is_some_and(|s| mask.hits(w, s)));
+            ops.retain(|&(p, _)| w.get(p).is_some_and(|s| mask.hits_at(w, p, s)));
         }
         // `use-inventory`: the blocks come out of the player's inventory.
         self.bag_filter(&*world, actor, &mut ops);
@@ -1960,7 +1989,7 @@ impl Engine {
         }
         let mask = Mask::parse(world, &args.rest(0), actor.held.as_deref())?;
         let shape = self.shape_of(actor);
-        let n = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).count();
+        let n = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits_at(world, p, s))).count();
         Ok(vec![format!("Counted: {n}")])
     }
 
@@ -1992,7 +2021,7 @@ impl Engine {
                 let shape = self.shape_of(actor);
                 for p in Self::shape_positions(&shape, &c) {
                     if let Some(s) = world.get(p) {
-                        if mask.as_ref().is_some_and(|m| !m.hits(world, s)) {
+                        if mask.as_ref().is_some_and(|m| !m.hits_at(world, p, s)) {
                             continue;
                         }
                         let state = world.describe(s);
@@ -2053,16 +2082,16 @@ impl Engine {
         let salt = self.salt(actor);
         let shape = self.shape_of(actor);
         let ops: Vec<(Pos, StateId)> = match (&shape, name) {
-            (None, "set") => c.positions().map(|p| (p, pattern.pick(salt, p))).collect(),
-            (None, "walls") => c.positions().filter(|&p| c.is_wall(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
-            (None, "faces" | "outline") => c.positions().filter(|&p| c.is_face(p)).map(|p| (p, pattern.pick(salt, p))).collect(),
-            (Some(_), "set") => Self::shape_positions(&shape, &c).into_iter().map(|p| (p, pattern.pick(salt, p))).collect(),
+            (None, "set") => c.positions().map(|p| (p, pattern.pick_with(&*world, salt, p))).collect(),
+            (None, "walls") => c.positions().filter(|&p| c.is_wall(p)).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect(),
+            (None, "faces" | "outline") => c.positions().filter(|&p| c.is_face(p)).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect(),
+            (Some(_), "set") => Self::shape_positions(&shape, &c).into_iter().map(|p| (p, pattern.pick_with(&*world, salt, p))).collect(),
             // A shape's walls and faces: the blocks with a neighbour outside it (walls look at the four sides only).
             (Some(sh), "walls" | "faces" | "outline") => {
                 let sides: &[Pos] = if name == "walls" { &[[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]] } else { &[[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]] };
-                Self::shape_positions(&shape, &c).into_iter().filter(|&p| sides.iter().any(|d| !sh.contains([p[0] + d[0], p[1] + d[1], p[2] + d[2]]))).map(|p| (p, pattern.pick(salt, p))).collect()
+                Self::shape_positions(&shape, &c).into_iter().filter(|&p| sides.iter().any(|d| !sh.contains([p[0] + d[0], p[1] + d[1], p[2] + d[2]]))).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect()
             }
-            _ => c.center().positions().map(|p| (p, pattern.pick(salt, p))).collect(),
+            _ => c.center().positions().map(|p| (p, pattern.pick_with(&*world, salt, p))).collect(),
         };
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![match name {
@@ -2083,7 +2112,7 @@ impl Engine {
         let pattern = self.pattern(world, actor, Some(to))?;
         let salt = self.salt(actor);
         let shape = self.shape_of(actor);
-        let ops: Vec<(Pos, StateId)> = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits(world, s))).map(|p| (p, pattern.pick(salt, p))).collect();
+        let ops: Vec<(Pos, StateId)> = Self::shape_positions(&shape, &c).into_iter().filter(|&p| world.get(p).is_some_and(|s| mask.hits_at(world, p, s))).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been replaced.{note}")])
     }
@@ -2167,7 +2196,7 @@ impl Engine {
         let salt = self.salt(actor);
         let points = shapes::line(a, b, thickness, !args.flag('h'));
         let (lo, hi) = (world.min_y(), world.max_y());
-        let ops = points.into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
+        let ops = points.into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been changed.{note}")])
     }
@@ -2189,7 +2218,7 @@ impl Engine {
         self.check_radius(&[thickness])?;
         let salt = self.salt(actor);
         let (lo, hi) = (world.min_y(), world.max_y());
-        let ops = shapes::spline(&points, thickness, !args.flag('h')).into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
+        let ops = shapes::spline(&points, thickness, !args.flag('h')).into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been changed.{note}")])
     }
@@ -2367,7 +2396,7 @@ impl Engine {
         }
         let salt = self.salt(actor);
         let (lo, hi) = (world.min_y(), world.max_y());
-        let ops = positions.into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick(salt, p))).collect();
+        let ops = positions.into_iter().filter(|p| (lo..=hi).contains(&p[1])).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         self.commit(world, actor, ops)
     }
 
@@ -2482,8 +2511,8 @@ impl Engine {
                 return Err(format!("The area is {} blocks; one edit handles at most {SCAN_LIMIT}", cube.volume()));
             }
             for q in cube.positions() {
-                if mask.as_ref().is_none_or(|m| world.get(q).is_some_and(|s| m.hits(world, s))) {
-                    ops.push((q, pattern.as_ref().map_or(air, |pt| pt.pick(salt, q))));
+                if mask.as_ref().is_none_or(|m| world.get(q).is_some_and(|s| m.hits_at(world, q, s))) {
+                    ops.push((q, pattern.as_ref().map_or(air, |pt| pt.pick_with(&*world, salt, q))));
                 }
             }
         }
@@ -2533,7 +2562,7 @@ impl Engine {
                 None => Pattern::single(world.resolve(&crate::horizon_worldedit_core::block::BlockState::air()).unwrap_or(0), "air"),
             };
             let salt = self.salt(actor);
-            let ops = Self::shape_positions(&shape, &c).into_iter().map(|p| (p, leave.pick(salt, p))).collect();
+            let ops = Self::shape_positions(&shape, &c).into_iter().map(|p| (p, leave.pick_with(&*world, salt, p))).collect();
             note = self.commit(world, actor, ops)?.1;
         }
         Ok(vec![format!("{affected} blocks affected{note}"), format!("{biome_columns} biomes affected"), format!("{mobs} entities affected")])
@@ -2555,7 +2584,7 @@ impl Engine {
             if let Some(text) = args.value('m') {
                 let mask = Mask::parse(world, text, actor.held.as_deref())?;
                 let w: &dyn World = &*world;
-                writes.retain(|(_, s)| mask.hits(w, *s));
+                writes.retain(|(p, s)| mask.hits_at(w, *p, *s));
             }
             let affected = writes.len();
             let entities = clip.entities_for(at, &writes);
@@ -3081,6 +3110,7 @@ impl Engine {
     pub fn brush_use(&mut self, world: &mut dyn World, actor: &Actor, pos: Option<Pos>, now_ms: i64) -> Option<Reply> {
         let item = actor.held.clone()?;
         let mut brush = self.sessions.get(actor.uuid).brushes.get(&item)?.clone();
+        self.enter_session(actor, brush.mask.as_deref().unwrap_or(""));
         // `/size`: the radius the player set replaces the one the brush was bound with.
         self.apply_size(actor, &item, &mut brush.shape);
         self.now_ms = now_ms;
@@ -3143,7 +3173,7 @@ impl Engine {
             }
             if let Some(m) = &source {
                 let w: &dyn World = &*world;
-                writes.retain(|(_, s)| m.hits(w, *s));
+                writes.retain(|(p, s)| m.hits_at(w, *p, *s));
             }
             let entities = clip.entities_for(at, &writes);
             let plan = clip.extras_plan(at, *paste_mobs, *paste_biomes);
@@ -3179,10 +3209,10 @@ impl Engine {
         }
         let salt = self.salt(actor);
         let (lo, hi) = (world.min_y(), world.max_y());
-        let keep = |p: &Pos, world: &dyn World| (lo..=hi).contains(&p[1]) && mask.as_ref().is_none_or(|m| world.get(*p).is_some_and(|s| m.hits(world, s)));
+        let keep = |p: &Pos, world: &dyn World| (lo..=hi).contains(&p[1]) && mask.as_ref().is_none_or(|m| world.get(*p).is_some_and(|s| m.hits_at(world, *p, s)));
         let ops: Vec<(Pos, StateId)> = match (&brush.shape, &brush.pattern) {
-            (BrushShape::Sphere { radius, hollow }, Some(p)) => shapes::sphere(target, [*radius; 3], *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),
-            (BrushShape::Cylinder { radius, height, hollow }, Some(p)) => shapes::cylinder(target, [*radius; 2], *height, *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick(salt, q))).collect(),
+            (BrushShape::Sphere { radius, hollow }, Some(p)) => shapes::sphere(target, [*radius; 3], *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick_with(&*world, salt, q))).collect(),
+            (BrushShape::Cylinder { radius, height, hollow }, Some(p)) => shapes::cylinder(target, [*radius; 2], *height, *hollow).into_iter().filter(|q| keep(q, world)).map(|q| (q, p.pick_with(&*world, salt, q))).collect(),
             (BrushShape::Smooth { radius, iterations }, _) => {
                 let r = radius.ceil() as i32;
                 let region = Cuboid::new(sub(target, [r, r, r]), [target[0] + r, target[1] + r, target[2] + r]);
@@ -3208,7 +3238,7 @@ impl Engine {
                         let r = ((h ^ (h >> 33)) >> 11) as f64 / (1u64 << 53) as f64;
                         r > dist / sq * d * 2.0
                     })
-                    .map(|q| (q, p.pick(salt, q)))
+                    .map(|q| (q, p.pick_with(&*world, salt, q)))
                     .collect()
             }
             (BrushShape::Gravity { radius, height }, _) => {
@@ -3248,7 +3278,7 @@ impl Engine {
                 };
                 let cells: Vec<Pos> = cells.into_iter().filter(|q| keep(q, world)).collect();
                 match (kind, fill) {
-                    (0, Some(p)) => cells.into_iter().map(|q| (q, p.pick(salt, q))).collect(),
+                    (0, Some(p)) => cells.into_iter().map(|q| (q, p.pick_with(&*world, salt, q))).collect(),
                     // Deform "y-=1" / "y+=1" in raw coordinates: each block takes the one below (above).
                     (k, _) => {
                         let dy = if *k == 1 { -1 } else { 1 };

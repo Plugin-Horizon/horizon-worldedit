@@ -85,7 +85,7 @@ impl Engine {
         let visitable = |from: Pos, to: Pos| (recursive || from[1] == origin[1] || to[1] < from[1]) && open(to);
         let found = search(&[origin], if recursive { &SIX } else { &NOT_UP }, &visitable)?;
         let salt = self.salt(actor);
-        let ops = found.into_iter().map(|p| (p, pattern.pick(salt, p))).collect();
+        let ops = found.into_iter().map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been filled.{note}")])
     }
@@ -365,7 +365,7 @@ impl Engine {
         let mask = Mask::parse(world, if text.is_empty() { "#existing" } else { &text }, actor.held.as_deref())?;
         let mut found: Option<(Pos, Pos)> = None;
         for p in c.positions() {
-            if world.get(p).is_some_and(|s| mask.hits(world, s)) {
+            if world.get(p).is_some_and(|s| mask.hits_at(world, p, s)) {
                 found = Some(match found {
                     None => (p, p),
                     Some((lo, hi)) => (std::array::from_fn(|a| lo[a].min(p[a])), std::array::from_fn(|a| hi[a].max(p[a]))),

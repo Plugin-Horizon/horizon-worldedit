@@ -642,7 +642,7 @@ pub(super) fn apply_biome(world: &mut dyn World, c: &Cuboid, biome: &str, mask: 
     let mut done: HashSet<Pos> = HashSet::new();
     for p in c.positions() {
         let Some(s) = world.get(p) else { continue };
-        if !mask.hits(&*world, s) {
+        if !mask.hits_at(&*world, p, s) {
             continue;
         }
         affected += 1;

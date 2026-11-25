@@ -16,6 +16,7 @@ pub mod config;
 pub mod edit;
 pub mod engine;
 pub mod heightmap;
+pub mod legacy;
 pub mod nbt;
 pub mod ops;
 pub mod pattern;
