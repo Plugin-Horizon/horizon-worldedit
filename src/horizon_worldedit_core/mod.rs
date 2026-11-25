@@ -19,6 +19,7 @@ pub mod heightmap;
 pub mod legacy;
 pub mod nbt;
 pub mod ops;
+pub mod paste;
 pub mod pattern;
 pub mod region;
 pub mod schem;

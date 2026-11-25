@@ -337,7 +337,15 @@ impl Engine {
                 text.push_str(&format!("\nplayers with a session: {}\n", self.sessions.len()));
                 std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("report.txt"), text)).map_err(|e| format!("Failed to write report: {}", e.kind()))?;
                 let shown = dir.file_name().map_or_else(|| "report.txt".to_owned(), |d| format!("{}/report.txt", d.to_string_lossy()));
-                Ok(vec![format!("WorldEdit report written to {shown}")])
+                let mut lines = vec![format!("WorldEdit report written to {shown}")];
+                if args.flag('p') {
+                    self.permitted(actor, Some("worldedit.report.pastebin"))?;
+                    let text = std::fs::read_to_string(dir.join("report.txt")).map_err(|e| format!("Failed to write report: {}", e.kind()))?;
+                    let meta = crate::horizon_worldedit_core::paste::Meta { name: None, author: Some(&actor.name), extension: Some("report") };
+                    let url = crate::horizon_worldedit_core::paste::upload(&self.paste_base, &text, &meta)?;
+                    lines.push(format!("WorldEdit report: {url}.report"));
+                }
+                Ok(lines)
             }
             "trace" => {
                 let wanted = match args.get(1).map(str::to_ascii_lowercase).as_deref() {

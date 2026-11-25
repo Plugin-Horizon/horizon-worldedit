@@ -1651,3 +1651,46 @@ fn block_strings_follow_the_block_parser() {
         assert_eq!(Pattern::parse(&w, spec, None).unwrap_err(), message, "{spec}");
     }
 }
+
+/// A paste service that answers the sign request, then takes the PUT; it hands back what it was sent.
+fn fake_paste() -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let t = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for i in 0..2 {
+            let (mut s, _) = l.accept().unwrap();
+            let mut buf = vec![0u8; 1 << 16];
+            let n = s.read(&mut buf).unwrap();
+            seen.push(String::from_utf8_lossy(&buf[..n]).to_string());
+            let (status, body) = if i == 0 { ("200 OK", format!("{{\"viewUrl\":\"https://paste.test/abc\",\"uploadUrl\":\"http://127.0.0.1:{port}/up\",\"headers\":{{}}}}")) } else { ("204 No Content", String::new()) };
+            write!(s, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        seen
+    });
+    (format!("http://127.0.0.1:{port}"), t)
+}
+
+#[test]
+fn schem_share_uploads_the_clipboard_and_report_p_the_report() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(1);
+    assert_eq!(fails(&mut e, &mut w, &a, "/schem share"), "Your clipboard is empty. Use //copy first.");
+    run(&mut e, &mut w, &a, "//pos 0,64,0 1,64,1");
+    run(&mut e, &mut w, &a, "//copy");
+    let (base, t) = fake_paste();
+    e.paste_base = base;
+    assert_eq!(run(&mut e, &mut w, &a, "/schem share house"), "https://paste.test/abc.schem");
+    let seen = t.join().unwrap();
+    let low = seen[0].to_ascii_lowercase();
+    assert!(low.contains("x-paste-meta-name: house") && low.contains("x-paste-meta-extension: schem") && low.contains("x-paste-meta-author: builder1"), "{}", seen[0]);
+    assert!(seen[1].starts_with("PUT /up"));
+    assert!(fails(&mut e, &mut w, &a, "/schem share house ehpaste litematic").contains("does not support the \"litematic\" format"));
+    let (base, t) = fake_paste();
+    e.paste_base = base;
+    let text = run(&mut e, &mut w, &a, "/we report -p");
+    assert!(text.ends_with("WorldEdit report: https://paste.test/abc.report"), "{text}");
+    assert!(t.join().unwrap()[0].to_ascii_lowercase().contains("x-paste-meta-extension: report"));
+}

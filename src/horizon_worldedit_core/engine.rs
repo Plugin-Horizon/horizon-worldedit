@@ -203,6 +203,9 @@ pub const NODES: &[&str] = &[
     "worldedit.update",
     "worldedit.wand.toggle",
     "worldedit.timeout.unrestricted",
+    "worldedit.clipboard.share",
+    "worldedit.schematic.share",
+    "worldedit.report.pastebin",
     "worldedit.override.data-cycler",
     "worldedit.inventory.unrestricted",
 ];
@@ -593,7 +596,7 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["tracemask"], "", &["", "<filter:mask>"]),
     (&["superpickaxe", "pickaxe", "sp"], "", &["single", "area <range:integer>", "recursive <range:integer>", "recur <range:integer>"]),
     (&["tool"], "", &["none", "unbind", "selwand", "info", "navwand", "cycler", "farwand", "tree", "tree <type:word>", "deltree", "stacker", "stacker <range:integer>", "stacker <range:integer> <mask:mask>", "lrbuild <primary:pattern> <secondary:pattern>", "repl <pattern:pattern>", "floodfill <pattern:pattern> <range:integer>", "flood <pattern:pattern> <range:integer>"]),
-    (&["we", "worldedit"], "", &["reload", "report", "trace", "cui", "ver", "version", "tz <timezone:word>", "help", "help <command:command>"]),
+    (&["we", "worldedit"], "", &["reload", "report", "report -p", "trace", "cui", "ver", "version", "tz <timezone:word>", "help", "help <command:command>"]),
     (&["fixwater", "fixlava"], "", &["<radius:number>"]),
     (&["drain"], "w", &["{flags} <radius:number>"]),
     (&["fillr"], "", &["<pattern:pattern> <radius:number>", "<pattern:pattern> <radius:number> <depth:integer>"]),
@@ -897,7 +900,8 @@ fn flag_spec(name: &str) -> (&'static str, &'static str) {
         "registry" => ("p", "p"),
         "snapshot" | "snap" => ("p", "p"),
         "help" => ("sp", "sp"),
-        "report" => ("p", ""),
+        "report" => ("p", "p"),
+        "we" | "worldedit" => ("p", "p"),
         _ => ("", ""),
     }
 }
@@ -1155,6 +1159,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "schem" | "schematic" => match args.get(0).map(|s| s.to_ascii_lowercase()).as_deref() {
             Some("load") => "worldedit.clipboard.load|worldedit.schematic.load",
             Some("save") => "worldedit.clipboard.save|worldedit.schematic.save",
+            Some("share") => "worldedit.clipboard.share|worldedit.schematic.share",
             Some("delete" | "d") => "worldedit.schematic.delete",
             Some("formats" | "listformats" | "f") => "worldedit.schematic.formats",
             _ => "worldedit.schematic.list",
@@ -1312,6 +1317,8 @@ pub struct Engine {
     cui_off: BTreeSet<u128>,
     /// How many blocks the edits of the command being run changed (for `debug`'s timing line).
     changed_now: usize,
+    /// The paste service `/we report -p` and `/schem share` upload to.
+    pub paste_base: String,
     /// The inventory change and the blocks missing from a bag edit, by player, until `take_bag` hands them over.
     bag: HashMap<u128, (std::collections::BTreeMap<String, i64>, std::collections::BTreeMap<String, u32>)>,
 }
@@ -1336,6 +1343,7 @@ impl Engine {
             now_ms: 0,
             cui_off: BTreeSet::new(),
             changed_now: 0,
+            paste_base: crate::horizon_worldedit_core::paste::SERVICE.to_owned(),
             bag: HashMap::new(),
         }
     }
@@ -2817,6 +2825,28 @@ impl Engine {
                 }
                 self.sessions.get(actor.uuid).clipboard = Some(clip);
                 Ok(out)
+            }
+            Some("share") => {
+                // `/schem share [name] [destination] [format]`: the clipboard to the EngineHub paste service.
+                let clip = self.sessions.get(actor.uuid).clipboard.as_ref().ok_or("Your clipboard is empty. Use //copy first.")?;
+                let name = match args.get(1) {
+                    Some(n) => n.to_owned(),
+                    None => format!("{}-{}", actor.name, env.now_ms),
+                };
+                let destination = args.get(2).unwrap_or("ehpaste").to_ascii_lowercase();
+                if !matches!(destination.as_str(), "ehpaste" | "enginehub_paste") {
+                    return Err(format!("Unknown share destination '{destination}'."));
+                }
+                if let Some(format) = args.get(3) {
+                    // The paste service takes the default format only (Sponge v2); the port writes it as Sponge v3.
+                    if !matches!(format.to_ascii_lowercase().as_str(), "sponge" | "sponge.2" | "sponge_v2" | "schem2" | "sponge.3" | "sponge_v3" | "schem3") {
+                        return Err(format!("The schematic share destination \"EngineHub Paste\" does not support the \"{format}\" format."));
+                    }
+                }
+                let bytes = encode(world, clip, env)?;
+                let meta = crate::horizon_worldedit_core::paste::Meta { name: Some(&name), author: Some(&actor.name), extension: Some("schem") };
+                let url = crate::horizon_worldedit_core::paste::upload(&self.paste_base, &crate::horizon_worldedit_core::paste::base64(&bytes), &meta)?;
+                Ok(vec![format!("{url}.schem")])
             }
             Some("save") => {
                 let name = args.rest(1);

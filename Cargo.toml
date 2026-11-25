@@ -14,3 +14,5 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 # Already in Horizon's Cargo.lock: the players' session files.
 serde_json = "1"
+# The EngineHub paste service (`/we report -p`, `/schem share`), as in the WorldGuard port.
+ureq = { version = "2", default-features = false, features = ["tls"] }
