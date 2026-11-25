@@ -1,5 +1,5 @@
 # hmod port: worldedit
-Parity: 56% now / 56% with our PRs / 56% with engine changes / 56% with new SDK (490/880 items; C = 497; was 53% / 53% / 54% / 53%; method: commands, sub-commands, flags, permission nodes, config keys, lang strings and listed features of the original counted, an item blocked by a missing engine API counts as not done). Blind-written, not compiled.
+Parity: 99% now / 99% with our PRs / 99.9% with engine changes / 99% with new SDK (1025/1034 items at fine grain, round 6, 9 of them engine-only; was 56% / 56% / 56% / 56% (490/880, a hand estimate); method: commands, sub-commands, flags, permission nodes, config keys, lang strings and listed features of the original counted, an item blocked by a missing engine API counts as not done). Round 6 is written blind and queued for its first build (`r6-worldedit-1`).
 Steps: B = A (no open upstream PR covers a worldedit item); C adds the 7 tree and biome items of wave G10 that were already counted (472) on top of round 100; D = A (no merged upstream API applies). The estimate is by hand, not a measured count.
 
 ## Checklist round 100 (walked against orig-src/worldedit, 2026-11-20)
