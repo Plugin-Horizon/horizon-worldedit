@@ -1099,7 +1099,7 @@ fn history_expires_after_its_minutes() {
 }
 
 #[test]
-fn navigation_wand_teleports_to_the_block_in_sight() {
+fn navigation_wand_left_click_jumps_to_the_block_in_sight() {
     let mut e = Engine::default();
     let mut w = FakeWorld::new();
     w.fill([-2, 63, -2], [2, 63, 2], "stone");
@@ -1107,17 +1107,17 @@ fn navigation_wand_teleports_to_the_block_in_sight() {
     a.position = [0.5, 64.0, 0.5];
     a.pitch = 90.0;
     a.held = Some("minecraft:compass".into());
-    let r = e.nav_use(&w, &a, 0).expect("the compass is the navigation wand");
+    let r = e.nav_left_click(&w, &a, false, 0).expect("the compass is the navigation wand");
     assert_eq!(r.teleport, Some([0.5, 64.0, 0.5]));
     // Another item is left to the game.
     a.held = Some("minecraft:stone".into());
-    assert!(e.nav_use(&w, &a, 0).is_none());
-    // Without the node, and not an operator: refused.
+    assert!(e.nav_left_click(&w, &a, false, 0).is_none());
+    // Without the node, and not an operator: left to the game.
     a.held = Some("minecraft:compass".into());
     a.permission = 0;
-    assert!(e.nav_use(&w, &a, 0).unwrap().text().contains("not permitted"));
+    assert!(e.nav_left_click(&w, &a, false, 0).is_none());
     a.granted.insert("worldedit.navigation.jumpto.tool".into());
-    assert_eq!(e.nav_use(&w, &a, 0).unwrap().teleport, Some([0.5, 64.0, 0.5]));
+    assert_eq!(e.nav_left_click(&w, &a, false, 0).unwrap().teleport, Some([0.5, 64.0, 0.5]));
 }
 
 #[test]
@@ -1398,4 +1398,27 @@ fn tree_deltree_stacker_lrbuild() {
     assert_eq!(w.name_at([0, 61, 0]), "minecraft:stone");
     e.tool_click(&mut w, &a, true, [0, 0, 0], 7000);
     assert_eq!(w.name_at([0, 61, 0]), "minecraft:stone", "left click: dirt goes above the stone it sees");
+}
+
+#[test]
+fn size_reaches_every_brush_with_a_radius() {
+    use crate::horizon_worldedit_core::session::BrushShape;
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(1);
+    a.held = Some("minecraft:blaze_rod".into());
+    run(&mut e, &mut w, &a, "/brush butcher 2");
+    run(&mut e, &mut w, &a, "/size 4");
+    let mut shape = BrushShape::Butcher { radius: 2.0, flags: 0 };
+    e.apply_size(&a, "minecraft:blaze_rod", &mut shape);
+    assert!(matches!(shape, BrushShape::Butcher { radius, .. } if radius == 4.0));
+    let mut shape = BrushShape::Snow { shape: 0, radius: 1.0, stack: false };
+    e.apply_size(&a, "minecraft:blaze_rod", &mut shape);
+    assert!(matches!(shape, BrushShape::Snow { radius, .. } if radius == 4.0));
+    let mut shape = BrushShape::Terrain { kind: 0, shape: 0, radius: 1.0, density: 1.0, arg: String::new(), column: false };
+    e.apply_size(&a, "minecraft:blaze_rod", &mut shape);
+    assert!(matches!(shape, BrushShape::Terrain { radius, .. } if radius == 4.0));
+    let mut shape = BrushShape::Morph { radius: 1.0, min_erode: 0, erode_iter: 0, min_dilate: 0, dilate_iter: 0 };
+    e.apply_size(&a, "minecraft:blaze_rod", &mut shape);
+    assert!(matches!(shape, BrushShape::Morph { radius, .. } if radius == 4.0));
 }

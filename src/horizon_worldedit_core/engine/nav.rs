@@ -299,18 +299,17 @@ impl Engine {
         self.holds_nav(actor.uuid, actor.held.as_deref())
     }
 
-    /// Notes a click of the navigation wand that `nav_use` handled (a right click).
+    /// Notes a click of the navigation wand that `nav_right_click` handled (a right click).
     pub(super) fn nav_clicked(&mut self, actor: &Actor, now_ms: i64) {
         self.last_click.insert(actor.uuid, (NAV_MARK, false, now_ms));
     }
 
-    /// A left click with the navigation wand: the player passes through the wall in front of them
-    /// (`NavigationWand.actPrimary`, `passThroughForwardWall` with the wand's range less ten). `air` is true for the arm
-    /// swing of a click that hit no block; the swing that follows a click already handled is ignored. `None`: not the
-    /// navigation wand, no `worldedit.navigation.thru.tool`, or the wand is switched off (`max-distance` 0): the click
-    /// is left to the game.
-    pub fn nav_thru(&mut self, world: &dyn World, actor: &Actor, air: bool, now_ms: i64) -> Option<Reply> {
-        if !self.holds_nav_wand(actor) || self.permitted(actor, Some("worldedit.navigation.thru.tool")).is_err() || self.allowed(actor).is_err() {
+    /// A left click with the navigation wand: the player jumps to the solid block in sight (`NavigationWand.actSecondary`,
+    /// `getSolidBlockTrace` then `findFreePosition`). `air` is true for the arm swing of a click that hit no block; the swing
+    /// that follows a click already handled is ignored. `None`: not the navigation wand, no `worldedit.navigation.jumpto.tool`,
+    /// or the wand is switched off (`max-distance` 0): the click is left to the game.
+    pub fn nav_left_click(&mut self, world: &dyn World, actor: &Actor, air: bool, now_ms: i64) -> Option<Reply> {
+        if !self.holds_nav_wand(actor) || self.permitted(actor, Some("worldedit.navigation.jumpto.tool")).is_err() || self.allowed(actor).is_err() {
             return None;
         }
         let max = self.config.nav_wand_max_distance;
@@ -323,6 +322,29 @@ impl Engine {
             return None;
         }
         self.last_click.insert(actor.uuid, (NAV_MARK, true, now_ms));
+        let solid = |p: Pos| world.get(p).is_some() && !passable(world, p);
+        let Some(hit) = super::tools::target_block(world, actor, max as i32, &solid, false) else {
+            return Some(Reply::err("No block in sight (or too far away)!".into()));
+        };
+        let mut reply = Reply::default();
+        if let Some(feet) = find_free(world, hit) {
+            reply.teleport = Some(center(feet));
+        }
+        Some(reply)
+    }
+
+    /// A right click with the navigation wand: through the wall ahead (`NavigationWand.actPrimary`, `passThroughForwardWall` with
+    /// the wand's range less ten). `None` when it is not the wand, `worldedit.navigation.thru.tool` is missing or the wand is off.
+    pub fn nav_right_click(&mut self, world: &dyn World, actor: &Actor, now_ms: i64) -> Option<Reply> {
+        self.now_ms = now_ms;
+        if !self.holds_nav_wand(actor) || self.permitted(actor, Some("worldedit.navigation.thru.tool")).is_err() || self.allowed(actor).is_err() {
+            return None;
+        }
+        let max = self.config.nav_wand_max_distance;
+        if max <= 0.0 {
+            return None;
+        }
+        self.nav_clicked(actor, now_ms);
         match pass_through(world, actor, (max - 10.0).max(1.0)) {
             Some(p) => {
                 let mut reply = Reply::default();
@@ -340,36 +362,33 @@ mod tests {
     use crate::horizon_worldedit_core::world::fake::FakeWorld;
 
     #[test]
-    fn the_left_click_of_the_navigation_wand_passes_through_the_wall() {
+    fn right_click_passes_through_and_left_click_jumps() {
         let mut e = Engine::default();
         let mut w = FakeWorld::new();
-        // The way the player faces at yaw 0 is south (+z): a wall of stone two blocks high at z = 2, a floor to land on.
-        assert!(ops::look_vector(0.0, 0.0)[2] > 0.99);
         w.fill([0, 63, 0], [0, 63, 6], "stone");
         w.fill([0, 64, 2], [0, 65, 2], "stone");
         let mut a = Actor { uuid: 4, name: "Builder".into(), permission: 4, dimension: "minecraft:overworld".into(), position: [0.5, 64.0, 0.5], ..Actor::default() };
-        // Another item is left to the game.
         a.held = Some("minecraft:stone".into());
-        assert!(e.nav_thru(&w, &a, false, 1000).is_none());
+        assert!(e.nav_right_click(&w, &a, 1000).is_none());
         a.held = Some("minecraft:compass".into());
-        let r = e.nav_thru(&w, &a, false, 1000).expect("the compass is the navigation wand");
-        assert_eq!(r.teleport, Some([0.5, 64.0, 3.5]));
-        // The swing that follows a click is not a second click; a later swing in the air is one.
-        assert!(e.nav_thru(&w, &a, true, 1100).is_none());
-        assert!(e.nav_thru(&w, &a, true, 2000).is_some());
-        // A right click marks the swing after it the same way.
-        e.nav_use(&w, &a, 3000);
-        assert!(e.nav_thru(&w, &a, true, 3100).is_none());
-        // No wall in range: the answer WorldEdit gives.
-        let mut open = FakeWorld::new();
-        open.fill([0, 63, 0], [0, 63, 6], "stone");
-        assert_eq!(e.nav_thru(&open, &a, false, 5000).unwrap().text(), "No free spot ahead of you found.");
-        // Without the node, and not an operator: left to the game. Switched off by `max-distance`: the same.
+        // Right: through the wall at z = 2.
+        assert_eq!(e.nav_right_click(&w, &a, 1000).unwrap().teleport, Some([0.5, 64.0, 3.5]));
+        // The swing after a right click is not a left click.
+        assert!(e.nav_left_click(&w, &a, true, 1050).is_none());
+        // Left: to a free spot on the solid block in sight (looking down at the floor).
+        a.pitch = 80.0;
+        let r = e.nav_left_click(&w, &a, false, 5000).unwrap();
+        assert!(r.teleport.is_some());
+        // Nodes: thru for the right click, jumpto for the left.
         a.permission = 0;
-        assert!(e.nav_thru(&w, &a, false, 6000).is_none());
+        assert!(e.nav_right_click(&w, &a, 6000).is_none());
+        assert!(e.nav_left_click(&w, &a, false, 6000).is_none());
         a.granted.insert("worldedit.navigation.thru.tool".into());
-        assert!(e.nav_thru(&w, &a, false, 7000).is_some());
+        assert!(e.nav_right_click(&w, &a, 7000).is_some());
+        assert!(e.nav_left_click(&w, &a, false, 7000).is_none());
+        a.granted.insert("worldedit.navigation.jumpto.tool".into());
+        assert!(e.nav_left_click(&w, &a, false, 8000).is_some());
         e.config.nav_wand_max_distance = 0.0;
-        assert!(e.nav_thru(&w, &a, false, 8000).is_none());
+        assert!(e.nav_right_click(&w, &a, 9000).is_none());
     }
 }

@@ -2929,37 +2929,6 @@ impl Engine {
         last.is_some_and(|(lp, lf, t)| lp == p && lf == first && now_ms - t < 200)
     }
 
-    /// The navigation wand (`navigation-wand.item`): a right click with that item, in the air or on a block,
-    /// teleports the player to the block in sight, to a free spot on it (WorldEdit's NavigationWand). `None` when
-    /// the held item is not the navigation wand.
-    pub fn nav_use(&mut self, world: &dyn World, actor: &Actor, now_ms: i64) -> Option<Reply> {
-        self.now_ms = now_ms;
-        let held = actor.held.clone().unwrap_or_default();
-        let tool_bound = matches!(self.sessions.get(actor.uuid).tools.get(&held), Some(Tool::NavWand));
-        if !tool_bound && actor.held.as_deref() != Some(self.config.nav_wand_item.as_str()) {
-            return None;
-        }
-        if let Err(e) = self.permitted(actor, Some("worldedit.navigation.jumpto.tool")).and(self.allowed(actor)) {
-            return Some(Reply::err(e));
-        }
-        self.nav_clicked(actor, now_ms);
-        let Some(target) = ops::raycast(world, actor.eye(), ops::look_vector(actor.yaw, actor.pitch), self.config.nav_wand_max_distance) else {
-            return Some(Reply::err("No block in sight (or too far away)!".into()));
-        };
-        // WorldEdit's findFreePosition: the first spot above the block with two free blocks, feet and head.
-        let free = |p: Pos| world.get(p).is_some_and(|s| world.is_air(s));
-        let top = world.max_y() - 1;
-        let spot = ((target[1] + 1)..=top).find(|&y| free([target[0], y, target[2]]) && free([target[0], y + 1, target[2]]));
-        match spot {
-            Some(y) => {
-                let mut reply = Reply::default();
-                reply.teleport = Some([f64::from(target[0]) + 0.5, f64::from(y), f64::from(target[2]) + 0.5]);
-                Some(reply)
-            }
-            None => Some(Reply::err("No free spot above the block in sight!".into())),
-        }
-    }
-
     /// A left (`first`) or right click on the block at `pos`: with the wand, the corner, and the
     /// click does nothing else (`Some`). `None` leaves the click to the game.
     ///

@@ -957,7 +957,7 @@ impl Hooks for Mod {
                 None => match e.tool_click(&mut world, &actor, true, pos, now_ms()) {
                     Some(r) => Some(r),
                     // The navigation wand's left click passes through the wall in front of the player.
-                    None => e.nav_thru(&world, &actor, false, now_ms()),
+                    None => e.nav_left_click(&world, &actor, false, now_ms()),
                 },
             })
         };
@@ -969,7 +969,7 @@ impl Hooks for Mod {
     }
 
     // A left click in the air sends no click event to the server, only the arm swing every click sends; the swing that
-    // follows a click `nav_thru` or `nav_use` already handled is ignored there.
+    // follows a click `nav_left_click` or `nav_right_click` already handled is ignored there.
     fn player_arm_swing(&self, host: &mut dyn ServerHost, event: &mut PlayerArmSwingEvent<'_>) {
         if event.hand != "mainhand" {
             return;
@@ -986,7 +986,7 @@ impl Hooks for Mod {
             // The far wand and the long-range build tool answer a left click in the air; the navigation wand has its own.
             we::with(|e| match e.swing_click(&mut world, &actor, now_ms()) {
                 Some(r) => Some(r),
-                None => e.nav_thru(&world, &actor, true, now_ms()),
+                None => e.nav_left_click(&world, &actor, true, now_ms()),
             })
         };
         if let Some(reply) = reply {
@@ -1014,7 +1014,7 @@ impl Hooks for Mod {
                     Some(r) => Some(r),
                     None => match e.brush_use(&mut world, &actor, Some(pos), now_ms()) {
                         Some(r) => Some(r),
-                        None => e.nav_use(&world, &actor, now_ms()),
+                        None => e.nav_right_click(&world, &actor, now_ms()),
                     },
                 },
             })
@@ -1042,7 +1042,7 @@ impl Hooks for Mod {
                 Some(r) => Some(r),
                 None => match e.brush_use(&mut world, &actor, None, now_ms()) {
                     Some(r) => Some(r),
-                    None => e.nav_use(&world, &actor, now_ms()),
+                    None => e.nav_right_click(&world, &actor, now_ms()),
                 },
             })
         };

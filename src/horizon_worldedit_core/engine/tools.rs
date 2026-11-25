@@ -378,7 +378,12 @@ impl Engine {
             | BrushShape::SnowSmooth { radius, .. }
             | BrushShape::Splatter { radius, .. }
             | BrushShape::Gravity { radius, .. }
-            | BrushShape::Region { radius, .. } => *radius = size,
+            | BrushShape::Region { radius, .. }
+            | BrushShape::Snow { radius, .. }
+            | BrushShape::Morph { radius, .. }
+            | BrushShape::Butcher { radius, .. }
+            | BrushShape::Heightmap { radius, .. }
+            | BrushShape::Terrain { radius, .. } => *radius = size,
             _ => {}
         }
     }
