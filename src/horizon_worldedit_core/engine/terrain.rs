@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     fn actor(uuid: u128) -> Actor {
-        Actor { uuid, name: format!("builder{uuid}"), permission: 2, dimension: "minecraft:overworld".into(), position: [0.5, 8.0, 0.5], yaw: 0.0, pitch: 0.0, game_mode: 1, held: None, granted: Default::default() }
+        Actor { uuid, name: format!("builder{uuid}"), inventory: None, offhand: None, permission: 2, dimension: "minecraft:overworld".into(), position: [0.5, 8.0, 0.5], yaw: 0.0, pitch: 0.0, game_mode: 1, held: None, granted: Default::default() }
     }
 
     fn env() -> Env {

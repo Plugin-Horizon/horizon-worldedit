@@ -5,7 +5,6 @@
 //! `queryRel`). Parsed once, run once per block. Identifiers are case sensitive; `e`, `pi`, `true` and `false` are constants.
 
 use super::noise;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -85,7 +84,7 @@ type Buffer = HashMap<i32, Box<[f64; 1024]>>;
 pub struct Expr {
     program: Vec<S>,
     /// The megabuffer of this expression (`megabuf`, `closest`).
-    megabuf: RefCell<Buffer>,
+    megabuf: Mutex<Buffer>,
 }
 
 impl std::fmt::Debug for Expr {
@@ -1097,7 +1096,7 @@ impl Run<'_> {
                 (noise::random() * max).floor()
             }
             "megabuf" => {
-                let mut buf = self.expr.megabuf.borrow_mut();
+                let mut buf = self.expr.megabuf.lock().unwrap_or_else(|e| e.into_inner());
                 if v.len() == 1 { buffer_get(&mut buf, v[0] as i32) } else { buffer_set(&mut buf, v[0] as i32, v[1]) }
             }
             "gmegabuf" => {
@@ -1106,7 +1105,7 @@ impl Run<'_> {
                 if v.len() == 1 { buffer_get(buf, v[0] as i32) } else { buffer_set(buf, v[0] as i32, v[1]) }
             }
             "closest" => {
-                let mut buf = self.expr.megabuf.borrow_mut();
+                let mut buf = self.expr.megabuf.lock().unwrap_or_else(|e| e.into_inner());
                 find_closest(&mut buf, [v[0], v[1], v[2]], v[3] as i32, v[4] as i32, v[5] as i32)
             }
             "gclosest" => {
@@ -1220,7 +1219,7 @@ impl Expr {
         if let Some(problem) = v.problem {
             return Err(problem);
         }
-        Ok(Expr { program, megabuf: RefCell::new(HashMap::new()) })
+        Ok(Expr { program, megabuf: Mutex::new(HashMap::new()) })
     }
 
     /// Parses `text` with no variables given by the caller.

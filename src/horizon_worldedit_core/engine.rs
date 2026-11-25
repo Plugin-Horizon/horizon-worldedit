@@ -1424,7 +1424,7 @@ impl Engine {
         let lower = hint.to_ascii_lowercase();
         let clipboard = if lower.contains("#clipboard") || lower.contains("#copy") {
             s.clipboard.as_ref().map(|c| {
-                std::rc::Rc::new(ClipView { blocks: c.blocks.iter().copied().collect(), origin: c.origin.as_ref().map_or([0; 3], |(_, o)| *o), min: c.bounds.min, size: c.bounds.size() })
+                std::sync::Arc::new(ClipView { blocks: c.blocks.iter().copied().collect(), origin: c.origin.as_ref().map_or([0; 3], |(_, o)| *o), min: c.bounds.min, size: c.bounds.size() })
             })
         } else {
             None

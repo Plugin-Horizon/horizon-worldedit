@@ -14,7 +14,7 @@ use crate::horizon_worldedit_core::selector::Shape;
 use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Splits a pattern or mask on the commas outside `[...]`, so
 /// `oak_stairs[facing=east,half=top],stone` is two entries.
@@ -259,7 +259,7 @@ pub struct Pattern {
     pub entries: Vec<(u32, StateId)>,
     total: u32,
     /// What depends on the block that stands there: `^[state]`, `*block`, `#clipboard`. `entries` then holds one placeholder.
-    dynamic: Option<Rc<Dynamic>>,
+    dynamic: Option<Arc<Dynamic>>,
     /// The block entity data of each entry (`chest{...}`, signs): the same length as `entries`, or empty when there is none.
     nbts: Vec<Option<Tag>>,
 }
@@ -268,7 +268,7 @@ pub struct Pattern {
 #[derive(Clone, Debug, PartialEq)]
 enum Dynamic {
     /// `#clipboard`, `#copy`, with an optional `@[x,y,z]` offset: the clipboard repeated over the world.
-    Tile { view: Rc<ClipView>, offset: Pos },
+    Tile { view: Arc<ClipView>, offset: Pos },
     /// `*block[state]`: any of the states that fit.
     RandomState(Vec<StateId>),
     /// `^[prop=value]`, `^block`, `^block[prop=value]`, `^pattern`: the block that stands there with the type of `base` (when
@@ -310,7 +310,7 @@ impl Pattern {
     /// `#clipboard`, `^...` and `*...`: `None` for any other input.
     fn dynamic_pattern(world: &dyn World, spec: &str, hand: Option<&str>) -> Option<Result<Self, String>> {
         let air = world.resolve(&BlockState::air()).unwrap_or(0);
-        let made = |dynamic: Dynamic| Self { text: spec.to_owned(), entries: vec![(1, air)], total: 1, dynamic: Some(Rc::new(dynamic)), nbts: Vec::new() };
+        let made = |dynamic: Dynamic| Self { text: spec.to_owned(), entries: vec![(1, air)], total: 1, dynamic: Some(Arc::new(dynamic)), nbts: Vec::new() };
         let lower = spec.to_ascii_lowercase();
         // `#clipboard`, `#copy`, each with `@[x,y,z]`.
         let (head, offset_text) = match spec.split_once('@') {
@@ -654,7 +654,7 @@ pub struct MaskCtx {
     /// The selection (`#region`, `#selection`, `#sel`); `None` when there is none.
     pub region: Option<Area>,
     /// The clipboard (`#clipboard`, `#copy`); `None` for an empty clipboard.
-    pub clipboard: Option<Rc<ClipView>>,
+    pub clipboard: Option<Arc<ClipView>>,
     /// The player's expression timeout in milliseconds (negative: none).
     pub timeout_ms: i64,
     /// The first position of the selection (`pos1` as a block name).
@@ -686,13 +686,13 @@ enum MaskEntry {
     /// `%n`: a share of the positions, n percent.
     Noise { density: f64, salt: u64 },
     /// `=expression`.
-    Expression { expr: Rc<Expr>, timeout_ms: i64 },
+    Expression { expr: Arc<Expr>, timeout_ms: i64 },
     /// `$biome,biome`.
     Biomes(Vec<String>),
     /// `#region`, `#dregion`: positions inside the selection (`None`: no selection, nothing matches).
     Area(Option<Area>),
     /// `#clipboard`: the block equals the clipboard's block at the same position.
-    Clipboard(Rc<ClipView>),
+    Clipboard(Arc<ClipView>),
     /// `##tag`: a block of the block tag.
     Tag(String),
 }
@@ -832,7 +832,7 @@ impl Mask {
         }
         if let Some(text) = body.strip_prefix('=') {
             let expr = Expr::parse_with(text, &["x", "y", "z"]).map_err(|_| Some("Invalid expression".to_owned()))?;
-            return Ok(vec![MaskEntry::Expression { expr: Rc::new(expr), timeout_ms: ctx.timeout_ms }]);
+            return Ok(vec![MaskEntry::Expression { expr: Arc::new(expr), timeout_ms: ctx.timeout_ms }]);
         }
         if let Some(tag) = body.strip_prefix("##") {
             let id = if tag.contains(':') { tag.to_ascii_lowercase() } else { format!("minecraft:{}", tag.to_ascii_lowercase()) };
