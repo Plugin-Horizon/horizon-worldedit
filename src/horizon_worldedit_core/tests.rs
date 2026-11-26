@@ -483,7 +483,7 @@ fn near_commands_and_selection_modes() {
     assert_eq!(run(&mut e, &mut w, &a, "//removeabove 1 2"), "2 blocks have been removed.");
     assert_eq!(run(&mut e, &mut w, &a, "//replacenear 2 stone dirt"), "73 blocks have been replaced.");
     assert_eq!(run(&mut e, &mut w, &a, "//removenear dirt 1"), "0 blocks have been removed.");
-    assert_eq!(fails(&mut e, &mut w, &a, "//replacenear 2"), "Usage: //replacenear <radius> [from] <to>");
+    assert_eq!(fails(&mut e, &mut w, &a, "//replacenear 2"), "Missing argument for <to>.\nUsage: /replacenear <radius> [from] <to>");
     // `//sel extend`: the second click grows the box instead of replacing the first corner.
     assert_eq!(run(&mut e, &mut w, &a, "//sel extend"), "Cuboid: left click for a starting point, right click to extend");
     assert_eq!(run(&mut e, &mut w, &a, "//pos1 0,64,0"), "Started selection at (0, 64, 0) (1).");
@@ -971,8 +971,8 @@ fn help_and_worldedit_subcommands() {
     assert_eq!(fails(&mut e, &mut w, &a, "/worldedit trace active"), "Trace mode already active.");
     assert_eq!(run(&mut e, &mut w, &a, "/we trace inactive"), "Trace mode now inactive.");
     assert_eq!(run(&mut e, &mut w, &a, "/we cui"), "");
-    assert_eq!(fails(&mut e, &mut w, &a, "/we selector"), "The sub-command 'selector' under 'worldedit' could not be found.");
-    assert_eq!(fails(&mut e, &mut w, &a, "/we limit"), "The sub-command 'limit' under 'worldedit' could not be found.");
+    assert_eq!(fails(&mut e, &mut w, &a, "/we selector"), "Invalid sub-command 'selector'. Options: help, version, trace, reload, cui, tz, report\nUsage: /we <help|version|trace|reload|cui|tz|report>");
+    assert_eq!(fails(&mut e, &mut w, &a, "/we limit"), "Invalid sub-command 'limit'. Options: help, version, trace, reload, cui, tz, report\nUsage: /we <help|version|trace|reload|cui|tz|report>");
     let tz = run(&mut e, &mut w, &a, "/we tz +01:00");
     assert!(tz.starts_with("Timezone set for this session to: +01:00\nThe current time in that timezone is: 1970-01-01 01:00:00"), "{tz}");
     assert_eq!(fails(&mut e, &mut w, &a, "/we tz bogus"), "Invalid timezone");
@@ -1051,7 +1051,7 @@ fn tools_bind_and_click() {
     // A tool and a brush never share an item.
     run(&mut e, &mut w, &a, "/brush sphere stone 2");
     assert!(e.tool_click(&mut w, &a, false, [0, 70, 0], 20_000).is_none());
-    assert_eq!(fails(&mut e, &mut w, &a, "/tool bogus"), "The sub-command 'bogus' under 'tool' could not be found.");
+    assert_eq!(fails(&mut e, &mut w, &a, "/tool bogus"), "Invalid sub-command 'bogus'. Options: selwand, farwand, navwand, floodfill, repl, info, lrbuild, tree, cycler, deltree, none, stacker\nUsage: /tool <selwand|farwand|navwand|floodfill|repl|info|lrbuild|tree|cycler|deltree|none|stacker>");
     a.held = None;
     assert_eq!(fails(&mut e, &mut w, &a, "/tool info"), "Can't bind tool to Air: Blocks can't be used.");
 }
@@ -1065,7 +1065,8 @@ fn only_operators_and_granted_nodes_get_worldedit() {
     // No node: refused everything, the wand and the commands without a node included.
     assert!(fails(&mut e, &mut w, &a, "//pos1").contains("not permitted"));
     assert!(fails(&mut e, &mut w, &a, "wand").contains("not permitted"));
-    assert!(fails(&mut e, &mut w, &a, "//version").contains("not permitted"));
+    // `/we version` is registered without a permission (WorldEditCommands.version).
+    assert!(!e.command(&mut w, &a, "//version", &env("none")).denied);
     // The selection node gives the selection, and not a change of the region.
     a.granted.insert("worldedit.selection.pos".into());
     run(&mut e, &mut w, &a, "//pos1 0,64,0");
@@ -1699,4 +1700,79 @@ fn schem_share_uploads_the_clipboard_and_report_p_the_report() {
     let text = run(&mut e, &mut w, &a, "/we report -p");
     assert!(text.ends_with("WorldEdit report: https://paste.test/abc.report"), "{text}");
     assert!(t.join().unwrap()[0].to_ascii_lowercase().contains("x-paste-meta-extension: report"));
+}
+
+// Piston's argument errors, the Paper strings of the b9c compare (single-slash names; lines are joined with newlines here,
+// the compare joins them with " | ").
+#[test]
+fn paper_argument_errors() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(40);
+    let mut f = |line: &str| fails(&mut e, &mut w, &a, line).replace('\n', " | ");
+    assert_eq!(f("/fixlava"), "Missing argument for <radius>. | Usage: /fixlava <radius>");
+    assert_eq!(f("/fixlava help"), "Invalid value for <radius> (For input string: \"help\"), acceptable values are any double | Usage: /fixlava <radius>");
+    assert_eq!(f("/ex help"), "Invalid value for [radius] (For input string: \"help\"), acceptable values are any integer | Usage: /ex [radius]");
+    assert_eq!(f("/asc help"), "Invalid value for [levels] (For input string: \"help\"), acceptable values are any integer | Usage: /asc [levels]");
+    assert_eq!(f("/up"), "Missing argument for <distance>. | Usage: /up [-fg] <distance>");
+    assert_eq!(f("/up help"), "Invalid value for <distance> (For input string: \"help\"), acceptable values are any integer | Usage: /up [-fg] <distance>");
+    assert_eq!(f("/ceil help"), "Invalid value for [clearance] (For input string: \"help\"), acceptable values are any integer | Usage: /ceil [-fg] [clearance]");
+    assert_eq!(f("/rem"), "Missing argument for <remover>. | Usage: /rem <remover> <radius>");
+    assert_eq!(f("/replacenear"), "Missing argument for <radius>. | Usage: /replacenear <radius> [from] <to>");
+    assert_eq!(f("/range"), "Missing argument for <range>. | Usage: /range <range>");
+    assert_eq!(f("/size help"), "Invalid value for <size> (For input string: \"help\"), acceptable values are any integer | Usage: /size <size>");
+    assert_eq!(f("/pumpkins help"), "Invalid value for [size] (For input string: \"help\"), acceptable values are any integer | Usage: /pumpkins [size]");
+    assert_eq!(f("/snow help"), "Invalid value for [height] (For input string: \"help\"), acceptable values are Any integer | Usage: /snow [-s] [size] [height]");
+    assert_eq!(f("/thaw help"), "Invalid value for [height] (For input string: \"help\"), acceptable values are Any integer | Usage: /thaw [size] [height]");
+    assert_eq!(f("/forestgen 5 oak help"), "Invalid value for [density] (For input string: \"help\"), acceptable values are any double | Usage: /forestgen [size] [type] [density]");
+    assert_eq!(f("/material"), "Missing argument for <pattern>. | Usage: /material <pattern>");
+    assert_eq!(f("/material help"), "Invalid value for <pattern> (Block name 'help' was not recognized.), acceptable values are any pattern | Usage: /material <pattern>");
+    assert_eq!(f("/flood"), "Missing argument for <pattern>. | Usage: /flood <pattern> <range>");
+    assert_eq!(f("/lrbuild"), "Missing argument for <primary>. | Usage: /lrbuild <primary> <secondary>");
+    assert_eq!(f("/gmask help"), "Invalid value for [mask] (No match for 'help'.), acceptable values are any mask | Usage: /gmask [mask]");
+    assert_eq!(f("/mask help"), "Invalid value for [mask] (No match for 'help'.), acceptable values are any mask | Usage: /mask [mask]");
+    assert_eq!(f("/searchitem"), "Missing argument for <query...>. | Usage: /searchitem [-bi] [-p <page>] <query...>");
+    for c in ["chunkinfo", "toggleeditwand", "info", "navwand", "farwand", "cycler", "deltree", "selwand", "j", "jumpto", "thru", "unstuck", "toggleplace"] {
+        assert_eq!(f(&format!("/{c} help")), format!("Too many arguments. | Usage: /{c}"), "{c}");
+    }
+    assert_eq!(f("/listchunks help"), "Too many arguments. | Usage: /listchunks [-p <page>]");
+    assert_eq!(f("/biomelist help"), "Too many arguments. | Usage: /biomelist [-p <page>]");
+    assert_eq!(f("/butcher help"), "Invalid value for [radius] (For input string: \"help\"), acceptable values are any integer | Usage: /butcher [-abfgnprtw] [radius]");
+}
+
+#[test]
+fn paper_group_commands() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(41);
+    let mut f = |line: &str| fails(&mut e, &mut w, &a, line).replace('\n', " | ");
+    assert_eq!(f("/tool"), "No sub-command provided. Options: selwand, farwand, navwand, floodfill, repl, info, lrbuild, tree, cycler, deltree, none, stacker | Usage: /tool <selwand|farwand|navwand|floodfill|repl|info|lrbuild|tree|cycler|deltree|none|stacker>");
+    assert_eq!(f("/we"), "No sub-command provided. Options: help, version, trace, reload, cui, tz, report | Usage: /we <help|version|trace|reload|cui|tz|report>");
+    assert_eq!(f("/schem"), "No sub-command provided. Options: list, formats, load, delete, save, share | Usage: /schem <list|formats|load|delete|save|share>");
+    assert_eq!(f("/snap"), "No sub-command provided. Options: before, use, sel, after, list | Usage: /snap <before|use|sel|after|list>");
+    assert_eq!(f("/sp help"), "Invalid sub-command 'help'. Options: single, area, recursive | Usage: /sp <single|area|recursive>");
+    assert_eq!(f("/pickaxe"), "No sub-command provided. Options: single, area, recursive | Usage: /pickaxe <single|area|recursive>");
+    assert!(f("/brush help").starts_with("Invalid sub-command 'help'. Options: forest, splatter, butcher, paint, none,"));
+    // A tool named globally says so first.
+    let mut a2 = actor(42);
+    a2.held = None;
+    assert_eq!(fails(&mut e, &mut w, &a2, "/navwand").replace('\n', " | "), "Global tool names cause conflicts and will be removed in WorldEdit 8. Please use /tool navwand instead. | Can't bind tool to Air: Blocks can't be used.");
+    assert_eq!(run(&mut e, &mut w, &a2, "/none"), "Global tool names cause conflicts and will be removed in WorldEdit 8. Please use /tool none instead.\nYour current item is not bound.");
+}
+
+#[test]
+fn players_without_the_permission_get_unknown_command() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let mut a = actor(43);
+    a.permission = 0;
+    for line in ["/fixlava 3", "/ex", "/schem list", "/up 1", "/rem all 5", "/snap list", "/sp single", "/desel"] {
+        let r = e.command(&mut w, &a, line, &env("none"));
+        assert!(r.denied, "{line}");
+    }
+    // Without any permission node: these still run.
+    for line in ["/toggleplace", "/none", "/tool", "/we", "/brush", "/;"] {
+        let r = e.command(&mut w, &a, line, &env("none"));
+        assert!(!r.denied, "{line}: {}", r.text());
+    }
 }

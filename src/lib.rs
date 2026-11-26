@@ -453,6 +453,38 @@ fn complete_line(host: &dyn ServerHost, command: &str) -> Option<Vec<(usize, Str
     Some(out)
 }
 
+/// Words WorldEdit completes that the usages do not list: (root, words) for the first argument, or the second word of a
+/// group (`/schem share`).
+fn extra_words(root: &str, command: &str) -> Vec<String> {
+    // Only the word right after the root.
+    if command.matches(' ').count() != 1 {
+        return Vec::new();
+    }
+    let typed = command.rsplit(' ').next().unwrap_or("").to_ascii_lowercase();
+    let list: &[&str] = match root {
+        "," => &["off", "on"],
+        ";" => &["convex", "cuboid", "cyl", "ellipsoid", "extend", "list", "poly", "polyextend", "sphere"],
+        "rem" | "rement" | "remove" => &["all", "boats", "itemframes", "items", "minecarts", "paintings", "projectiles", "tnt", "xp"],
+        "schem" | "schematic" | "/schem" | "/schematic" => &["share"],
+        _ => &[],
+    };
+    list.iter().filter(|w| w.starts_with(&typed)).map(|w| (*w).to_owned()).collect()
+}
+
+/// The spellings the mod's usages carry that WorldEdit does not complete: the second word of a group command.
+fn hidden_words(root: &str, command: &str) -> Vec<&'static str> {
+    if command.matches(' ').count() != 1 {
+        return Vec::new();
+    }
+    match root {
+        "brush" | "br" => vec!["copy", "ex", "unbind"],
+        "tool" => vec!["flood", "unbind"],
+        "we" | "worldedit" => vec!["ver"],
+        "pickaxe" | "sp" | "superpickaxe" => vec!["recur"],
+        _ => Vec::new(),
+    }
+}
+
 // --- the level in place ------------------------------------------------------------------------
 
 /// The level the editor edits, as the core's `World`. Built per call from the host, since the host
@@ -1115,6 +1147,12 @@ impl Hooks for Mod {
         ensure_block_ids(&*host);
         let actor = actor_of(&mut *host, player);
         let reply = execute(&mut *host, &actor, event.command);
+        if reply.denied {
+            // A player without the permission is answered as for an unknown command (the commands are hidden from them).
+            event.replies.push(Text::translate("command.unknown.command", vec![]));
+            event.replies.push(Text::literal(event.command.trim_start_matches('/').to_owned()).append(Text::translate("command.context.here", vec![])));
+            return Flow::Cancel;
+        }
         event.replies.extend(reply.lines.iter().map(line));
         event.replies.extend(settle_bag(&mut *host, player, actor.uuid).into_iter().map(Text::literal));
         if let Some(to) = reply.teleport {
@@ -1173,7 +1211,9 @@ impl Hooks for Mod {
             }
             return;
         };
-        if !we_roots().contains(&command[..first_space].to_ascii_lowercase()) {
+        let root = command[..first_space].trim_start_matches('/').to_ascii_lowercase();
+        let extra = extra_words(&root, command);
+        if !we_roots().contains(&command[..first_space].to_ascii_lowercase()) && extra.is_empty() {
             return;
         }
         // Nothing of WorldEdit (not even a schematic name) for a player who may not use it.
@@ -1181,15 +1221,28 @@ impl Hooks for Mod {
             event.suggestions.clear();
             return;
         }
-        let Some(words) = complete_line(&*host, command) else { return };
         let (from, to) = (event.range[0], event.range[1]);
-        for (start, word) in words {
-            // The engine's range may begin before the word (it took the rest of the line for one argument).
-            let text = if start >= from { format!("{}{}", &command[from..start], word) } else { word };
-            if !event.suggestions.iter().any(|s| s.text == text) {
-                event.suggestions.push(Suggestion::new((from, to), text));
+        if let Some(words) = complete_line(&*host, command) {
+            for (start, word) in words {
+                // The engine's range may begin before the word (it took the rest of the line for one argument).
+                let text = if start >= from { format!("{}{}", &command[from..start], word) } else { word };
+                if !event.suggestions.iter().any(|s| s.text == text) {
+                    event.suggestions.push(Suggestion::new((from, to), text));
+                }
             }
         }
+        for word in extra {
+            if !event.suggestions.iter().any(|s| s.text == word) {
+                event.suggestions.push(Suggestion::new((from, to), word));
+            }
+        }
+        // WorldEdit lists no flags and none of this mod's extra spellings.
+        let typing_flag = command.rsplit(' ').next().is_some_and(|w| w.starts_with('-'));
+        let hidden = hidden_words(&root, command);
+        event.suggestions.retain(|s| {
+            let last = s.text.rsplit(' ').next().unwrap_or("");
+            (typing_flag || !last.starts_with('-')) && !hidden.contains(&last)
+        });
     }
 
     fn left_click_block(&self, host: &mut dyn ServerHost, event: &mut LeftClickBlockEvent) -> Flow {

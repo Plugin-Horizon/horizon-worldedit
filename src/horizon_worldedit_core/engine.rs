@@ -27,6 +27,8 @@ mod logging;
 mod more;
 mod nav;
 mod noise;
+mod paper;
+mod usage_table;
 mod select;
 mod snap;
 mod terrain;
@@ -280,14 +282,16 @@ pub struct Reply {
     pub give: Vec<String>,
     /// Where to teleport the player (the navigation wand), feet position.
     pub teleport: Option<[f64; 3]>,
+    /// The actor may not use the command: the player is answered as for an unknown command.
+    pub denied: bool,
 }
 
 impl Reply {
     fn ok(lines: Vec<String>) -> Self {
-        Self { lines: lines.into_iter().map(|text| Line { text, error: false }).collect(), give: Vec::new(), teleport: None }
+        Self { lines: lines.into_iter().map(|text| Line { text, error: false }).collect(), give: Vec::new(), teleport: None, denied: false }
     }
     fn err(text: String) -> Self {
-        Self { lines: vec![Line { text, error: true }], give: Vec::new(), teleport: None }
+        Self { lines: vec![Line { text, error: true }], give: Vec::new(), teleport: None, denied: false }
     }
     pub fn text(&self) -> String {
         self.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n")
@@ -760,7 +764,7 @@ fn roots(name: &str) -> Vec<String> {
 /// forms are vanilla's. `/!` is single only.
 pub fn form_allows(line: &str, double: bool) -> bool {
     let name = line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-    if name == "!" || name == "," {
+    if name == "!" || name == "," || name == ";" {
         return !double;
     }
     // `//` alone toggles the super pickaxe; `/size <number>` is the brush size (`//size` is the selection's).
@@ -825,7 +829,7 @@ pub fn is_command(line: &str) -> bool {
     let name = line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
     // `/!` is `/unstuck`; it cannot be a registered word.
     // `/,` and `//` toggle the super pickaxe (neither is a word the game could register).
-    let toggle = name == "," || (line.starts_with('/') && name.is_empty());
+    let toggle = name == "," || name == ";" || (line.starts_with('/') && name.is_empty());
     name == "!" || toggle || COMMANDS.iter().any(|(n, _)| *n == name) || is_shadowed(line)
 }
 
@@ -1079,7 +1083,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("reload") => "worldedit.reload",
             Some("report") => "worldedit.report",
             Some("help") => "worldedit.help",
-            _ => return None,
+            _ => return Some(String::new()),
         },
         "tool" => match args.get(0).map(|s| s.to_ascii_lowercase()).as_deref() {
             Some("selwand" | "/selwand") => "worldedit.setwand",
@@ -1093,11 +1097,13 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             Some("floodfill" | "flood") => "worldedit.tool.flood-fill",
             Some("farwand") => "worldedit.tool.farwand",
             Some("navwand" | "/navwand") => "worldedit.setwand",
-            _ => return None,
+            _ => return Some(String::new()),
         },
-        "none" => return None,
-        "sel" | "desel" | "deselect" => "worldedit.selection.sel",
-        "version" | "ver" => return None,
+        "none" => return Some(String::new()),
+        // `/sel` (and its alias `;`) is registered without a permission.
+        "sel" => return Some(String::new()),
+        "desel" | "deselect" => "worldedit.selection.sel",
+        "version" | "ver" => return Some(String::new()),
         "trim" => "worldedit.selection.trim",
         "help" => "worldedit.help",
         "wand" => "worldedit.wand",
@@ -1165,6 +1171,8 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             _ => "worldedit.schematic.list",
         },
         "brush" | "br" => match args.get(0).map(|s| s.to_ascii_lowercase()).as_deref() {
+            // The group has sub-commands that need no permission (`forest`, `set`): it runs bare.
+            None => return Some(String::new()),
             Some("sphere" | "s") => "worldedit.brush.sphere",
             Some("cylinder" | "cyl" | "c") => "worldedit.brush.cylinder",
             Some("smooth") => "worldedit.brush.smooth",
@@ -1199,7 +1207,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
         "extinguish" => "worldedit.extinguish",
         "limit" => "worldedit.limit",
         "gmask" => "worldedit.global-mask",
-        "toggleplace" => return None,
+        "toggleplace" => return Some(String::new()),
         "placement" => "worldedit.placement",
         "up" => "worldedit.navigation.up",
         "ascend" => "worldedit.navigation.ascend",
@@ -1363,6 +1371,10 @@ impl Engine {
     /// the level the node needs (`node_levels`, else `permission_level`) may; anyone else needs the node granted
     /// by the permission system (`Actor::granted`). No other player gets WorldEdit.
     fn permitted(&self, actor: &Actor, node: Option<&str>) -> Result<(), String> {
+        // An empty node: the command is registered without a permission.
+        if node == Some("") {
+            return Ok(());
+        }
         let nodes: Vec<&str> = node.map(|n| n.split('|').collect()).unwrap_or_default();
         let level = nodes.iter().map(|n| self.node_level(n)).min().unwrap_or(self.config.permission_level);
         // `no-op-permissions`: operators are held to the permission system like everyone else (a level of 0 is everyone).
@@ -1449,12 +1461,20 @@ impl Engine {
             words.push("togglepickaxe");
         } else if words.first().is_some_and(|w| *w == ",") {
             words[0] = "togglepickaxe";
+        } else if words.first().is_some_and(|w| *w == ";") {
+            words[0] = "sel";
         }
         // `//load <file>` is `//schem load <file>`.
         if words.first().is_some_and(|w| w.eq_ignore_ascii_case("load")) {
             words.insert(0, "schem");
         }
+        let typed_word = words.first().map(|w| w.to_ascii_lowercase()).unwrap_or_default();
         // The deprecated tool commands are `/tool <type>`.
+        let mut global_tool = None;
+        if words.first().is_some_and(|w| paper::global_tool(&w.to_ascii_lowercase()).is_some()) {
+            global_tool = paper::global_tool(&words[0].to_ascii_lowercase());
+        }
+        let inserted = global_tool.is_some() && typed_word != "none";
         if words.first().is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "selwand" | "navwand" | "info" | "cycler" | "repl" | "floodfill" | "flood" | "farwand" | "tree" | "deltree" | "lrbuild")) {
             words.insert(0, "tool");
         }
@@ -1494,8 +1514,26 @@ impl Engine {
             Ok(a) => a,
             Err(e) => return Reply::err(e),
         };
-        if let Err(e) = self.permitted(actor, permission_node(&name, &args, actor).as_deref()).and(self.allowed(actor)) {
+        if let Err(e) = self.permitted(actor, permission_node(&name, &args, actor).as_deref()) {
+            // WorldEdit's commands are not even visible to a player who lacks their permission: unknown command.
+            let mut reply = Reply::err(e);
+            reply.denied = true;
+            return reply;
+        }
+        if let Err(e) = self.allowed(actor) {
             return Reply::err(e);
+        }
+        // Piston's own argument errors (`Missing argument for <x>.`, `Too many arguments.`, `Invalid sub-command`).
+        {
+            let after: &[&str] = if inserted { args.words.get(1..).unwrap_or(&[]) } else { &args.words };
+            let found = if !inserted && (name == "tool" || matches!(name.as_str(), "brush" | "br" | "we" | "worldedit" | "schem" | "schematic" | "snapshot" | "superpickaxe")) {
+                paper::group(&typed_word, &args.words)
+            } else {
+                paper::check(&typed_word, &name, after)
+            };
+            if let Some(lines) = found {
+                return Reply { lines: lines.into_iter().map(|text| Line { text, error: true }).collect(), ..Reply::default() };
+            }
         }
         // Commands that act through a player's hands and eyes have no meaning for the console.
         if actor.uuid == CONSOLE_UUID
@@ -1613,7 +1651,7 @@ impl Engine {
             "tracemask" => self.trace_mask(world, actor, &args),
             "superpickaxe" => self.superpickaxe(actor, &args),
             "togglepickaxe" => self.toggle_pickaxe(actor, &args),
-            "none" => self.unbind(actor, false),
+            "none" => self.unbind(actor, true),
             "tool" => self.tool(world, actor, &args),
             "timeout" => self.timeout(actor, &args),
             "fast" => self.fast(actor, &args),
@@ -1626,8 +1664,22 @@ impl Engine {
             "restore" => self.restore(world, actor, &args),
             _ => Err(format!("The command '{name}' could not be found.")),
         };
+        let result = result.map_err(|e| e);
+        let wrapped = match &result {
+            Err(e) if e.starts_with("Block name '") || e.starts_with("No match for '") => {
+                let after: &[&str] = if inserted { args.words.get(1..).unwrap_or(&[]) } else { &args.words };
+                paper::wrap_parse(&typed_word, &name, after, e)
+            }
+            _ => None,
+        };
+        if let Some(lines) = wrapped {
+            return Reply { lines: lines.into_iter().map(|text| Line { text, error: true }).collect(), ..Reply::default() };
+        }
         match result {
             Ok(mut lines) => {
+                if let Some(tool) = global_tool {
+                    lines.insert(0, paper::DEPRECATION.replace("{}", tool));
+                }
                 // `debug: true`: the time the command took and how fast it changed blocks (`PlatformCommandManager`).
                 if self.config.debug && self.changed_now > 0 {
                     let seconds = started.elapsed().as_millis() as f64 / 1000.0;
@@ -1636,7 +1688,13 @@ impl Engine {
                 }
                 Reply::ok(lines)
             }
-            Err(e) => Reply::err(e),
+            Err(e) => {
+                let mut reply = Reply::err(e);
+                if let Some(tool) = global_tool {
+                    reply.lines.insert(0, Line { text: paper::DEPRECATION.replace("{}", tool), error: false });
+                }
+                reply
+            }
         }
     }
 
