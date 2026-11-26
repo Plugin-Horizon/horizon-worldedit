@@ -345,7 +345,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("line", "<args:text>"),
     ("curve", "<args:text>"),
     ("revolve", "<args:text>"),
-    ("stack", "[args:text]"),
     ("move", "[args:text]"),
     ("sphere", "<args:text>"),
     ("hsphere", "<args:text>"),
@@ -397,7 +396,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("toggleplace", ""),
     ("searchitem", "<args:text>"),
     ("search", "<args:text>"),
-    ("l", "<args:text>"),
     ("calc", "<expression:text>"),
     ("calculate", "<expression:text>"),
     ("eval", "<expression:text>"),
@@ -500,7 +498,6 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["line"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
     (&["curve"], "h", &["{flags} <block:pattern>", "{flags} <block:pattern> <thickness:number>"]),
     (&["revolve"], "reb", &["<count:integer>", "{flags} <count:integer>"]),
-    (&["stack"], "asrbe", &["{flags}", "<count:integer> {flags}", "<count:integer> {dir} {flags}"]),
     (
         &["move"],
         "asbe",
@@ -633,7 +630,7 @@ const TYPED: &[(&[&str], &str, &[&str])] = &[
     (&["deform"], "rocl", &["{flags} <expression:text>"]),
     (&["butcher"], "pnagbtfrw", &["{flags}", "{flags} <radius:integer>"]),
     (&["remove", "rem", "rement"], "", &["<type:word> <radius:integer>"]),
-    (&["searchitem", "search", "l"], "bip", &["{flags} <query:text>"]),
+    (&["searchitem", "search"], "bip", &["{flags} <query:text>"]),
     (&["timeout"], "", &["", "<limit:integer>"]),
     (&["fast"], "", &["", "on", "off"]),
     (&["perf"], "h", &["{flags}", "{flags} <sideeffect:word>", "{flags} <sideeffect:word> <state:word>"]),
@@ -736,6 +733,10 @@ fn qualify(rest: &str, mid: &BTreeSet<String>) -> String {
         .join(" ")
 }
 
+/// Roots this mod must not register: on Paper `/stack` is WorldGuard's and `/l` is the server's lobby command, so WorldEdit
+/// does not own them there (`//stack`, `//l` reach the other plugin).
+pub const NOT_OURS: &[&str] = &["stack", "l"];
+
 /// The commands WorldEdit registers with a single slash only (`/we`, `/mask`, `/tool`...); the
 /// names in `BOTH_FORMS` it registers both ways (`/brush` and `//brush`); every other command is
 /// registered with a leading `/` in its name (`@Command(name = "/set")`), which the player types as
@@ -764,7 +765,7 @@ fn roots(name: &str) -> Vec<String> {
 /// forms are vanilla's. `/!` is single only.
 pub fn form_allows(line: &str, double: bool) -> bool {
     let name = line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-    if name == "!" || name == "," || name == ";" {
+    if name == "!" || name == "," || name == ";" || name == ".s" || name == "cs" {
         return !double;
     }
     // `//` alone toggles the super pickaxe; `/size <number>` is the brush size (`//size` is the selection's).
@@ -826,6 +827,12 @@ fn flag_sets(letters: &str) -> Vec<String> {
 
 /// Whether `line` (slashes stripped or not) is one of these commands.
 pub fn is_command(line: &str) -> bool {
+    if NOT_OURS.contains(&line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase().as_str()) {
+        return false;
+    }
+    if matches!(line.trim_start_matches('/').split_whitespace().next(), Some(".s" | "cs")) {
+        return true;
+    }
     let name = line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
     // `/!` is `/unstuck`; it cannot be a registered word.
     // `/,` and `//` toggle the super pickaxe (neither is a word the game could register).
@@ -1236,6 +1243,7 @@ fn permission_node(name: &str, args: &Args, actor: &Actor) -> Option<String> {
             _ => "worldedit.snapshots.restore",
         },
         "restore" => "worldedit.snapshots.restore",
+        "cs" | ".s" => "worldedit.scripting.execute",
         other => return Some(format!("worldedit.{other}")),
     };
     Some(node.to_string())
@@ -1531,6 +1539,13 @@ impl Engine {
             } else {
                 paper::check(&typed_word, &name, after)
             };
+            let found = found.or_else(|| {
+                let mut lines = paper::tree_check(&typed_word, after, |w| terrain::tree_lookup(w).is_some())?;
+                if typed_word == "tree" && after.is_empty() {
+                    lines.insert(0, paper::DEPRECATION.replace("{}", "tree"));
+                }
+                Some(lines)
+            });
             if let Some(lines) = found {
                 return Reply { lines: lines.into_iter().map(|text| Line { text, error: true }).collect(), ..Reply::default() };
             }
@@ -1662,6 +1677,8 @@ impl Engine {
             "registry" => self.registry(world, &args),
             "snapshot" => self.snapshot(&*world, actor, &args),
             "restore" => self.restore(world, actor, &args),
+            "cs" => self.craftscript(&args, env),
+            ".s" => Err("Use /cs with a script name first.".into()),
             _ => Err(format!("The command '{name}' could not be found.")),
         };
         let result = result.map_err(|e| e);
@@ -1950,7 +1967,18 @@ impl Engine {
             None => Ok(clear(self)),
             Some(word) => match crate::horizon_worldedit_core::selector::SelKind::parse(word) {
                 Some(kind) => self.sel_type(actor, kind, args.flag('d')),
-                None => Err(usage("sel")),
+                None => Ok(vec![
+                    "--------------- Selection modes ---------------".to_string(),
+                    "Select one of the modes below:".into(),
+                    "cuboid: Select two corners of a cuboid".into(),
+                    "extend: Extending cuboid selection mode".into(),
+                    "poly: Select a 2D polygon with height".into(),
+                    "polyextend: Extending 2D polygonal selection mode".into(),
+                    "ellipsoid: Select an ellipsoid".into(),
+                    "sphere: Select a sphere".into(),
+                    "cyl: Select a cylinder".into(),
+                    "convex: Select a convex polyhedral".into(),
+                ]),
             },
         }
     }
@@ -2781,9 +2809,24 @@ impl Engine {
 
     // ---- history ----
 
+    /// `/cs <file> [args...]`: WorldEdit runs a JavaScript craftscript; this server has no script engine, so it answers as
+    /// WorldEdit does for a script that is not there.
+    fn craftscript(&mut self, args: &Args, env: &Env) -> R {
+        let name = args.get(0).ok_or_else(|| "Missing argument for <filename>.\nUsage: /cs <filename> [args...]".to_string())?;
+        let file = if name.contains('.') { name.to_string() } else { format!("{name}.js") };
+        let dir = env.config_file.parent().and_then(|c| c.parent()).map(|r| r.join("plugins/WorldEdit/craftscripts")).unwrap_or_default();
+        let path = std::env::current_dir().unwrap_or_default().join(dir.strip_prefix(".").unwrap_or(&dir)).join(&file);
+        if !path.exists() {
+            return Err(format!("Script does not exist: {}", path.display()));
+        }
+        Err("CraftScripts are not supported on this server (no script engine).".into())
+    }
+
     fn history(&mut self, world: &mut dyn World, actor: &Actor, undo: bool, args: &Args) -> R {
-        let times = args.int(0, 1)?.max(1);
-        let owner = match args.get(1) {
+        // A first word that is no number is a player name (`/undo help`: no such session).
+        let first_is_name = args.get(0).is_some_and(|w| w.parse::<i64>().is_err());
+        let times = if first_is_name { 1 } else { args.int(0, 1)?.max(1) };
+        let owner = match if first_is_name { args.get(0) } else { args.get(1) } {
             None => actor.uuid,
             Some(name) if name.eq_ignore_ascii_case(&actor.name) => actor.uuid,
             Some(name) => *self.names.get(&name.to_ascii_lowercase()).ok_or_else(|| format!("Unable to find session for {name}"))?,

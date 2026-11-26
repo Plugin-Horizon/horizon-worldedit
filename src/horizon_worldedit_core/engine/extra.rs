@@ -437,6 +437,13 @@ impl Engine {
             allowed(self, 'r', "worldedit.butcher.armorstands"),
             allowed(self, 'w', "worldedit.butcher.water"),
         );
+        if radius < 0 {
+            // Paper's run: -1 (the default) works on the selection, and says so when there is none.
+            let sess = self.sessions.get(actor.uuid);
+            if sess.shape.is_none() && !(sess.pos1.is_some() && sess.pos2.is_some()) {
+                return Err("Make a region selection first.".into());
+            }
+        }
         let found = self.entities_around(world, actor, radius)?;
         let ids: Vec<u64> = found
             .iter()

@@ -996,7 +996,8 @@ fn every_help_entry_is_a_command_of_ours() {
     for e in crate::horizon_worldedit_core::engine::help_entries() {
         let name = e.name.trim_start_matches('/');
         // `//fill`, `//help` and `//rotate` share their names with vanilla's: heard by `is_shadowed`.
-        if matches!(name, "fill" | "help" | "rotate") {
+        // `//`, `/.s` and `/cs` are heard before the game parses them (`is_command`), not registered.
+        if matches!(name, "fill" | "help" | "rotate" | "" | ".s" | "cs" | "stack") {
             continue;
         }
         let root = |r: &str| usages.iter().any(|u| u.split(' ').next() == Some(r));
@@ -1267,8 +1268,8 @@ fn butcher_and_remove() {
     assert_eq!(run(&mut e, &mut w, &a, "/butcher 10"), "1 mobs have been killed in a radius of 10.");
     assert_eq!(run(&mut e, &mut w, &a, "/butcher -a -n 10"), "2 mobs have been killed in a radius of 10.");
     assert_eq!(run(&mut e, &mut w, &a, "/remove items 10"), "1 entities have been marked for removal.");
-    assert_eq!(run(&mut e, &mut w, &a, "/butcher"), "1 mobs have been killed in a radius of -1.");
-    assert!(fails(&mut e, &mut w, &a, "/remove bogus 5").starts_with("Acceptable types"));
+    assert_eq!(run(&mut e, &mut w, &a, "/butcher 100"), "1 mobs have been killed in a radius of 100.");
+    assert!(fails(&mut e, &mut w, &a, "/remove bogus 5").starts_with("Invalid value for <remover> (Acceptable types"));
 }
 
 #[test]
@@ -1500,10 +1501,10 @@ fn forestgen_and_pumpkins_report_their_counts() {
     let mut w = FakeWorld::new();
     let a = actor(1);
     w.fill([-12, 60, -12], [12, 63, 12], "minecraft:grass_block");
-    let text = run(&mut e, &mut w, &a, "/forestgen 5 tree 100");
+    let text = run(&mut e, &mut w, &a, "/forestgen 5 oak 100");
     assert!(text.ends_with(" trees created."), "{text}");
     assert!(!w.planted.is_empty());
-    assert!(fails(&mut e, &mut w, &a, "/forestgen 5 tree 101").contains("Density must be between 0 and 100"));
+    assert!(fails(&mut e, &mut w, &a, "/forestgen 5 oak 101").contains("Density must be between 0 and 100"));
     let text = run(&mut e, &mut w, &a, "/pumpkins 5");
     assert!(text.ends_with(" pumpkin patches created."), "{text}");
 }
@@ -1775,4 +1776,42 @@ fn players_without_the_permission_get_unknown_command() {
         let r = e.command(&mut w, &a, line, &env("none"));
         assert!(!r.denied, "{line}: {}", r.text());
     }
+}
+
+#[test]
+fn paper_remaining_errors() {
+    let mut e = Engine::default();
+    let mut w = FakeWorld::new();
+    let a = actor(44);
+    let mut f = |line: &str| fails(&mut e, &mut w, &a, line).replace('\n', " | ");
+    assert_eq!(f("/tree"), "Global tool names cause conflicts and will be removed in WorldEdit 8. Please use /tool tree instead. | Invalid value for [type] (Not a valid tree type: tree), acceptable values are any tree type | Usage: /tree [type]");
+    assert_eq!(f("/tree help"), "Invalid value for [type] (Not a valid tree type: help), acceptable values are any tree type | Usage: /tree [type]");
+    assert_eq!(f("/forestgen"), "Invalid value for [type] (Not a valid tree type: tree), acceptable values are any tree type | Usage: /forestgen [size] [type] [density]");
+    assert_eq!(f("/undo help"), "Unable to find session for help");
+    assert_eq!(f("/redo help"), "Unable to find session for help");
+    assert_eq!(f("/rem help"), "Invalid value for <remover> (Acceptable types: projectiles, items, paintings, itemframes, boats, minecarts, tnt, xp, or all), acceptable values are projectiles, items, paintings, itemframes, boats, minecarts, tnt, xp, or all | Usage: /rem <remover> <radius>");
+    assert_eq!(f("/replacenear help"), "Invalid value for <radius> (For input string: \"help\"), acceptable values are any integer | Usage: /replacenear <radius> [from] <to>");
+    assert_eq!(f("/biomeinfo help"), "Too many arguments. | Usage: /biomeinfo [-pt]");
+    assert_eq!(f("/delchunks help"), "Too many arguments. | Usage: /delchunks [-o <beforeTime>]");
+    assert_eq!(f("/cs"), "Missing argument for <filename>. | Usage: /cs <filename> [args...]");
+    assert!(f("/cs help").starts_with("Script does not exist: ") && f("/cs help").ends_with("plugins/WorldEdit/craftscripts/help.js"));
+    assert_eq!(f("/.s"), "Use /cs with a script name first.");
+    assert_eq!(f("/.s help"), "Use /cs with a script name first.");
+    assert_eq!(f("/butcher"), "Make a region selection first.");
+    let r = run(&mut e, &mut w, &a, "/; help").replace('\n', " ");
+    assert_eq!(r, "--------------- Selection modes --------------- Select one of the modes below: cuboid: Select two corners of a cuboid extend: Extending cuboid selection mode poly: Select a 2D polygon with height polyextend: Extending 2D polygonal selection mode ellipsoid: Select an ellipsoid sphere: Select a sphere cyl: Select a cylinder convex: Select a convex polyhedral");
+    let help = run(&mut e, &mut w, &a, "/we help").replace('\n', " ");
+    assert!(help.starts_with("-------------------- Help -------------------- ? //: Toggle the super pickaxe function ? /.s: Execute last CraftScript ? /ascend: Go up a floor ? /biomeinfo: Get the biome of the targeted block. ? /biomelist: Gets all biomes available. ? /brush: Brushing commands ? /butcher: Kill all or nearby mobs ? //calculate: Evaluate a mathematical expression -------------- Page 1 of 17 >>>"), "{help}");
+}
+
+#[test]
+fn roots_owned_by_other_plugins_are_not_registered() {
+    // Paper: `/stack` is WorldGuard's, `/l` the lobby command (CoreSMPEssentials).
+    let usages = crate::horizon_worldedit_core::usages();
+    for root in crate::horizon_worldedit_core::engine::NOT_OURS {
+        assert!(!usages.iter().any(|u| matches!(u.split(' ').next(), Some(r) if r.trim_start_matches('/') == *root)), "{root} is registered");
+        assert!(!crate::horizon_worldedit_core::is_command(&format!("{root} 2")), "{root} is heard");
+        assert!(!crate::horizon_worldedit_core::is_command(&format!("/{root}")), "/{root} is heard");
+    }
+    assert!(crate::horizon_worldedit_core::is_command("searchitem stone"));
 }

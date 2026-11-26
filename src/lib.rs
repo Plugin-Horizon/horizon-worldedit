@@ -318,7 +318,7 @@ fn usage_words() -> &'static Vec<Vec<String>> {
 }
 
 /// Roots another mod or the game also answers to: never hidden, never completed here.
-const SHARED_ROOTS: &[&str] = &["j", "info", "none", "ex", "ext", "l"];
+const SHARED_ROOTS: &[&str] = &["j", "info", "none", "ex", "ext", "l", "stack"];
 
 /// The command roots this mod registers (with their leading `/` when typed with two slashes).
 fn we_roots() -> &'static BTreeSet<String> {

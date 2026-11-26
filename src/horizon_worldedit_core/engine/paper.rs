@@ -9,7 +9,7 @@ const CHECKED: &[&str] = &[
     "up", "ascend", "asc", "descend", "desc", "extinguish", "ex", "ext", "fixlava", "fixwater", "floodfill", "flood", "forestgen", "green", "snow",
     "thaw", "gmask", "mask", "tracemask", "material", "lrbuild", "searchitem", "chunkinfo", "delchunks", "listchunks", "toggleeditwand", "toggleplace",
     "pumpkins", "range", "remove", "rem", "rement", "replacenear", "butcher", "ceil", "jumpto", "j", "thru", "unstuck", "info", "cycler", "deltree",
-    "farwand", "navwand", "selwand", "biomeinfo", "biomelist", "biomels", "repl", "placement", "size",
+    "farwand", "navwand", "selwand", "tree", "undo", "redo", "biomeinfo", "biomelist", "biomels", "repl", "placement", "size",
 ];
 
 /// The tool commands that also exist as global words (`/selwand`), and their names under `/tool`.
@@ -29,6 +29,24 @@ pub fn global_tool(name: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// `/tree [type]` and `/forestgen [size] [type] [density]`: Paper's tree type conversion fails for its own default
+/// (`tree`) and for any word that is no tree type. Returns the lines, `bare` telling the global notice comes first.
+pub fn tree_check(typed: &str, words: &[&str], known: impl Fn(&str) -> bool) -> Option<Vec<String>> {
+    let typed_l = typed.to_ascii_lowercase();
+    let (index, usage) = match typed_l.as_str() {
+        "tree" => (0, "Usage: /tree [type]"),
+        "forestgen" => (1, "Usage: /forestgen [size] [type] [density]"),
+        _ => return None,
+    };
+    let word = words.get(index).copied().unwrap_or("tree");
+    if word != "tree" && known(word) {
+        return None;
+    }
+    Some(vec![format!("Invalid value for [type] (Not a valid tree type: {word}), acceptable values are any tree type"), usage.to_owned()])
+}
+
+pub const REMOVERS: &[&str] = &["projectiles", "items", "paintings", "itemframes", "boats", "minecarts", "tnt", "xp", "all"];
 
 pub const DEPRECATION: &str = "Global tool names cause conflicts and will be removed in WorldEdit 8. Please use /tool {} instead.";
 
@@ -76,19 +94,23 @@ pub fn check(typed: &str, canon: &str, words: &[&str]) -> Option<Vec<String>> {
     let r = row(lookup, numbered).or_else(|| row(canon, numbered))?;
     // `<query...>`-like text parameters take everything.
     let params = r.3;
+    if r.0.contains(&"remove") {
+        if let Some(w) = words.first() {
+            if !REMOVERS.contains(&w.to_ascii_lowercase().as_str()) {
+                let list = "projectiles, items, paintings, itemframes, boats, minecarts, tnt, xp, or all";
+                return Some(vec![format!("Invalid value for <remover> (Acceptable types: {list}), acceptable values are {list}"), usage_line(&typed_l, r)]);
+            }
+        }
+    }
     let has_text = params.iter().any(|p| p.0 == "query" || p.0.ends_with("..."));
     let required = params.iter().filter(|p| !p.1).count();
     let usage = usage_line(&typed_l, r);
     if words.len() > params.len() && !has_text {
         return Some(vec!["Too many arguments.".into(), usage]);
     }
-    if words.len() < required {
-        let missing = params.iter().filter(|p| !p.1).nth(words.len())?;
-        return Some(vec![format!("Missing argument for <{}>.", if missing.0 == "query" { "query..." } else { missing.0 }), usage]);
-    }
     // A required word takes its place first; the words left over go to the last optional parameters (the order
     // Piston fills them in, as `/snow help` and `/forestgen help` show).
-    let mut extra = words.len() - required;
+    let mut extra = words.len().saturating_sub(required);
     let optionals = params.iter().filter(|p| p.1).count();
     let mut skip = optionals - extra.min(optionals);
     let mut at = 0;
@@ -100,7 +122,7 @@ pub fn check(typed: &str, canon: &str, words: &[&str]) -> Option<Vec<String>> {
             }
             extra = extra.saturating_sub(1);
         }
-        let word = words[at];
+        let Some(word) = words.get(at).copied() else { break };
         at += 1;
         let (accepted, bad) = match p.2 {
             "int" => (if r.0.contains(&"snow") || r.0.contains(&"thaw") || r.0.contains(&"green") { "Any integer" } else { "any integer" }, word.parse::<f64>().is_err()),
@@ -111,6 +133,10 @@ pub fn check(typed: &str, canon: &str, words: &[&str]) -> Option<Vec<String>> {
             let (open, close) = if p.1 { ('[', ']') } else { ('<', '>') };
             return Some(vec![format!("Invalid value for {open}{}{close} (For input string: \"{word}\"), acceptable values are {accepted}", p.0), usage]);
         }
+    }
+    if words.len() < required {
+        let missing = params.iter().filter(|p| !p.1).nth(words.len())?;
+        return Some(vec![format!("Missing argument for <{}>.", if missing.0 == "query" { "query..." } else { missing.0 }), usage]);
     }
     None
 }

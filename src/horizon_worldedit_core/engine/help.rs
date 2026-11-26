@@ -12,6 +12,23 @@ pub(crate) struct Entry {
 /// WorldEdit's own names for the commands this server has, with its descriptions (Piston names: a
 /// leading `/` means the player types two slashes).
 pub(crate) const ENTRIES: &[Entry] = &[
+    Entry { name: "superpickaxe", aliases: &["pickaxe", "sp"], desc: "Super-pickaxe commands" },
+    Entry { name: "/", aliases: &[], desc: "Toggle the super pickaxe function" },
+    Entry { name: ".s", aliases: &[], desc: "Execute last CraftScript" },
+    Entry { name: "cs", aliases: &[], desc: "Execute a CraftScript" },
+    Entry { name: "/revolve", aliases: &[], desc: "Revolve the selection around a vertical axis" },
+    Entry { name: "range", aliases: &[], desc: "Set the brush range" },
+    Entry { name: "tracemask", aliases: &[], desc: "Set the mask used to stop tool traces" },
+    Entry { name: "selwand", aliases: &["/selwand"], desc: "Selection wand tool" },
+    Entry { name: "navwand", aliases: &["/navwand"], desc: "Navigation wand tool" },
+    Entry { name: "info", aliases: &[], desc: "Block information tool" },
+    Entry { name: "tree", aliases: &[], desc: "Tree generator tool" },
+    Entry { name: "repl", aliases: &[], desc: "Block replacer tool" },
+    Entry { name: "cycler", aliases: &[], desc: "Block data cycler tool" },
+    Entry { name: "floodfill", aliases: &["flood"], desc: "Flood fill tool" },
+    Entry { name: "deltree", aliases: &[], desc: "Floating tree remover tool" },
+    Entry { name: "farwand", aliases: &[], desc: "Wand at a distance tool" },
+    Entry { name: "lrbuild", aliases: &["/lrbuild"], desc: "Long-range building tool" },
     Entry { name: "/pos1", aliases: &[], desc: "Set position 1" },
     Entry { name: "/pos2", aliases: &[], desc: "Set position 2" },
     Entry { name: "/hpos1", aliases: &[], desc: "Set position 1 to targeted block" },
