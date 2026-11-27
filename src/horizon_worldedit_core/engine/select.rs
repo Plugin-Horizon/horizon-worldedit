@@ -27,6 +27,20 @@ fn segment_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 }
 
 impl Engine {
+    /// `ActorSelectorLimits.getPolygonVertexLimit` / `getPolyhedronVertexLimit`: how many points a polygon (`poly`) or a
+    /// convex polyhedron takes; `None` for no limit.
+    pub(super) fn point_limit(&mut self, actor: &Actor, poly: bool) -> Option<usize> {
+        let (default, max) = if poly { (self.config.max_polygonal_default, self.config.max_polygonal_max) } else { (self.config.max_polyhedron_default, self.config.max_polyhedron_max) };
+        let limit = if self.holds(actor, "worldedit.limit.unrestricted") || max < 0 {
+            default
+        } else if default < 0 {
+            max
+        } else {
+            default.min(max)
+        };
+        (limit > 0).then_some(limit as usize)
+    }
+
     /// `//sel [-d] [type]`: a chosen selector takes over what is selected, as far as it fits.
     pub(super) fn sel_type(&mut self, actor: &Actor, kind: SelKind, set_default: bool) -> R {
         let s = self.sessions.get(actor.uuid);
@@ -71,6 +85,13 @@ impl Engine {
             }
         }
         let mut out = vec![kind.message().to_owned()];
+        // `SelectorChoice.explainNewSelector`: the polygon and polyhedron selectors say how many points they take.
+        match kind {
+            SelKind::Poly | SelKind::PolyExtend => out.extend(self.point_limit(actor, true).map(|l| format!("{l} points maximum."))),
+            SelKind::Convex => out.extend(self.point_limit(actor, false).map(|l| format!("{l} points maximum."))),
+            _ => {}
+        }
+        let s = self.sessions.get(actor.uuid);
         if set_default {
             s.default_kind = kind;
             out.push(format!("Your default region selector is now {}.", kind.type_name()));
@@ -81,6 +102,8 @@ impl Engine {
     /// A click with a shape selector: sets or adds a point and says what happened. `Err` when nothing changed.
     pub(super) fn shape_corner(&mut self, actor: &Actor, first: bool, p: Pos) -> Result<Vec<String>, String> {
         let at = pt(p);
+        let limit_poly = self.point_limit(actor, true);
+        let limit_convex = self.point_limit(actor, false);
         let s = self.sessions.get(actor.uuid);
         let kind = s.kind;
         let current = s.shape.take();
@@ -104,6 +127,12 @@ impl Engine {
                     if points.last() == Some(&[p[0], p[2]]) {
                         s.shape = Some(Shape::Poly { points, min_y, max_y });
                         return Err(already_set());
+                    }
+                    // `Polygonal2DRegionSelector.selectSecondary`: past the vertex limit nothing is added (the extending
+                    // selector only asks it for its first three points).
+                    if limit_poly.is_some_and(|l| points.len() > l) && (kind == SelKind::Poly || points.len() < 3) {
+                        s.shape = Some(Shape::Poly { points, min_y, max_y });
+                        return Ok(Vec::new());
                     }
                     if kind == SelKind::PolyExtend && points.len() >= 3 {
                         if points.contains(&[p[0], p[2]]) {
@@ -184,6 +213,10 @@ impl Engine {
                     points = vec![p];
                     line = format!("Started new selection with vertex {at}.");
                 } else {
+                    if limit_convex.is_some_and(|l| points.len() > l) {
+                        s.shape = Some(Shape::Convex { points });
+                        return Ok(Vec::new());
+                    }
                     if points.contains(&p) {
                         s.shape = Some(Shape::Convex { points });
                         return Err(already_set());
@@ -272,7 +305,16 @@ impl Engine {
                 out.push(format!("Center: {}", pt([center[0], 0, center[1]])));
                 out.push(format!("Radius: {}", calc::format_number(radius[0])));
             }
-            Shape::Convex { points } => out.push(format!("Vertices: {}", points.len())),
+            Shape::Convex { points } => {
+                out.push(format!("Vertices: {}", points.len()));
+                // The hull is triangulated: with V corner points it has 2V - 4 triangles (a point inside the hull of the others
+                // is no corner).
+                let corners = (0..points.len()).filter(|&i| {
+                    let others: Vec<Pos> = points.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| *p).collect();
+                    others.len() < 4 || !Shape::Convex { points: others }.contains(points[i])
+                });
+                out.push(format!("Triangles: {}", (2 * corners.count()).saturating_sub(4)));
+            }
         }
         out
     }

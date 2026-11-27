@@ -52,11 +52,11 @@ pub fn pattern_words(prefix: &str, ids: &[String]) -> Vec<String> {
     };
     let (weight, token) = entry.split_at(weight_len);
     let head = format!("{lead}{before}{weight}");
-    let mut words = Vec::new();
-    if "hand".starts_with(token.to_ascii_lowercase().as_str()) {
-        words.push("hand".to_owned());
-    }
+    let lower = token.to_ascii_lowercase();
+    let mut words: Vec<String> = ["##", "##*", "#clipboard", "*", "^", "hand", "offhand", "pos1"].iter().filter(|w| w.starts_with(lower.as_str())).map(|w| (*w).to_owned()).collect();
     words.extend(blocks(token, ids));
+    words.sort();
+    words.dedup();
     words.into_iter().map(|w| format!("{head}{w}")).collect()
 }
 
@@ -70,12 +70,14 @@ pub fn mask_words(prefix: &str, ids: &[String]) -> Vec<String> {
     let head = format!("{lead}{negations}{before}");
     let lower = token.to_ascii_lowercase();
     let mut words: Vec<String> = Vec::new();
-    for special in ["#existing", "#air", "#solid", "hand"] {
-        if special.starts_with(lower.as_str()) {
+    for special in ["!", "##", "#air", "#clipboard", "#dregion", "#existing", "#exposed", "#fullcube", "#region", "#solid", "$", "%", "<", "=", ">", "^=[", "^[", "hand", "offhand", "pos1"] {
+        if special.starts_with(lower.as_str()) && (special != "!" || negations.is_empty()) {
             words.push(special.to_owned());
         }
     }
     words.extend(blocks(token, ids));
+    words.sort();
+    words.dedup();
     words.into_iter().map(|w| format!("{head}{w}")).collect()
 }
 
@@ -139,15 +141,26 @@ mod tests {
     #[test]
     fn patterns_complete_after_weights_and_commas() {
         assert_eq!(pattern_words("sto", &ids()), vec!["stone", "stone_bricks"]);
-        assert_eq!(pattern_words("50%stone,50%di", &ids()), vec!["50%stone,50%dirt", "50%stone,50%diamond_block"]);
-        assert_eq!(pattern_words("minecraft:d", &ids()), vec!["minecraft:dirt", "minecraft:diamond_block"]);
+        assert_eq!(pattern_words("50%stone,50%di", &ids()), vec!["50%stone,50%diamond_block", "50%stone,50%dirt"]);
+        assert_eq!(pattern_words("minecraft:d", &ids()), vec!["minecraft:diamond_block", "minecraft:dirt"]);
         assert_eq!(pattern_words("stone[", &ids()), Vec::<String>::new());
+    }
+
+    // Paper's `/flood ` / `/gmask ` lists (steps of the b9c compare): the specials sit among the block ids in plain order.
+    #[test]
+    fn pattern_and_mask_specials_match_paper() {
+        let p = pattern_words("", &ids());
+        assert_eq!(&p[..8], &["##", "##*", "#clipboard", "*", "^", "diamond_block", "dirt", "hand"]);
+        assert!(p.contains(&"offhand".to_owned()) && p.contains(&"pos1".to_owned()));
+        let m = mask_words("", &ids());
+        let specials: Vec<&str> = m.iter().map(String::as_str).filter(|w| !w.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())).collect();
+        assert_eq!(specials, ["!", "##", "#air", "#clipboard", "#dregion", "#existing", "#exposed", "#fullcube", "#region", "#solid", "$", "%", "<", "=", ">", "^=[", "^["]);
     }
 
     #[test]
     fn masks_know_their_specials() {
         assert!(mask_words("#e", &ids()).contains(&"#existing".to_owned()));
         assert_eq!(mask_words("!sto", &ids()), vec!["!stone", "!stone_bricks"]);
-        assert_eq!(mask_words("#air dirt,di", &ids()), vec!["#air dirt,dirt", "#air dirt,diamond_block"]);
+        assert_eq!(mask_words("#air dirt,di", &ids()), vec!["#air dirt,diamond_block", "#air dirt,dirt"]);
     }
 }

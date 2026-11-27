@@ -45,6 +45,11 @@ max_radius = 128
 # The largest range of /tool floodfill (limits.max-super-pickaxe-size).
 max_super_pickaxe_size = 5
 
+# Whether the super pickaxe drops items (super-pickaxe.drop-items), and its area and recursive modes do
+# (super-pickaxe.many-drop-items).
+super_pickaxe_drop = true
+super_pickaxe_many_drop = false
+
 # The height //snow, //thaw and //green work up and down from you when none is given
 # (defaults.default-vertical-height).
 default_vertical_height = 256
@@ -132,6 +137,43 @@ history_expiration_minutes = 10
 nav_wand_item = "minecraft:compass"
 nav_wand_max_distance = 100.0
 
+# Where the world backups for /snapshot and //restore are (snapshots.directory): a folder of world folders and .zip
+# files, relative to the server's folder. Empty = not configured. snapshots_experimental is WorldEdit's
+# snapshots.experimental.
+snapshots_dir = ""
+snapshots_experimental = true
+
+# Selection limits (limits.max-polygonal-points / max-polyhedron-points): -1 = no limit.
+max_polygonal_default = -1
+max_polygonal_max = 20
+max_polyhedron_default = -1
+max_polyhedron_max = 20
+
+# //timeout: the default and the largest, in milliseconds (calculation.timeout, calculation.max-timeout).
+calculation_timeout = 100
+calculation_max_timeout = 300
+
+# Take the blocks an edit places from the player's inventory (use-inventory.*).
+use_inventory = false
+use_inventory_override = false
+use_inventory_creative_override = false
+
+# Log every WorldEdit command to a file (logging.*); the file is in the config folder.
+log_commands = false
+log_file = "worldedit.log"
+
+# Whether schematic and snapshot paths may be symbolic links (files.allow-symbolic-links).
+allow_symlinks = false
+
+# Whether command blocks may run WorldEdit commands (command-block-support).
+command_block_support = false
+
+# Operators get no WorldEdit permission just for being operators (no-op-permissions).
+no_op_permissions = false
+
+# /thru and /jumpto may stand on glass (navigation.use-glass).
+navigation_use_glass = true
+
 # Minimum operator level per worldedit.* node (a node not listed uses permission_level).
 # Example: let every player make selections (0 = everyone):
 # [node_levels]
@@ -153,6 +195,8 @@ pub struct Config {
     pub brush_range: f64,
     pub max_radius: f64,
     pub max_super_pickaxe_size: i32,
+    pub super_pickaxe_drop: bool,
+    pub super_pickaxe_many_drop: bool,
     pub default_vertical_height: i32,
     pub schematics_dir: String,
     pub disallowed_blocks: Vec<String>,
@@ -166,6 +210,54 @@ pub struct Config {
     pub nav_wand_item: String,
     /// `navigation-wand.max-distance`: how far the navigation wand looks, in blocks.
     pub nav_wand_max_distance: f64,
+    /// `snapshots.directory`: where the world backups are (a folder, relative to the server's); empty: snapshots are
+    /// not configured and `/snapshot` and `//restore` say so.
+    pub snapshots_dir: String,
+    /// `snapshots.experimental`: WorldEdit's newer snapshot database (the default). Both kinds read the same folders
+    /// here; the old one lists a world's backups by the world's folder name only.
+    pub snapshots_experimental: bool,
+    /// `limits.max-polygonal-points.default` / `.maximum`: how many points a polygon selection takes (-1 = no limit).
+    pub max_polygonal_default: i32,
+    pub max_polygonal_max: i32,
+    /// `limits.max-polyhedron-points.default` / `.maximum`: the same for a convex polyhedron.
+    pub max_polyhedron_default: i32,
+    pub max_polyhedron_max: i32,
+    /// `limits.allowed-data-cycle-blocks`: the blocks `/tool cycler` may cycle for a player without `worldedit.override.data-cycler`
+    /// (empty = all).
+    pub allowed_data_cycle_blocks: Vec<String>,
+    /// `calculation.timeout` and `calculation.max-timeout`: the default and the largest `//timeout`, in milliseconds.
+    pub calculation_timeout: i64,
+    pub calculation_max_timeout: i64,
+    /// `use-inventory.enable`, `.allow-override`, `.creative-mode-overrides`: edits take their blocks from the player's inventory.
+    pub use_inventory: bool,
+    pub use_inventory_override: bool,
+    pub use_inventory_creative_override: bool,
+    /// `logging.log-commands`, `.file`, `.format`.
+    pub log_commands: bool,
+    pub log_file: String,
+    pub log_format: String,
+    /// `files.allow-symbolic-links`.
+    pub allow_symlinks: bool,
+    /// `show-help-on-first-use`: the pointer to `/we help` a player gets at their first command.
+    pub show_help_on_first_use: bool,
+    /// `command-block-support`: whether a command block may run WorldEdit commands.
+    pub command_block_support: bool,
+    /// `no-op-permissions`: operators get no WorldEdit permission just for being operators.
+    pub no_op_permissions: bool,
+    /// `debug` (profile output), `debugging.trace-unflushed-sessions`.
+    pub debug: bool,
+    pub trace_unflushed_sessions: bool,
+    /// `navigation.use-glass`: `/thru` and `/jumpto` may stand on glass.
+    pub navigation_use_glass: bool,
+    /// `register-help`, `compat.extended-y-limit`, `default-locale`: read, not acted on (Bukkit's help registry, the
+    /// extended build height of a mod, the JVM's locale).
+    pub register_help: bool,
+    pub extended_y_limit: bool,
+    pub default_locale: String,
+    /// `scripting.timeout`, `scripting.dir`, `shell-save-type`: CraftScript settings, read and kept (there is no script engine).
+    pub script_timeout: i32,
+    pub scripts_dir: String,
+    pub shell_save_type: String,
 }
 
 impl Default for Config {
@@ -183,6 +275,8 @@ impl Default for Config {
             brush_range: 300.0,
             max_radius: 128.0,
             max_super_pickaxe_size: 5,
+            super_pickaxe_drop: true,
+            super_pickaxe_many_drop: false,
             default_vertical_height: 256,
             schematics_dir: "worldedit/schematics".into(),
             disallowed_blocks: vec![
@@ -253,6 +347,34 @@ impl Default for Config {
             history_expiration_minutes: 10,
             nav_wand_item: "minecraft:compass".into(),
             nav_wand_max_distance: 100.0,
+            snapshots_dir: String::new(),
+            snapshots_experimental: true,
+            max_polygonal_default: -1,
+            max_polygonal_max: 20,
+            max_polyhedron_default: -1,
+            max_polyhedron_max: 20,
+            allowed_data_cycle_blocks: Vec::new(),
+            calculation_timeout: 100,
+            calculation_max_timeout: 300,
+            use_inventory: false,
+            use_inventory_override: false,
+            use_inventory_creative_override: false,
+            log_commands: false,
+            log_file: "worldedit.log".into(),
+            log_format: "[%1$tY-%1$tm-%1$td %1$tH:%1$tM:%1$tS %4$s]: %5$s%6$s%n".into(),
+            allow_symlinks: false,
+            show_help_on_first_use: true,
+            command_block_support: false,
+            no_op_permissions: false,
+            debug: false,
+            trace_unflushed_sessions: false,
+            navigation_use_glass: true,
+            register_help: true,
+            extended_y_limit: false,
+            default_locale: "default".into(),
+            script_timeout: 3000,
+            scripts_dir: "craftscripts".into(),
+            shell_save_type: String::new(),
         }
     }
 }
@@ -295,6 +417,8 @@ impl Config {
         keys.int("limits.vertical-height.default", &mut c.default_vertical_height);
         keys.float("limits.max-radius", &mut c.max_radius);
         keys.int("limits.max-super-pickaxe-size", &mut c.max_super_pickaxe_size);
+        keys.bool("super-pickaxe.drop-items", &mut c.super_pickaxe_drop);
+        keys.bool("super-pickaxe.many-drop-items", &mut c.super_pickaxe_many_drop);
         keys.float("limits.max-brush-radius", &mut c.max_brush_radius);
         keys.list("limits.disallowed-blocks", &mut c.disallowed_blocks);
         keys.usize("history.size", &mut c.history_size);
@@ -304,6 +428,34 @@ impl Config {
         keys.string("saving.dir", &mut c.schematics_dir);
         keys.string("wand-item", &mut c.wand_item);
         keys.bool("server-side-cui", &mut c.server_side_cui);
+        keys.string("snapshots.directory", &mut c.snapshots_dir);
+        keys.bool("snapshots.experimental", &mut c.snapshots_experimental);
+        keys.int("limits.max-polygonal-points.default", &mut c.max_polygonal_default);
+        keys.int("limits.max-polygonal-points.maximum", &mut c.max_polygonal_max);
+        keys.int("limits.max-polyhedron-points.default", &mut c.max_polyhedron_default);
+        keys.int("limits.max-polyhedron-points.maximum", &mut c.max_polyhedron_max);
+        keys.list("limits.allowed-data-cycle-blocks", &mut c.allowed_data_cycle_blocks);
+        keys.i64("calculation.timeout", &mut c.calculation_timeout);
+        keys.i64("calculation.max-timeout", &mut c.calculation_max_timeout);
+        keys.bool("use-inventory.enable", &mut c.use_inventory);
+        keys.bool("use-inventory.allow-override", &mut c.use_inventory_override);
+        keys.bool("use-inventory.creative-mode-overrides", &mut c.use_inventory_creative_override);
+        keys.bool("logging.log-commands", &mut c.log_commands);
+        keys.string("logging.file", &mut c.log_file);
+        keys.string("logging.format", &mut c.log_format);
+        keys.bool("files.allow-symbolic-links", &mut c.allow_symlinks);
+        keys.bool("show-help-on-first-use", &mut c.show_help_on_first_use);
+        keys.bool("command-block-support", &mut c.command_block_support);
+        keys.bool("no-op-permissions", &mut c.no_op_permissions);
+        keys.bool("debug", &mut c.debug);
+        keys.bool("debugging.trace-unflushed-sessions", &mut c.trace_unflushed_sessions);
+        keys.bool("navigation.use-glass", &mut c.navigation_use_glass);
+        keys.bool("register-help", &mut c.register_help);
+        keys.bool("compat.extended-y-limit", &mut c.extended_y_limit);
+        keys.string("default-locale", &mut c.default_locale);
+        keys.int("scripting.timeout", &mut c.script_timeout);
+        keys.string("scripting.dir", &mut c.scripts_dir);
+        keys.string("shell-save-type", &mut c.shell_save_type);
         Ok((c.normalised(), keys.read))
     }
 
@@ -403,7 +555,7 @@ mod tests {
         )
     }
 
-    const ORIGINAL_KEYS: [&str; 16] = [
+    const ORIGINAL_KEYS: [&str; 46] = [
         "limits.butcher-radius.default",
         "limits.butcher-radius.maximum",
         "limits.max-blocks-changed.default",
@@ -411,6 +563,8 @@ mod tests {
         "limits.vertical-height.default",
         "limits.max-radius",
         "limits.max-super-pickaxe-size",
+        "super-pickaxe.drop-items",
+        "super-pickaxe.many-drop-items",
         "limits.max-brush-radius",
         "limits.disallowed-blocks",
         "history.size",
@@ -420,6 +574,34 @@ mod tests {
         "saving.dir",
         "wand-item",
         "server-side-cui",
+        "snapshots.directory",
+        "snapshots.experimental",
+        "limits.max-polygonal-points.default",
+        "limits.max-polygonal-points.maximum",
+        "limits.max-polyhedron-points.default",
+        "limits.max-polyhedron-points.maximum",
+        "limits.allowed-data-cycle-blocks",
+        "calculation.timeout",
+        "calculation.max-timeout",
+        "use-inventory.enable",
+        "use-inventory.allow-override",
+        "use-inventory.creative-mode-overrides",
+        "logging.log-commands",
+        "logging.file",
+        "logging.format",
+        "files.allow-symbolic-links",
+        "show-help-on-first-use",
+        "command-block-support",
+        "no-op-permissions",
+        "debug",
+        "debugging.trace-unflushed-sessions",
+        "navigation.use-glass",
+        "register-help",
+        "compat.extended-y-limit",
+        "default-locale",
+        "scripting.timeout",
+        "scripting.dir",
+        "shell-save-type",
     ];
 
     #[test]

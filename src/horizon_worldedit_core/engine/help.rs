@@ -12,6 +12,23 @@ pub(crate) struct Entry {
 /// WorldEdit's own names for the commands this server has, with its descriptions (Piston names: a
 /// leading `/` means the player types two slashes).
 pub(crate) const ENTRIES: &[Entry] = &[
+    Entry { name: "superpickaxe", aliases: &["pickaxe", "sp"], desc: "Super-pickaxe commands" },
+    Entry { name: "/", aliases: &[], desc: "Toggle the super pickaxe function" },
+    Entry { name: ".s", aliases: &[], desc: "Execute last CraftScript" },
+    Entry { name: "cs", aliases: &[], desc: "Execute a CraftScript" },
+    Entry { name: "/revolve", aliases: &[], desc: "Revolve the selection around a vertical axis" },
+    Entry { name: "range", aliases: &[], desc: "Set the brush range" },
+    Entry { name: "tracemask", aliases: &[], desc: "Set the mask used to stop tool traces" },
+    Entry { name: "selwand", aliases: &["/selwand"], desc: "Selection wand tool" },
+    Entry { name: "navwand", aliases: &["/navwand"], desc: "Navigation wand tool" },
+    Entry { name: "info", aliases: &[], desc: "Block information tool" },
+    Entry { name: "tree", aliases: &[], desc: "Tree generator tool" },
+    Entry { name: "repl", aliases: &[], desc: "Block replacer tool" },
+    Entry { name: "cycler", aliases: &[], desc: "Block data cycler tool" },
+    Entry { name: "floodfill", aliases: &["flood"], desc: "Flood fill tool" },
+    Entry { name: "deltree", aliases: &[], desc: "Floating tree remover tool" },
+    Entry { name: "farwand", aliases: &[], desc: "Wand at a distance tool" },
+    Entry { name: "lrbuild", aliases: &["/lrbuild"], desc: "Long-range building tool" },
     Entry { name: "/pos1", aliases: &[], desc: "Set position 1" },
     Entry { name: "/pos2", aliases: &[], desc: "Set position 2" },
     Entry { name: "/hpos1", aliases: &[], desc: "Set position 1 to targeted block" },
@@ -27,6 +44,15 @@ pub(crate) const ENTRIES: &[Entry] = &[
     Entry { name: "/trim", aliases: &[], desc: "Minimize the selection to encompass matching blocks" },
     Entry { name: "chunkinfo", aliases: &[], desc: "Get information about the chunk you're inside" },
     Entry { name: "listchunks", aliases: &[], desc: "List chunks that your selection includes" },
+    Entry { name: "biomelist", aliases: &["biomels"], desc: "Gets all biomes available." },
+    Entry { name: "biomeinfo", aliases: &[], desc: "Get the biome of the targeted block." },
+    Entry { name: "/setbiome", aliases: &[], desc: "Sets the biome of your current block or region." },
+    Entry { name: "/replacebiome", aliases: &[], desc: "Replaces the biome of your current block or region." },
+    Entry { name: "/regen", aliases: &[], desc: "Regenerates the contents of the selection" },
+    Entry { name: "/forest", aliases: &[], desc: "Make a forest within the region" },
+    Entry { name: "/flora", aliases: &[], desc: "Make flora within the region" },
+    Entry { name: "delchunks", aliases: &[], desc: "Delete chunks that your selection includes" },
+    Entry { name: "/world", aliases: &[], desc: "Sets the world override" },
     Entry { name: "/count", aliases: &[], desc: "Counts the number of blocks matching a mask" },
     Entry { name: "/distr", aliases: &[], desc: "Get the distribution of blocks in the selection" },
     Entry { name: "/wand", aliases: &[], desc: "Get the wand item" },
@@ -104,7 +130,17 @@ pub(crate) const ENTRIES: &[Entry] = &[
     Entry { name: "/drawsel", aliases: &[], desc: "Toggle drawing the current selection" },
     Entry { name: "/watchdog", aliases: &[], desc: "Changes watchdog hook state" },
     Entry { name: "/registry", aliases: &[], desc: "Search through the given registry" },
+    Entry { name: "snapshot", aliases: &["snap"], desc: "Snapshot commands for restoring backups" },
+    Entry { name: "restore", aliases: &["/restore"], desc: "Restore the selection from a snapshot" },
     Entry { name: "worldedit", aliases: &["we"], desc: "WorldEdit commands" },
+    Entry { name: "/pos", aliases: &[], desc: "Set positions" },
+    Entry { name: "/update", aliases: &[], desc: "Apply side effects to your selection" },
+    Entry { name: "/feature", aliases: &[], desc: "Generate Minecraft features" },
+    Entry { name: "/structure", aliases: &[], desc: "Generate Minecraft structures" },
+    Entry { name: "/generatebiome", aliases: &["/genbiome", "/gb"], desc: "Sets biome according to a formula." },
+    Entry { name: "toggleeditwand", aliases: &[], desc: "Remind the user that the wand is now a tool and can be unbound with /tool none." },
+    Entry { name: "forestgen", aliases: &[], desc: "Generate a forest" },
+    Entry { name: "pumpkins", aliases: &[], desc: "Generate pumpkin patches" },
 ];
 
 /// The sub-commands of the commands that have some: name and description.
@@ -120,10 +156,23 @@ const SUBS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "snapshot",
+        &[
+            ("after", "Choose the first snapshot that occurred after the given date"),
+            ("before", "Choose the first snapshot that occurred before the given date"),
+            ("list", "List snapshots"),
+            ("sel", "Choose the snapshot based on the list id"),
+            ("use", "Choose a snapshot to use"),
+        ],
+    ),
+    (
         "brush",
         &[
+            ("apply", "Apply brush, apply a function to every block"),
             ("cylinder", "Choose the cylinder brush"),
+            ("deform", "Deform brush, applies an expression to an area"),
             ("none", "Unbind a bound brush from your current item"),
+            ("paint", "Paint brush, apply a function to a surface"),
             ("smooth", "Choose the terrain softener brush"),
             ("sphere", "Choose the sphere brush"),
         ],
@@ -305,7 +354,15 @@ impl Engine {
                 text.push_str(&format!("\nplayers with a session: {}\n", self.sessions.len()));
                 std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("report.txt"), text)).map_err(|e| format!("Failed to write report: {}", e.kind()))?;
                 let shown = dir.file_name().map_or_else(|| "report.txt".to_owned(), |d| format!("{}/report.txt", d.to_string_lossy()));
-                Ok(vec![format!("WorldEdit report written to {shown}")])
+                let mut lines = vec![format!("WorldEdit report written to {shown}")];
+                if args.flag('p') {
+                    self.permitted(actor, Some("worldedit.report.pastebin"))?;
+                    let text = std::fs::read_to_string(dir.join("report.txt")).map_err(|e| format!("Failed to write report: {}", e.kind()))?;
+                    let meta = crate::horizon_worldedit_core::paste::Meta { name: None, author: Some(&actor.name), extension: Some("report") };
+                    let url = crate::horizon_worldedit_core::paste::upload(&self.paste_base, &text, &meta)?;
+                    lines.push(format!("WorldEdit report: {url}.report"));
+                }
+                Ok(lines)
             }
             "trace" => {
                 let wanted = match args.get(1).map(str::to_ascii_lowercase).as_deref() {
@@ -323,7 +380,10 @@ impl Engine {
                 Ok(vec![if now { "Trace mode now active." } else { "Trace mode now inactive." }.into()])
             }
             // The CUI handshake of the WorldEdit client mod: this server has no plugin channel to answer on.
-            "cui" => Ok(Vec::new()),
+            "cui" => {
+                self.cui_enable(actor);
+                Ok(Vec::new())
+            }
             "tz" => self.timezone(actor, args, env),
             other => Err(format!("The sub-command '{other}' under 'worldedit' could not be found.")),
         }

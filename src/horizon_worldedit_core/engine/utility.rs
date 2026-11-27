@@ -85,7 +85,7 @@ impl Engine {
         let visitable = |from: Pos, to: Pos| (recursive || from[1] == origin[1] || to[1] < from[1]) && open(to);
         let found = search(&[origin], if recursive { &SIX } else { &NOT_UP }, &visitable)?;
         let salt = self.salt(actor);
-        let ops = found.into_iter().map(|p| (p, pattern.pick(salt, p))).collect();
+        let ops = found.into_iter().map(|p| (p, pattern.pick_with(&*world, salt, p))).collect();
         let (n, note) = self.commit(world, actor, ops)?;
         Ok(vec![format!("{n} blocks have been filled.{note}")])
     }
@@ -365,7 +365,7 @@ impl Engine {
         let mask = Mask::parse(world, if text.is_empty() { "#existing" } else { &text }, actor.held.as_deref())?;
         let mut found: Option<(Pos, Pos)> = None;
         for p in c.positions() {
-            if world.get(p).is_some_and(|s| mask.hits(world, s)) {
+            if world.get(p).is_some_and(|s| mask.hits_at(world, p, s)) {
                 found = Some(match found {
                     None => (p, p),
                     Some((lo, hi)) => (std::array::from_fn(|a| lo[a].min(p[a])), std::array::from_fn(|a| hi[a].max(p[a]))),
@@ -409,6 +409,9 @@ impl Engine {
 
     /// `//toggleplace`: shapes and fills are made at position 1 instead of at your feet, and back.
     pub(super) fn toggle_place(&mut self, actor: &Actor) -> R {
+        if actor.uuid == CONSOLE_UUID {
+            return Err("Cannot toggle placing in this context.".into());
+        }
         let s = self.sessions.get(actor.uuid);
         s.place_kind = if s.place_kind == PlaceKind::Pos1 { PlaceKind::Player } else { PlaceKind::Pos1 };
         s.place_offset = [0; 3];
@@ -484,16 +487,21 @@ impl Engine {
         Ok(out)
     }
 
-    /// `//timeout [ms]`: the evaluation timeout (`calculation.timeout`, 100 ms). Recorded only: the calculator
-    /// here has no timeout to apply it to.
+    /// `//timeout [ms]`: the evaluation timeout, `calculation.timeout` unless given; a player without `worldedit.timeout.unrestricted`
+    /// may not go above `calculation.max-timeout`.
     pub(super) fn timeout(&mut self, actor: &Actor, args: &Args) -> R {
+        let default = self.config.calculation_timeout;
         let limit = match args.get(0) {
-            Some(w) => w.parse::<i64>().map_err(|_| number_error(w))?.max(-1),
-            None => DEFAULT_TIMEOUT_MS,
+            Some(w) => i64::from(w.parse::<i32>().map_err(|_| number_error(w))?).max(-1),
+            None => default,
         };
+        let max = self.config.calculation_max_timeout;
+        if !self.holds(actor, "worldedit.timeout.unrestricted") && max > -1 && limit > max {
+            return Err(format!("Your maximum allowable timeout is {max}ms."));
+        }
         self.sessions.get(actor.uuid).timeout_ms = Some(limit);
         let mut line = format!("Timeout time set to {limit}ms.");
-        if limit != DEFAULT_TIMEOUT_MS {
+        if limit != default {
             line.push_str(" (Use //timeout to go back to the default.)");
         }
         Ok(vec![line])
@@ -647,9 +655,6 @@ impl Engine {
         Ok(out)
     }
 }
-
-/// `//timeout`'s default, `calculation.timeout`, in milliseconds.
-const DEFAULT_TIMEOUT_MS: i64 = 100;
 
 /// `on`/`true` and `off`/`false`, any case: the switch words of `//fast` and `//drawsel`.
 fn switch_arg(word: &str) -> Option<bool> {

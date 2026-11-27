@@ -21,7 +21,7 @@ pub fn overlay(world: &dyn World, region: &Cuboid, pattern: &Pattern, salt: u64)
                     Some(s) if !world.is_air(s) => {
                         let p = [x, y + 1, z];
                         if p[1] <= world.max_y() {
-                            out.push((p, pattern.pick(salt, p)));
+                            out.push((p, pattern.pick_with(&*world, salt, p)));
                         }
                         break;
                     }
@@ -75,7 +75,7 @@ pub fn hollow(world: &dyn World, region: &Cuboid, thickness: i32, pattern: &Patt
         let layer: Vec<Pos> = region.positions().filter(|&p| DIRS.iter().any(|&d| outside.contains(&add(p, d)))).collect();
         outside.extend(layer);
     }
-    region.positions().filter(|&p| !DIRS.iter().any(|&d| outside.contains(&add(p, d)))).map(|p| (p, pattern.pick(salt, p))).collect()
+    region.positions().filter(|&p| !DIRS.iter().any(|&d| outside.contains(&add(p, d)))).map(|p| (p, pattern.pick_with(&*world, salt, p))).collect()
 }
 
 /// `//naturalize`, as WorldEdit's `Naturalizer`: in each column, from the first grass, dirt or
@@ -363,7 +363,7 @@ pub fn stack(world: &dyn World, region: &Cuboid, step: Pos, count: i32, skip_air
     let mut source = Vec::with_capacity(region.volume() as usize);
     for p in region.positions() {
         let s = world.get(p).ok_or("Part of the selection is not loaded")?;
-        if !(skip_air && world.is_air(s)) && only.is_none_or(|m| m.hits(world, s)) {
+        if !(skip_air && world.is_air(s)) && only.is_none_or(|m| m.hits_at(world, p, s)) {
             source.push((p, s));
         }
     }
@@ -382,7 +382,7 @@ pub fn carried_entities(world: &dyn World, region: &Cuboid, shifts: &[Pos], only
     let mut out = HashMap::new();
     for p in region.positions() {
         let Some(s) = world.get(p) else { continue };
-        if world.is_air(s) || !only.is_none_or(|m| m.hits(world, s)) {
+        if world.is_air(s) || !only.is_none_or(|m| m.hits_at(world, p, s)) {
             continue;
         }
         if let Some(tag) = world.block_entity_at(p) {
@@ -400,8 +400,8 @@ pub fn move_region(world: &dyn World, region: &Cuboid, by: Pos, leave: &Pattern,
     let mut cleared = Vec::with_capacity(region.volume() as usize);
     for p in region.positions() {
         let s = world.get(p).ok_or("Part of the selection is not loaded")?;
-        if !(skip_air && world.is_air(s)) && only.is_none_or(|m| m.hits(world, s)) {
-            cleared.push((p, leave.pick(salt, p)));
+        if !(skip_air && world.is_air(s)) && only.is_none_or(|m| m.hits_at(world, p, s)) {
+            cleared.push((p, leave.pick_with(&*world, salt, p)));
             placed.push((add(p, by), s));
         }
     }
