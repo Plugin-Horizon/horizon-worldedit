@@ -1052,7 +1052,7 @@ fn tools_bind_and_click() {
     // A tool and a brush never share an item.
     run(&mut e, &mut w, &a, "/brush sphere stone 2");
     assert!(e.tool_click(&mut w, &a, false, [0, 70, 0], 20_000).is_none());
-    assert_eq!(fails(&mut e, &mut w, &a, "/tool bogus"), "Invalid sub-command 'bogus'. Options: selwand, farwand, navwand, floodfill, repl, info, lrbuild, tree, cycler, deltree, none, stacker\nUsage: /tool <selwand|farwand|navwand|floodfill|repl|info|lrbuild|tree|cycler|deltree|none|stacker>");
+    assert_eq!(fails(&mut e, &mut w, &a, "/tool bogus"), "Invalid sub-command 'bogus'. Options: stacker, repl, lrbuild, floodfill, tree, info, cycler, none, selwand, deltree, navwand, farwand\nUsage: /tool <stacker|repl|lrbuild|floodfill|tree|info|cycler|none|selwand|deltree|navwand|farwand>");
     a.held = None;
     assert_eq!(fails(&mut e, &mut w, &a, "/tool info"), "Can't bind tool to Air: Blocks can't be used.");
 }
@@ -1733,7 +1733,7 @@ fn paper_argument_errors() {
     assert_eq!(f("/gmask help"), "Invalid value for [mask] (No match for 'help'.), acceptable values are any mask | Usage: /gmask [mask]");
     assert_eq!(f("/mask help"), "Invalid value for [mask] (No match for 'help'.), acceptable values are any mask | Usage: /mask [mask]");
     assert_eq!(f("/searchitem"), "Missing argument for <query...>. | Usage: /searchitem [-bi] [-p <page>] <query...>");
-    for c in ["chunkinfo", "toggleeditwand", "info", "navwand", "farwand", "cycler", "deltree", "selwand", "j", "jumpto", "thru", "unstuck", "toggleplace"] {
+    for c in ["chunkinfo", "toggleeditwand", "info", "navwand", "farwand", "cycler", "deltree", "selwand", "j", "jumpto", "thru", "unstuck", "toggleplace", "none"] {
         assert_eq!(f(&format!("/{c} help")), format!("Too many arguments. | Usage: /{c}"), "{c}");
     }
     assert_eq!(f("/listchunks help"), "Too many arguments. | Usage: /listchunks [-p <page>]");
@@ -1747,7 +1747,7 @@ fn paper_group_commands() {
     let mut w = FakeWorld::new();
     let a = actor(41);
     let mut f = |line: &str| fails(&mut e, &mut w, &a, line).replace('\n', " | ");
-    assert_eq!(f("/tool"), "No sub-command provided. Options: selwand, farwand, navwand, floodfill, repl, info, lrbuild, tree, cycler, deltree, none, stacker | Usage: /tool <selwand|farwand|navwand|floodfill|repl|info|lrbuild|tree|cycler|deltree|none|stacker>");
+    assert_eq!(f("/tool"), "No sub-command provided. Options: stacker, repl, lrbuild, floodfill, tree, info, cycler, none, selwand, deltree, navwand, farwand | Usage: /tool <stacker|repl|lrbuild|floodfill|tree|info|cycler|none|selwand|deltree|navwand|farwand>");
     assert_eq!(f("/we"), "No sub-command provided. Options: help, version, trace, reload, cui, tz, report | Usage: /we <help|version|trace|reload|cui|tz|report>");
     assert_eq!(f("/schem"), "No sub-command provided. Options: list, formats, load, delete, save, share | Usage: /schem <list|formats|load|delete|save|share>");
     assert_eq!(f("/snap"), "No sub-command provided. Options: before, use, sel, after, list | Usage: /snap <before|use|sel|after|list>");
@@ -1814,4 +1814,13 @@ fn roots_owned_by_other_plugins_are_not_registered() {
         assert!(!crate::horizon_worldedit_core::is_command(&format!("/{root}")), "/{root} is heard");
     }
     assert!(crate::horizon_worldedit_core::is_command("searchitem stone"));
+}
+
+#[test]
+fn butcher_and_remove_are_single_slash_commands() {
+    // Paper registers `/butcher`, `/remove`, `/rem` and `/rement` with one slash only.
+    for c in ["butcher", "remove", "rem", "rement"] {
+        assert!(crate::horizon_worldedit_core::engine::form_allows(&format!("/{c} 5"), false), "{c}");
+        assert!(!crate::horizon_worldedit_core::engine::form_allows(&format!("/{c} 5"), true), "{c}");
+    }
 }

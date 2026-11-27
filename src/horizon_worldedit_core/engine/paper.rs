@@ -9,7 +9,7 @@ const CHECKED: &[&str] = &[
     "up", "ascend", "asc", "descend", "desc", "extinguish", "ex", "ext", "fixlava", "fixwater", "floodfill", "flood", "forestgen", "green", "snow",
     "thaw", "gmask", "mask", "tracemask", "material", "lrbuild", "searchitem", "chunkinfo", "delchunks", "listchunks", "toggleeditwand", "toggleplace",
     "pumpkins", "range", "remove", "rem", "rement", "replacenear", "butcher", "ceil", "jumpto", "j", "thru", "unstuck", "info", "cycler", "deltree",
-    "farwand", "navwand", "selwand", "tree", "undo", "redo", "biomeinfo", "biomelist", "biomels", "repl", "placement", "size",
+    "farwand", "navwand", "selwand", "none", "tree", "undo", "redo", "biomeinfo", "biomelist", "biomels", "repl", "placement", "size",
 ];
 
 /// The tool commands that also exist as global words (`/selwand`), and their names under `/tool`.
@@ -53,7 +53,7 @@ pub const DEPRECATION: &str = "Global tool names cause conflicts and will be rem
 /// The group commands: (words typed, Paper's sub-command order, key of `GROUP_WORDS`).
 const GROUPS: &[(&[&str], &str, &str)] = &[
     (&["brush", "br"], "forest, splatter, butcher, paint, none, clipboard, snowsmooth, gravity, heightmap, extinguish, feature, sphere, raise, smooth, cylinder, set, apply, deform, lower, erode, dilate, snow, biome, morph", "brush"),
-    (&["tool"], "selwand, farwand, navwand, floodfill, repl, info, lrbuild, tree, cycler, deltree, none, stacker", "tool"),
+    (&["tool"], "stacker, repl, lrbuild, floodfill, tree, info, cycler, none, selwand, deltree, navwand, farwand", "tool"),
     (&["we", "worldedit"], "help, version, trace, reload, cui, tz, report", "we"),
     (&["schem", "schematic"], "list, formats, load, delete, save, share", "schem"),
     (&["snap", "snapshot"], "before, use, sel, after, list", "snap"),

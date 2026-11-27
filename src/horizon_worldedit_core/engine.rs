@@ -741,7 +741,7 @@ pub const NOT_OURS: &[&str] = &["stack", "l"];
 /// names in `BOTH_FORMS` it registers both ways (`/brush` and `//brush`); every other command is
 /// registered with a leading `/` in its name (`@Command(name = "/set")`), which the player types as
 /// `//set`.
-pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "range", "tracemask", "superpickaxe", "pickaxe", "sp", "clearclipboard", "selwand", "navwand", "farwand", "tree", "deltree", "lrbuild", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks", "snapshot", "snap", "toggleeditwand", "forestgen", "pumpkins"];
+pub const SINGLE_SLASH: &[&str] = &["we", "worldedit", "mask", "none", "tool", "range", "tracemask", "superpickaxe", "pickaxe", "sp", "clearclipboard", "selwand", "navwand", "farwand", "tree", "deltree", "lrbuild", "info", "cycler", "repl", "floodfill", "flood", "placement", "chunkinfo", "listchunks", "snapshot", "snap", "toggleeditwand", "forestgen", "pumpkins", "butcher", "remove", "rem", "rement"];
 pub const BOTH_FORMS: &[&str] = &[
     "brush", "br", "schem", "schematic", "undo", "redo", "clearhistory", "material", "removeabove", "removebelow", "removenear", "replacenear", "fixwater", "fixlava", "snow", "thaw", "green", "extinguish", "ex", "ext", "gmask",
     "toggleplace", "searchitem", "ascend", "asc", "descend", "desc", "thru", "jumpto", "j", "unstuck", "ceil", "restore",
