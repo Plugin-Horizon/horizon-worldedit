@@ -5,9 +5,16 @@
 //! match named properties only, `0` for air and `hand` for the held block, as WorldEdit has them.
 
 use crate::horizon_worldedit_core::block::BlockState;
+use crate::horizon_worldedit_core::engine::expr::Expr;
+use crate::horizon_worldedit_core::legacy::Legacy;
+use crate::horizon_worldedit_core::nbt::Tag;
+use crate::horizon_worldedit_core::snbt;
+use crate::horizon_worldedit_core::region::Cuboid;
+use crate::horizon_worldedit_core::selector::Shape;
 use crate::horizon_worldedit_core::world::{Pos, StateId, World};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Splits a pattern or mask on the commas outside `[...]`, so
 /// `oak_stairs[facing=east,half=top],stone` is two entries.
@@ -17,8 +24,8 @@ pub fn split_entries(spec: &str) -> Vec<String> {
     let mut start = 0usize;
     for (i, ch) in spec.char_indices() {
         match ch {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 out.push(spec[start..i].to_owned());
                 start = i + 1;
@@ -48,13 +55,201 @@ fn weighted<'a>(part: &'a str, spec: &str) -> Result<(f64, &'a str), String> {
     Ok((1.0, t))
 }
 
-/// A typed block name as a state to look up: `0` is air, `hand` the held block.
-fn typed_state(name: &str, hand: Option<&str>) -> Option<BlockState> {
-    match name {
-        "0" => Some(BlockState::air()),
-        "hand" => BlockState::parse(hand?),
-        _ => BlockState::parse(name),
+/// What a block string names: the state as typed and the block entity data it brings (`chest{Items:[...]}`, a sign's text).
+struct Typed {
+    state: BlockState,
+    nbt: Option<Tag>,
+}
+
+/// Splits `stone|a|b` at the `|` and `;` outside brackets and braces, dropping empty parts at the end.
+fn split_extra(input: &str) -> Vec<String> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0usize, 0usize);
+    for (i, ch) in input.char_indices() {
+        match ch {
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth = depth.saturating_sub(1),
+            '|' | ';' if depth == 0 => {
+                parts.push(input[start..i].to_owned());
+                start = i + 1;
+            }
+            _ => {}
+        }
     }
+    parts.push(input[start..].to_owned());
+    while parts.len() > 1 && parts.last().is_some_and(String::is_empty) {
+        parts.pop();
+    }
+    parts
+}
+
+/// The wool a colour word names (`red` is `minecraft:red_wool`), as the legacy block syntax allows.
+fn wool(word: &str) -> String {
+    let colour = match word.to_ascii_lowercase().as_str() {
+        c @ ("white" | "black" | "blue" | "brown" | "cyan" | "green" | "lime" | "magenta" | "orange" | "pink" | "purple" | "yellow" | "red") => c.to_owned(),
+        "gray" | "grey" => "gray".to_owned(),
+        "light_blue" | "lightblue" => "light_blue".to_owned(),
+        "light_gray" | "light_grey" | "lightgray" | "lightgrey" => "light_gray".to_owned(),
+        _ => return word.to_owned(),
+    };
+    format!("minecraft:{colour}_wool")
+}
+
+/// `id` or `id:data` of the legacy block syntax (`35:5`).
+fn legacy_ids(word: &str) -> Option<(i32, i32)> {
+    let (id, data) = match word.split_once(':') {
+        Some((i, d)) => (i, d),
+        None => (word, "0"),
+    };
+    Some((id.parse().ok()?, data.parse().ok()?))
+}
+
+/// The index of the `]` or `}` that closes the bracket at `open`.
+fn closing(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, ch) in text.char_indices().skip_while(|(i, _)| *i < open) {
+        match ch {
+            '[' | '{' => depth += 1,
+            ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The sign text a `stone|a|b|c|d` entry carries (`SignBlock`), the spawner's mob and the skull's owner.
+fn extra_nbt(name: &str, extra: &[String]) -> Result<Option<Tag>, String> {
+    let n = name.trim_start_matches("minecraft:");
+    let compound = |items: Vec<(&str, Tag)>| Tag::Compound(items.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+    if n.ends_with("_sign") || n.ends_with("_hanging_sign") {
+        let line = |i: usize| compound(vec![("text", Tag::String(extra.get(i).cloned().unwrap_or_default()))]);
+        let side = |lines: Vec<Tag>| compound(vec![("messages", Tag::List(lines)), ("color", Tag::String("black".into())), ("has_glowing_text", Tag::Byte(0))]);
+        let blank = || compound(vec![("text", Tag::String(String::new()))]);
+        return Ok(Some(compound(vec![
+            ("front_text", side((0..4).map(line).collect())),
+            ("back_text", side((0..4).map(|_| blank()).collect())),
+            ("is_waxed", Tag::Byte(0)),
+        ])));
+    }
+    if n == "spawner" {
+        let mob = extra.first().map_or("pig".to_owned(), |m| m.to_ascii_lowercase());
+        let id = if mob.contains(':') { mob } else { format!("minecraft:{mob}") };
+        return Ok(Some(compound(vec![("SpawnData", compound(vec![("entity", compound(vec![("id", Tag::String(id))]))]))])));
+    }
+    if n == "player_head" || n == "player_wall_head" {
+        return Ok(extra.first().map(|owner| compound(vec![("profile", compound(vec![("name", Tag::String(owner.replace(' ', "_")))]))])));
+    }
+    Ok(None)
+}
+
+/// One block as `DefaultBlockParser` reads it: `stone`, `35:5`, `red`, `hand`, `pos1`, `oak_stairs[facing=east]`, `chest{...}`,
+/// `oak_sign|line one|line two`.
+fn parse_typed(world: &dyn World, input: &str, hand: Option<&str>) -> Result<Typed, String> {
+    let unknown_block = || format!("Block name '{input}' was not recognized.");
+    let parts = split_extra(input.trim());
+    let mut head = parts.first().cloned().unwrap_or_default();
+    if head.is_empty() {
+        return Err(unknown_block());
+    }
+    head = wool(&head);
+    if let Some((id, data)) = legacy_ids(&head) {
+        if let Some(state) = Legacy::build(world).state_of(id, data) {
+            return Ok(Typed { state: world.describe(state), nbt: None });
+        }
+    }
+    // The type up to a state or NBT section, then the state, then the NBT.
+    let end = head.find(['[', '{']).unwrap_or(head.len());
+    let type_text = head[..end].to_owned();
+    let mut cursor = end;
+    let mut state_text: Option<String> = None;
+    if head[cursor..].starts_with('[') {
+        if cursor + 1 >= head.len() {
+            return Err(format!("Invalid format. Hanging bracket at '{cursor}'."));
+        }
+        let close = closing(&head, cursor).ok_or("State is missing trailing ']'")?;
+        state_text = Some(head[cursor + 1..close].to_owned());
+        cursor = close + 1;
+    }
+    let mut nbt_text: Option<String> = None;
+    if head[cursor..].starts_with('{') {
+        if cursor + 1 >= head.len() {
+            return Err(format!("Invalid format. Hanging brace at '{cursor}'."));
+        }
+        let close = closing(&head, cursor).ok_or("NBT is missing trailing '}'")?;
+        nbt_text = Some(head[cursor..=close].to_owned());
+        cursor = close + 1;
+    }
+    if cursor < head.len() {
+        let rest = &head[cursor..];
+        return Err(if rest.starts_with('[') {
+            if state_text.is_none() { format!("Block state must come before NBT data, found '{rest}'") } else { format!("Only one block state section is allowed, found '{rest}'") }
+        } else if rest.starts_with('{') {
+            format!("Only one NBT section is allowed, found '{rest}'")
+        } else {
+            format!("Unexpected text after block: '{rest}'")
+        });
+    }
+    if type_text.is_empty() {
+        return Err(format!("Missing block type in '{head}'"));
+    }
+    // The block the type names.
+    let base: BlockState = match type_text.to_ascii_lowercase().as_str() {
+        "hand" => BlockState::parse(hand.ok_or("This item is not a block.")?).ok_or("This item is not a block.")?,
+        "offhand" => BlockState::parse(&ctx().offhand.ok_or("This item is not a block.")?).ok_or("This item is not a block.")?,
+        "pos1" => {
+            let primary = ctx().primary.ok_or("Make a region selection first.")?;
+            world.get(primary).map(|s| world.describe(s)).ok_or("Make a region selection first.")?
+        }
+        _ => {
+            let parsed = BlockState::parse(&type_text.to_ascii_lowercase()).ok_or_else(unknown_block)?;
+            let default = world.resolve(&BlockState { name: parsed.name.clone(), properties: Default::default() }).ok_or_else(unknown_block)?;
+            world.describe(default)
+        }
+    };
+    let default_id = world.resolve(&BlockState { name: base.name.clone(), properties: Default::default() }).ok_or_else(unknown_block)?;
+    let default = world.describe(default_id);
+    let mut state = if matches!(type_text.to_ascii_lowercase().as_str(), "hand" | "offhand" | "pos1") { base.clone() } else { default.clone() };
+    if let Some(text) = state_text {
+        let mut seen: Vec<String> = Vec::new();
+        for pair in text.split(',') {
+            let Some((k, v)) = pair.split_once('=').filter(|(k, v)| !k.is_empty() && !v.is_empty() && !v.contains('=')) else {
+                return Err(format!("Bad state format in {pair}"));
+            };
+            if !default.properties.contains_key(k) {
+                return Err(format!("Unknown property '{k}' for block '{}'", base.name));
+            }
+            if seen.iter().any(|s| s == k) {
+                return Err(format!("Duplicate property: {k}"));
+            }
+            seen.push(k.to_owned());
+            let mut probe = state.clone();
+            probe.properties.insert(k.to_owned(), v.to_owned());
+            if world.resolve(&probe).is_none() {
+                return Err(format!("Unknown value '{v}' for property '{k}'"));
+            }
+            state = probe;
+        }
+    }
+    let mut nbt = None;
+    if let Some(text) = nbt_text {
+        nbt = Some(snbt::parse_compound(&text).map_err(|e| format!("Invalid NBT Data in input: '{input}'. Error: {e}"))?);
+    }
+    if nbt.is_some() && parts.len() > 1 {
+        return Err(format!("NBT data cannot be combined with '|' extra data, found '{}'", parts[1]));
+    }
+    if nbt.is_none() && parts.len() > 1 {
+        nbt = extra_nbt(&state.name, &parts[1..])?;
+    }
+    Ok(Typed { state, nbt })
+}
+
+/// A typed block name as a state to look up (the state only: masks have no use for the block entity data).
+fn typed_state(world: &dyn World, name: &str, hand: Option<&str>) -> Option<BlockState> {
+    parse_typed(world, name, hand).ok().map(|t| t.state)
 }
 
 /// One block, or a weighted list picked per position.
@@ -63,49 +258,288 @@ pub struct Pattern {
     pub text: String,
     pub entries: Vec<(u32, StateId)>,
     total: u32,
+    /// What depends on the block that stands there: `^[state]`, `*block`, `#clipboard`. `entries` then holds one placeholder.
+    dynamic: Option<Arc<Dynamic>>,
+    /// The block entity data of each entry (`chest{...}`, signs): the same length as `entries`, or empty when there is none.
+    nbts: Vec<Option<Tag>>,
+}
+
+/// The patterns that look at the world or the clipboard.
+#[derive(Clone, Debug, PartialEq)]
+enum Dynamic {
+    /// `#clipboard`, `#copy`, with an optional `@[x,y,z]` offset: the clipboard repeated over the world.
+    Tile { view: Arc<ClipView>, offset: Pos },
+    /// `*block[state]`: any of the states that fit.
+    RandomState(Vec<StateId>),
+    /// `^[prop=value]`, `^block`, `^block[prop=value]`, `^pattern`: the block that stands there with the type of `base` (when
+    /// given) and these property values.
+    Apply { base: Option<Box<Pattern>>, props: Vec<(String, String)> },
 }
 
 impl Pattern {
     pub fn single(state: StateId, text: &str) -> Self {
-        Self { text: text.to_owned(), entries: vec![(1, state)], total: 1 }
+        Self { text: text.to_owned(), entries: vec![(1, state)], total: 1, dynamic: None, nbts: Vec::new() }
     }
     /// The pattern `spec` names, or the entry that isn't a block.
     pub fn parse(world: &dyn World, spec: &str, hand: Option<&str>) -> Result<Self, String> {
         if spec.trim().is_empty() {
             return Err("A pattern is needed: a block such as stone, or a list such as 70%stone,30%gravel".into());
         }
+        let trimmed = spec.trim();
+        // The parsers that take the whole input: `#clipboard`, `^...`, `*...` (the random list comes first, as in WorldEdit).
+        if split_entries(trimmed).len() == 1 {
+            if let Some(found) = Self::dynamic_pattern(world, trimmed, hand) {
+                return found;
+            }
+        }
         let mut chances = Vec::new();
+        let mut nbts = Vec::new();
         for part in split_entries(spec) {
             let (chance, name) = weighted(&part, spec)?;
-            let state = typed_state(name, hand)
-                .and_then(|s| world.resolve(&s))
-                .ok_or_else(|| unknown(world, name, hand))?;
+            let typed = parse_typed(world, name, hand).map_err(|e| if e.starts_with("Block name ") { unknown(world, name, hand) } else { e })?;
+            let state = world.resolve(&typed.state).ok_or_else(|| unknown(world, name, hand))?;
             chances.push((chance, state));
+            nbts.push(typed.nbt);
         }
         // Whole chances stay as they are; a fractional one scales every chance by 1000.
         let scale = if chances.iter().any(|(c, _)| c.fract() != 0.0) { 1000.0 } else { 1.0 };
         let entries: Vec<(u32, StateId)> = chances.into_iter().map(|(c, s)| ((c * scale).round().clamp(0.0, f64::from(u32::MAX / 64)) as u32, s)).collect();
         let total = entries.iter().fold(0u32, |t, (w, _)| t.saturating_add(*w));
-        Ok(Self { text: spec.trim().to_owned(), entries, total })
+        Ok(Self { text: spec.trim().to_owned(), entries, total, dynamic: None, nbts })
     }
+    /// `#clipboard`, `^...` and `*...`: `None` for any other input.
+    fn dynamic_pattern(world: &dyn World, spec: &str, hand: Option<&str>) -> Option<Result<Self, String>> {
+        let air = world.resolve(&BlockState::air()).unwrap_or(0);
+        let made = |dynamic: Dynamic| Self { text: spec.to_owned(), entries: vec![(1, air)], total: 1, dynamic: Some(Arc::new(dynamic)), nbts: Vec::new() };
+        let lower = spec.to_ascii_lowercase();
+        // `#clipboard`, `#copy`, each with `@[x,y,z]`.
+        let (head, offset_text) = match spec.split_once('@') {
+            Some((h, o)) => (h, Some(o)),
+            None => (spec, None),
+        };
+        if head.eq_ignore_ascii_case("#clipboard") || head.eq_ignore_ascii_case("#copy") {
+            let mut offset = [0; 3];
+            if let Some(coords) = offset_text {
+                if coords.len() < 7 || !coords.starts_with('[') || !coords.ends_with(']') {
+                    return Some(Err("Offset specified with @ but no offset given. Use '#copy@[x,y,z]'.".into()));
+                }
+                let parts: Vec<&str> = coords[1..coords.len() - 1].split(',').collect();
+                if parts.len() != 3 {
+                    return Some(Err("Clipboard offset needs x,y,z coordinates.".into()));
+                }
+                for (i, part) in parts.iter().enumerate() {
+                    match part.trim().parse::<i32>() {
+                        Ok(v) => offset[i] = v,
+                        Err(_) => return Some(Err(format!("For input string: \"{part}\""))),
+                    }
+                }
+            }
+            let Some(view) = ctx().clipboard else { return Some(Err("Your clipboard is empty. Use //copy first.".into())) };
+            return Some(Ok(made(Dynamic::Tile { view, offset })));
+        }
+        if let Some(tag) = spec.strip_prefix("##") {
+            // `##tag`: a random block of the tag (its default state); `##*tag`: a random state of a random block.
+            let (all_states, name) = match tag.strip_prefix('*') {
+                Some(t) => (true, t),
+                None => (false, tag),
+            };
+            let id = if name.contains(':') { name.to_ascii_lowercase() } else { format!("minecraft:{}", name.to_ascii_lowercase()) };
+            if world.block_in_tag(air, &id).is_none() {
+                return Some(Err(format!("Tag name '{name}' was not recognized.")));
+            }
+            let mut states = Vec::new();
+            for block in world.block_names() {
+                let Some(default) = world.resolve(&BlockState { name: block.clone(), properties: Default::default() }) else { continue };
+                if world.block_in_tag(default, &id) != Some(true) {
+                    continue;
+                }
+                if all_states {
+                    let described = world.describe(default);
+                    let mut axes: Vec<(String, Vec<String>)> = Vec::new();
+                    for key in described.properties.keys() {
+                        axes.push((key.clone(), world.property_values(&block, key)));
+                    }
+                    let total: usize = axes.iter().map(|(_, v)| v.len().max(1)).product();
+                    for i in 0..total.min(4096) {
+                        let mut n = i;
+                        let mut props = std::collections::BTreeMap::new();
+                        for (k, values) in &axes {
+                            if values.is_empty() {
+                                continue;
+                            }
+                            props.insert(k.clone(), values[n % values.len()].clone());
+                            n /= values.len();
+                        }
+                        if let Some(state) = world.resolve(&BlockState { name: block.clone(), properties: props }) {
+                            states.push(state);
+                        }
+                    }
+                } else {
+                    states.push(default);
+                }
+            }
+            if states.is_empty() {
+                return Some(Err(format!("Tag name '{name}' has no contents.")));
+            }
+            return Some(Ok(made(Dynamic::RandomState(states))));
+        }
+        if let Some(rest) = spec.strip_prefix('*') {
+            // `*block[state]`: every state of the block that has the given properties.
+            let Some(state) = BlockState::parse(rest) else { return Some(Err(format!("Block name '{rest}' was not recognized."))) };
+            let Some(default) = world.resolve(&BlockState { name: state.name.clone(), properties: Default::default() }) else {
+                return Some(Err(format!("Block name '{rest}' was not recognized.")));
+            };
+            let default = world.describe(default);
+            let mut axes: Vec<(String, Vec<String>)> = Vec::new();
+            for key in default.properties.keys() {
+                match state.properties.get(key) {
+                    Some(v) => axes.push((key.clone(), vec![v.clone()])),
+                    None => axes.push((key.clone(), world.property_values(&default.name, key))),
+                }
+            }
+            if axes.iter().any(|(_, v)| v.is_empty()) {
+                return Some(Err(format!("Block name '{rest}' was not recognized.")));
+            }
+            let total: usize = axes.iter().map(|(_, v)| v.len()).product();
+            if total > 100_000 {
+                return Some(Err("Too many block states to pick from.".into()));
+            }
+            let mut states = Vec::new();
+            for i in 0..total {
+                let mut n = i;
+                let mut props = std::collections::BTreeMap::new();
+                for (k, values) in &axes {
+                    props.insert(k.clone(), values[n % values.len()].clone());
+                    n /= values.len();
+                }
+                if let Some(id) = world.resolve(&BlockState { name: default.name.clone(), properties: props }) {
+                    states.push(id);
+                }
+            }
+            if states.is_empty() {
+                return Some(Err(format!("Block name '{rest}' was not recognized.")));
+            }
+            // All properties given: it is just the block.
+            if states.len() == 1 {
+                return Some(Ok(Self { text: spec.to_owned(), entries: vec![(1, states[0])], total: 1, dynamic: None, nbts: Vec::new() }));
+            }
+            return Some(Ok(made(Dynamic::RandomState(states))));
+        }
+        if let Some(rest) = spec.strip_prefix('^') {
+            let (type_part, states_part) = match rest.split_once('[') {
+                Some((t, s)) if !rest.starts_with('#') => (t, Some(s)),
+                _ => (rest, None),
+            };
+            let Some(states_text) = states_part else {
+                // `^block` and `^pattern`: the type of the pattern's block.
+                return Some(Self::parse(world, rest, hand).map(|base| made(Dynamic::Apply { base: Some(Box::new(base)), props: Vec::new() })));
+            };
+            let Some(inner) = states_text.strip_suffix(']') else { return Some(Err("State is missing trailing ']'".into())) };
+            let mut props: Vec<(String, String)> = Vec::new();
+            for state in inner.split(',') {
+                if state.is_empty() {
+                    return Some(Err("Empty part in state".into()));
+                }
+                let Some((k, v)) = state.split_once('=') else { return Some(Err("Missing '=' separator".into())) };
+                if k.is_empty() {
+                    return Some(Err("Empty property in state".into()));
+                }
+                if v.is_empty() {
+                    return Some(Err("Empty value in state".into()));
+                }
+                if props.iter().any(|(p, _)| p == k) {
+                    return Some(Err(format!("Duplicate property: {k}")));
+                }
+                props.push((k.to_owned(), v.to_owned()));
+            }
+            let base = if type_part.is_empty() {
+                None
+            } else {
+                match Self::parse(world, type_part, hand) {
+                    Ok(p) => Some(Box::new(p)),
+                    Err(e) => return Some(Err(e)),
+                }
+            };
+            return Some(Ok(made(Dynamic::Apply { base, props })));
+        }
+        let _ = lower;
+        None
+    }
+
+    /// Whether the block depends on what stands at the position (then [`Pattern::pick_with`] must be used).
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic.is_some()
+    }
+
+    /// [`Pattern::pick`] for every kind of pattern: `world` is what `^`, `*` and `#clipboard` look at.
+    pub fn pick_with(&self, world: &dyn World, salt: u64, pos: Pos) -> StateId {
+        let Some(dynamic) = &self.dynamic else { return self.pick(salt, pos) };
+        match &**dynamic {
+            Dynamic::Tile { view, offset } => {
+                let size = view.size;
+                let rel = [0, 1, 2].map(|a| (pos[a] + offset[a]).rem_euclid(size[a].max(1)) + view.min[a]);
+                view.blocks.get(&rel).copied().unwrap_or_else(|| world.resolve(&BlockState::air()).unwrap_or(0))
+            }
+            Dynamic::RandomState(states) => states[(mix(salt, pos) % states.len() as u64) as usize],
+            Dynamic::Apply { base, props } => {
+                let Some(old) = world.get(pos) else { return self.entries[0].1 };
+                let old_state = world.describe(old);
+                let mut block = match base {
+                    Some(b) => {
+                        let mut new = world.describe(b.pick_with(world, salt, pos));
+                        // `TypeApplyingPattern`: the old block's properties go onto the new type where it has them.
+                        for (k, v) in &old_state.properties {
+                            if new.properties.contains_key(k) {
+                                new.properties.insert(k.clone(), v.clone());
+                            }
+                        }
+                        new
+                    }
+                    None => old_state,
+                };
+                // `StateApplyingPattern`: the named properties the block has, with values it accepts.
+                for (k, v) in props {
+                    if block.properties.contains_key(k) {
+                        let mut probe = block.clone();
+                        probe.properties.insert(k.clone(), v.clone());
+                        if world.resolve(&probe).is_some() {
+                            block = probe;
+                        }
+                    }
+                }
+                world.resolve(&block).unwrap_or(old)
+            }
+        }
+    }
+
     /// The block for `pos` in an edit with `salt`: the only one, or a weighted pick that does not
     /// depend on the order a region is walked in.
     pub fn pick(&self, salt: u64, pos: Pos) -> StateId {
         if self.entries.len() == 1 {
+            self.note_nbt(0, pos);
             return self.entries[0].1;
         }
         let mut roll = (mix(salt, pos) % u64::from(self.total.max(1))) as u32;
-        for &(weight, block) in &self.entries {
+        for (i, &(weight, block)) in self.entries.iter().enumerate() {
             if roll < weight {
+                self.note_nbt(i, pos);
                 return block;
             }
             roll -= weight;
         }
+        self.note_nbt(self.entries.len() - 1, pos);
         self.entries[self.entries.len() - 1].1
+    }
+
+    /// Remembers the block entity data of entry `i` for the block about to be written at `pos` (`take_pending_nbt`).
+    fn note_nbt(&self, i: usize, pos: Pos) {
+        if let Some(Some(tag)) = self.nbts.get(i) {
+            PENDING_NBT.with(|p| p.borrow_mut().insert(pos, tag.clone()));
+        }
     }
     /// What a report calls it: the block, or the list as typed.
     pub fn label(&self, world: &dyn World) -> String {
-        if self.entries.len() == 1 {
+        if self.entries.len() == 1 && self.dynamic.is_none() {
             world.describe(self.entries[0].1).name
         } else {
             self.text.clone()
@@ -122,6 +556,10 @@ fn unknown(world: &dyn World, name: &str, hand: Option<&str>) -> String {
     let Some(state) = BlockState::parse(name) else {
         return format!("Block name '{name}' was not recognized.");
     };
+    // An item that is no block gets its own words.
+    if world.item_names().iter().any(|i| *i == state.name) && !world.block_names().iter().any(|b| *b == state.name) {
+        return format!("The item '{}' is not a block.", state.name);
+    }
     let Some(default) = world.resolve(&BlockState { name: state.name.clone(), properties: Default::default() }) else {
         return format!("Block name '{name}' was not recognized.");
     };
@@ -161,7 +599,73 @@ pub fn next_salt(salt: &mut u64) -> u64 {
     h ^ (h >> 29)
 }
 
+/// A part of the world a mask is limited to (`#region`): the selection as it was when the mask was made.
 #[derive(Clone, Debug, PartialEq)]
+pub enum Area {
+    Box(Cuboid),
+    Shape(Shape),
+}
+
+impl Area {
+    pub fn contains(&self, p: Pos) -> bool {
+        match self {
+            Area::Box(c) => c.contains(p),
+            Area::Shape(s) => s.contains(p),
+        }
+    }
+}
+
+/// The player's clipboard as masks and patterns read it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipView {
+    /// Every block, relative to the origin.
+    pub blocks: HashMap<Pos, StateId>,
+    /// Where the clipboard's origin was in the world (zero for a clipboard from a file).
+    pub origin: Pos,
+    /// The box of the clipboard, relative to the origin: its minimum and size.
+    pub min: Pos,
+    pub size: Pos,
+}
+
+thread_local! {
+    /// The block entity data of the blocks patterns picked since the last `take_pending_nbt`, by position.
+    static PENDING_NBT: RefCell<HashMap<Pos, Tag>> = RefCell::new(HashMap::new());
+    /// What `Mask::parse` and `Pattern::parse` know of the player whose command or click is being handled.
+    static CTX: RefCell<MaskCtx> = RefCell::new(MaskCtx::default());
+}
+
+/// The block entity data patterns attached to the blocks they picked (a chest's items, a sign's text), by position; empties the list.
+pub fn take_pending_nbt() -> HashMap<Pos, Tag> {
+    PENDING_NBT.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
+/// Sets the session context for the masks and patterns parsed from now on (the engine does this for every command and click).
+pub fn set_ctx(ctx: MaskCtx) {
+    CTX.with(|c| *c.borrow_mut() = ctx);
+}
+
+fn ctx() -> MaskCtx {
+    CTX.with(|c| c.borrow().clone())
+}
+
+/// What a mask or pattern may need from the player's session when it is made.
+#[derive(Clone, Debug, Default)]
+pub struct MaskCtx {
+    /// The selection (`#region`, `#selection`, `#sel`); `None` when there is none.
+    pub region: Option<Area>,
+    /// The clipboard (`#clipboard`, `#copy`); `None` for an empty clipboard.
+    pub clipboard: Option<Arc<ClipView>>,
+    /// The player's expression timeout in milliseconds (negative: none).
+    pub timeout_ms: i64,
+    /// The first position of the selection (`pos1` as a block name).
+    pub primary: Option<Pos>,
+    /// The item in the player's off hand (`offhand` as a block name).
+    pub offhand: Option<String>,
+    /// A number that makes `%n` masks differ from one command to the next.
+    pub salt: u64,
+}
+
+#[derive(Clone, Debug)]
 enum MaskEntry {
     /// A block, and the properties it must have.
     Block(BlockState),
@@ -171,8 +675,26 @@ enum MaskEntry {
     Air,
     /// `#solid`.
     Solid,
+    /// `#fullcube`.
+    FullCube,
+    /// `#exposed`, `#surface`: not air, with air beside it.
+    Exposed,
     /// `^[prop=value]` (`^=[...]` strict): blocks having the named properties at those values.
     State { props: Vec<(String, String)>, strict: bool },
+    /// `>mask`, `<mask` (the block below, above, matches) and `~mask` (any neighbour matches): `single` is the offset's y.
+    Offset { sub: Box<Mask>, single: Option<i32> },
+    /// `%n`: a share of the positions, n percent.
+    Noise { density: f64, salt: u64 },
+    /// `=expression`.
+    Expression { expr: Arc<Expr>, timeout_ms: i64 },
+    /// `$biome,biome`.
+    Biomes(Vec<String>),
+    /// `#region`, `#dregion`: positions inside the selection (`None`: no selection, nothing matches).
+    Area(Option<Area>),
+    /// `#clipboard`: the block equals the clipboard's block at the same position.
+    Clipboard(Arc<ClipView>),
+    /// `##tag`: a block of the block tag.
+    Tag(String),
 }
 
 /// One space-separated part of a mask: any entry of its comma list, turned round by `!`.
@@ -182,14 +704,16 @@ struct Component {
     inverted: bool,
 }
 
-/// Which blocks an edit touches: every space-separated part must accept the block, and each part is
-/// a comma list of blocks or `#existing`, `#air`, `#solid`, `^[state]`, with `!` in front turning
-/// the part round.
-#[derive(Debug)]
+/// Which blocks an edit touches: every space-separated part must accept the block, and each part is a comma list of blocks
+/// or one of `#existing`, `#air`, `#solid`, `#fullcube`, `#exposed`, `#region`, `#clipboard`, `^[state]`, `=expression`, `%n`,
+/// `$biome`, `>mask`, `<mask`, `~mask`, with `!` in front turning the part round.
+#[derive(Clone, Debug)]
 pub struct Mask {
     pub text: String,
     components: Vec<Component>,
     seen: RefCell<HashMap<StateId, bool>>,
+    /// Whether the answer depends on the position (then it is not remembered by state).
+    positional: bool,
 }
 
 /// Whether a block stops movement, as WorldEdit's `#solid` and `//hollow` see it (the game does not
@@ -212,8 +736,46 @@ pub fn is_solid_name(name: &str) -> bool {
         || matches!(n, "dandelion" | "poppy" | "blue_orchid" | "allium" | "azure_bluet" | "oxeye_daisy" | "cornflower" | "lily_of_the_valley" | "wither_rose" | "torchflower" | "pink_petals" | "sunflower" | "lilac" | "rose_bush" | "peony" | "pitcher_plant" | "wheat" | "carrots" | "potatoes" | "beetroots" | "melon_stem" | "pumpkin_stem" | "attached_melon_stem" | "attached_pumpkin_stem" | "nether_wart" | "sweet_berry_bush" | "lily_pad" | "repeater" | "comparator" | "redstone_torch" | "redstone_wall_torch"))
 }
 
+/// Whether a block fills its whole cube (`Material.isFullCube`, as far as names say: stairs, slabs, fences, glass panes, plants
+/// and other partial shapes are not).
+pub fn is_full_cube_name(name: &str) -> bool {
+    let n = name.trim_start_matches("minecraft:");
+    if !is_solid_name(name) {
+        return false;
+    }
+    !(n.ends_with("_stairs")
+        || n.ends_with("_slab")
+        || n.ends_with("_fence")
+        || n.ends_with("_fence_gate")
+        || n.ends_with("_wall")
+        || n.ends_with("_pane")
+        || n.ends_with("_door")
+        || n.ends_with("_trapdoor")
+        || n.ends_with("_bed")
+        || n.ends_with("_sign")
+        || n.ends_with("_banner")
+        || n.ends_with("_head")
+        || n.ends_with("_skull")
+        || n.ends_with("_carpet")
+        || n.ends_with("_candle")
+        || n.ends_with("_leaves")
+        || n.ends_with("_chain")
+        || n.ends_with("_cauldron")
+        || n.ends_with("_pot")
+        || n.ends_with("_bars")
+        || n.ends_with("_coral_fan")
+        || n.ends_with("_coral")
+        || n.ends_with("_shulker_box")
+        || matches!(n, "chest" | "trapped_chest" | "ender_chest" | "enchanting_table" | "anvil" | "chipped_anvil" | "damaged_anvil" | "bell" | "brewing_stand" | "cauldron" | "hopper" | "end_rod" | "lightning_rod" | "ladder" | "lantern" | "soul_lantern" | "campfire" | "soul_campfire" | "grindstone" | "stonecutter" | "composter" | "daylight_detector" | "snow" | "farmland" | "dirt_path" | "end_portal_frame" | "dragon_egg" | "cake" | "flower_pot" | "scaffold" | "turtle_egg" | "sea_pickle" | "iron_bars" | "glass_pane" | "cactus" | "honey_block" | "slime_block" | "piston_head" | "moving_piston" | "conduit" | "lectern" | "decorated_pot" | "amethyst_cluster" | "small_amethyst_bud" | "medium_amethyst_bud" | "large_amethyst_bud" | "pointed_dripstone" | "chorus_plant" | "chorus_flower" | "cocoa" | "bamboo" | "big_dripleaf" | "small_dripleaf" | "sniffer_egg" | "vault" | "heavy_core" | "creaking_heart"))
+}
+
 impl Mask {
     pub fn parse(world: &dyn World, spec: &str, hand: Option<&str>) -> Result<Self, String> {
+        Self::parse_in(world, spec, hand, &ctx())
+    }
+
+    /// [`Mask::parse`] for a player with a session: `#region`, `#clipboard`, `=expression` and `%n` know about it.
+    pub fn parse_in(world: &dyn World, spec: &str, hand: Option<&str>, ctx: &MaskCtx) -> Result<Self, String> {
         let text = spec.trim();
         let mut components = Vec::new();
         for part in text.split(' ').filter(|c| !c.is_empty()) {
@@ -226,22 +788,72 @@ impl Mask {
                 inverted = !inverted;
                 body = rest;
             }
-            let entries = Self::component(world, body, hand).map_err(|e| e.unwrap_or_else(|| format!("No match for '{body}'.")))?;
+            let entries = Self::component(world, body, hand, ctx).map_err(|e| e.unwrap_or_else(|| format!("No match for '{body}'.")))?;
             components.push(Component { entries, inverted });
         }
         if components.is_empty() {
             return Err(format!("No match for '{text}'."));
         }
-        Ok(Self { text: text.to_owned(), components, seen: RefCell::new(HashMap::new()) })
+        let positional = components.iter().any(|c| c.entries.iter().any(|e| !matches!(e, MaskEntry::Block(_) | MaskEntry::Existing | MaskEntry::Air | MaskEntry::Solid | MaskEntry::FullCube | MaskEntry::State { .. } | MaskEntry::Tag(_))));
+        Ok(Self { text: text.to_owned(), components, seen: RefCell::new(HashMap::new()), positional })
     }
 
     /// The entries of one part; `Err(None)` for a part nothing recognizes ("No match").
-    fn component(world: &dyn World, body: &str, hand: Option<&str>) -> Result<Vec<MaskEntry>, Option<String>> {
-        match body {
+    fn component(world: &dyn World, body: &str, hand: Option<&str>, ctx: &MaskCtx) -> Result<Vec<MaskEntry>, Option<String>> {
+        match body.to_ascii_lowercase().as_str() {
             "#existing" => return Ok(vec![MaskEntry::Existing]),
             "#air" => return Ok(vec![MaskEntry::Air]),
             "#solid" => return Ok(vec![MaskEntry::Solid]),
+            "#fullcube" => return Ok(vec![MaskEntry::FullCube]),
+            "#exposed" | "#surface" => return Ok(vec![MaskEntry::Exposed]),
+            "#region" | "#selection" | "#sel" => {
+                let area = ctx.region.clone().ok_or_else(|| Some("Make a region selection first.".to_owned()))?;
+                return Ok(vec![MaskEntry::Area(Some(area))]);
+            }
+            "#dregion" | "#dselection" | "#dsel" => return Ok(vec![MaskEntry::Area(ctx.region.clone())]),
+            "#clipboard" | "#copy" => {
+                let clip = ctx.clipboard.clone().ok_or_else(|| Some("Your clipboard is empty. Use //copy first.".to_owned()))?;
+                return Ok(vec![MaskEntry::Clipboard(clip)]);
+            }
             _ => {}
+        }
+        if let Some(first) = body.chars().next().filter(|c| matches!(c, '>' | '<' | '~')) {
+            let sub = if body.len() > 1 { Mask::parse_in(world, &body[1..], hand, ctx).map_err(Some)? } else { Mask::existing() };
+            let single = match first {
+                '>' => Some(-1),
+                '<' => Some(1),
+                _ => None,
+            };
+            return Ok(vec![MaskEntry::Offset { sub: Box::new(sub), single }]);
+        }
+        if let Some(n) = body.strip_prefix('%') {
+            let percent: i64 = n.parse().map_err(|_| Some(format!("For input string: \"{n}\"")))?;
+            return Ok(vec![MaskEntry::Noise { density: percent as f64 / 100.0, salt: ctx.salt }]);
+        }
+        if let Some(text) = body.strip_prefix('=') {
+            let expr = Expr::parse_with(text, &["x", "y", "z"]).map_err(|_| Some("Invalid expression".to_owned()))?;
+            return Ok(vec![MaskEntry::Expression { expr: Arc::new(expr), timeout_ms: ctx.timeout_ms }]);
+        }
+        if let Some(tag) = body.strip_prefix("##") {
+            let id = if tag.contains(':') { tag.to_ascii_lowercase() } else { format!("minecraft:{}", tag.to_ascii_lowercase()) };
+            // The game answers `None` for a tag it cannot look at.
+            let air = world.resolve(&BlockState::air()).unwrap_or(0);
+            if world.block_in_tag(air, &id).is_none() {
+                return Err(Some(format!("Tag name '{tag}' was not recognized.")));
+            }
+            return Ok(vec![MaskEntry::Tag(id)]);
+        }
+        if let Some(list) = body.strip_prefix('$') {
+            let known = world.biome_names();
+            let mut out = Vec::new();
+            for name in list.split(',') {
+                let id = if name.contains(':') { name.to_ascii_lowercase() } else { format!("minecraft:{}", name.to_ascii_lowercase()) };
+                if !known.is_empty() && !known.iter().any(|b| *b == id) {
+                    return Err(Some(format!("Unknown biome '{name}'")));
+                }
+                out.push(id);
+            }
+            return Ok(vec![MaskEntry::Biomes(out)]);
         }
         if (body.starts_with("^[") || body.starts_with("^=[")) && body.ends_with(']') {
             let strict = body.as_bytes()[1] == b'=';
@@ -256,7 +868,17 @@ impl Mask {
         let mut entries = Vec::new();
         for entry in split_entries(body) {
             let (_, name) = weighted(&entry, body).map_err(Some)?;
-            let state = typed_state(name, hand).ok_or(None::<String>)?;
+            let mut state = typed_state(world, name, hand).ok_or(None::<String>)?;
+            // A mask prefers wildcards (`ParserContext.setPreferringWildcard`): only the properties it names must match.
+            let head = name.trim().to_ascii_lowercase();
+            if !matches!(head.split(['[', '{', '|']).next().unwrap_or(""), "hand" | "offhand" | "pos1") && legacy_ids(&wool(&head)).is_none() {
+                let named: Vec<String> = head
+                    .find('[')
+                    .and_then(|open| closing(&head, open).map(|close| head[open + 1..close].to_owned()))
+                    .map(|t| t.split(',').filter_map(|p| p.split_once('=').map(|(k, _)| k.to_owned())).collect())
+                    .unwrap_or_default();
+                state.properties.retain(|k, _| named.contains(k));
+            }
             // The name must be a block of this game, whatever properties it names.
             world.resolve(&BlockState { name: state.name.clone(), properties: Default::default() }).ok_or(None::<String>)?;
             entries.push(MaskEntry::Block(state));
@@ -266,29 +888,81 @@ impl Mask {
 
     /// `#existing`, the mask `//replace` uses when it is given only a pattern.
     pub fn existing() -> Self {
-        Self { text: "#existing".into(), components: vec![Component { entries: vec![MaskEntry::Existing], inverted: false }], seen: RefCell::new(HashMap::new()) }
+        Self { text: "#existing".into(), components: vec![Component { entries: vec![MaskEntry::Existing], inverted: false }], seen: RefCell::new(HashMap::new()), positional: false }
     }
+
+    /// Whether the block `state` passes, without a position: a part that needs one (`#region`, `=expression`, `~mask`...) does
+    /// not pass.
     pub fn hits(&self, world: &dyn World, state: StateId) -> bool {
-        if let Some(&hit) = self.seen.borrow().get(&state) {
-            return hit;
+        if !self.positional {
+            if let Some(&hit) = self.seen.borrow().get(&state) {
+                return hit;
+            }
         }
+        let hit = self.test(world, None, state);
+        if !self.positional {
+            self.seen.borrow_mut().insert(state, hit);
+        }
+        hit
+    }
+
+    /// Whether the block `state` at `pos` passes.
+    pub fn hits_at(&self, world: &dyn World, pos: Pos, state: StateId) -> bool {
+        if !self.positional {
+            return self.hits(world, state);
+        }
+        self.test(world, Some(pos), state)
+    }
+
+    fn test(&self, world: &dyn World, pos: Option<Pos>, state: StateId) -> bool {
         let described = world.describe(state);
-        let hit = self.components.iter().all(|c| {
+        self.components.iter().all(|c| {
             c.entries.iter().any(|e| match e {
                 MaskEntry::Existing => !described.is_air(),
                 MaskEntry::Air => described.is_air(),
                 MaskEntry::Solid => is_solid_name(&described.name),
+                MaskEntry::FullCube => match world.state_outline(state) {
+                    Some(boxes) => boxes.len() == 1 && boxes[0] == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    None => is_full_cube_name(&described.name),
+                },
                 MaskEntry::Block(b) => described.matches(b) || (b.is_air() && b.properties.is_empty() && described.is_air()),
                 MaskEntry::State { props, strict } => {
                     let known: Vec<_> = props.iter().filter(|(k, _)| described.properties.contains_key(k)).collect();
                     !(*strict && known.is_empty()) && known.iter().all(|(k, v)| described.properties.get(k) == Some(v))
                 }
+                MaskEntry::Exposed => {
+                    // `OffsetsMask`: the block is not air and some neighbour is.
+                    !described.is_air() && pos.is_some_and(|p| SIX.iter().any(|d| world.get(crate::horizon_worldedit_core::region::add(p, *d)).is_some_and(|s| world.is_air(s))))
+                }
+                MaskEntry::Offset { sub, single } => pos.is_some_and(|p| match single {
+                    Some(dy) => {
+                        let q = [p[0], p[1] + dy, p[2]];
+                        world.get(q).is_some_and(|s| sub.hits_at(world, q, s))
+                    }
+                    None => SIX.iter().any(|d| {
+                        let q = crate::horizon_worldedit_core::region::add(p, *d);
+                        world.get(q).is_some_and(|s| sub.hits_at(world, q, s))
+                    }),
+                }),
+                MaskEntry::Noise { density, salt } => pos.is_some_and(|p| (mix(*salt, p) >> 11) as f64 / (1u64 << 53) as f64 <= *density),
+                MaskEntry::Expression { expr, timeout_ms } => pos.is_some_and(|p| {
+                    let mut vars: HashMap<String, f64> = HashMap::from([("x".to_owned(), f64::from(p[0])), ("y".to_owned(), f64::from(p[1])), ("z".to_owned(), f64::from(p[2]))]);
+                    expr.run_in(&mut vars, &crate::horizon_worldedit_core::engine::expr::NoEnvPublic, Some(*timeout_ms)).is_ok_and(|v| v > 0.0)
+                }),
+                MaskEntry::Biomes(list) => pos.is_some_and(|p| world.biome_at(p).is_some_and(|b| list.iter().any(|x| *x == b))),
+                MaskEntry::Tag(tag) => world.block_in_tag(state, tag).unwrap_or(false),
+                MaskEntry::Area(area) => pos.is_some_and(|p| area.as_ref().is_some_and(|a| a.contains(p))),
+                MaskEntry::Clipboard(view) => pos.is_some_and(|p| {
+                    let air = world.resolve(&BlockState::air()).unwrap_or(0);
+                    view.blocks.get(&[p[0] - view.origin[0], p[1] - view.origin[1], p[2] - view.origin[2]]).copied().unwrap_or(air) == state
+                }),
             }) != c.inverted
-        });
-        self.seen.borrow_mut().insert(state, hit);
-        hit
+        })
     }
 }
+
+/// The six neighbours, the order of `Direction.valuesOf(CARDINAL | UPRIGHT)` does not matter for a count.
+const SIX: [Pos; 6] = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]];
 
 #[cfg(test)]
 mod tests {
@@ -316,7 +990,7 @@ mod tests {
         assert_eq!(Pattern::parse(&w, "hand", Some("minecraft:dirt")).unwrap().entries[0].1, w.id("dirt"));
         assert!(Pattern::parse(&w, "hand", None).is_err());
         assert_eq!(Pattern::parse(&w, "unobtainium", None).unwrap_err(), "Block name 'unobtainium' was not recognized.");
-        assert_eq!(Pattern::parse(&w, "oak_stairs[nonsense=1]", None).unwrap_err(), "Unknown property 'nonsense' for block 'oak_stairs'");
+        assert_eq!(Pattern::parse(&w, "oak_stairs[nonsense=1]", None).unwrap_err(), "Unknown property 'nonsense' for block 'minecraft:oak_stairs'");
         let frac = Pattern::parse(&w, "12.5%stone,87.5%gravel", None).unwrap();
         assert_eq!(frac.entries, vec![(12500, w.id("stone")), (87500, w.id("gravel"))]);
         assert!(Pattern::parse(&w, "50%", None).is_err());

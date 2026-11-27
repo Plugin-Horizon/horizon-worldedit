@@ -20,9 +20,9 @@ use mod_api::{
     CommandArgumentKind, CommandArgumentType, CommandSuggestion, Config,
     ConfigKind, ConfigLoadingEvent, ConfigReloadingEvent, Flow, GameMode, Hand,
     HostBlockStates, HostSide, Hooks, Identifier, InteractionResult, ItemStack, LeftClickBlockEvent, LevelRef,
-    LevelTickPostEvent, PlayerCommandEvent, PlayerCommandsSentEvent, PlayerRef, RegisterCommandsEvent,
+    LevelTickPostEvent, PlayerArmSwingEvent, PlayerCommandEvent, PlayerCommandsSentEvent, PlayerRef, RegisterCommandsEvent,
     RegisterConfigsEvent, RightClickBlockEvent, ServerHost, ServerStoppedEvent, StateConstraint,
-    Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext,
+    Suggestion, TabCompleteEvent, Text, RightClickItemEvent, Registrar, RegistrationContext, ConsoleCommandEvent,
 };
 use mod_api::Tag as HostTag;
 use mod_api::{CommandSender, NodeDefault, PayloadHandleError, PermissionGatherNodesEvent, PermissionLevel, PermissionNode, PermissionValueType};
@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 const ID: &str = "worldedit";
+use we::CONSOLE_UUID;
 const CONFIG_FILE: &str = "worldedit.toml";
 const ORIGINAL_DIR: &str = "plugins/WorldEdit";
 
@@ -168,62 +169,119 @@ impl CommandArgumentType for WeArgument {
 
 // --- selection outline (WorldEditCUI) ---------------------------------------------------------------
 //
-// A client with the WorldEditCUI mod says hello on `worldedit:cui` (`v|<version>`); from then on the server sends
-// it `s|cuboid` and `p|<0|1>|x|y|z|volume` whenever the player's corners change (checked every level tick).
+// A client with the WorldEditCUI mod says hello on `worldedit:cui` (`v|<protocol version>`; or runs `/we cui`); from
+// then on the editor describes the player's selection to it (`s|<shape>`, points, radii, triangles: see
+// `engine/cui.rs`) whenever it changes, checked every level tick. Older protocols get boxes.
 
 const CUI_CHANNEL: &str = "worldedit:cui";
-
-type Corners = (Option<[i32; 3]>, Option<[i32; 3]>);
-
-/// Players who said hello, with the corners last sent to them (`None`: nothing yet).
-static CUI_PLAYERS: Mutex<Option<HashMap<u128, Option<Corners>>>> = Mutex::new(None);
-
-fn cui_players<R>(f: impl FnOnce(&mut HashMap<u128, Option<Corners>>) -> R) -> R {
-    let mut guard = CUI_PLAYERS.lock().unwrap_or_else(|e| e.into_inner());
-    f(guard.get_or_insert_with(HashMap::new))
-}
 
 /// Receives the CUI's hello: that player is sent their selection from now on (again, if they say hello again).
 struct CuiInbox;
 
 impl IPayloadHandler for CuiInbox {
-    fn handle(&self, _payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), PayloadHandleError> {
+    fn handle(&self, payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), PayloadHandleError> {
         let player = context.player().map_err(|e| PayloadHandleError::Failed(format!("{e:?}")))?;
         let uuid = player.uuid();
-        cui_players(|m| m.insert(uuid, None));
+        let text = String::from_utf8_lossy(&payload.0).into_owned();
+        we::with(|e| e.cui_hello(uuid, &text));
         Ok(())
     }
 }
 
-/// Sends each CUI player the corners that changed since the last send.
+/// Sends each CUI player the description of their selection when it changed since the last send.
 fn send_outlines(host: &mut dyn ServerHost) {
-    let uuids: Vec<u128> = cui_players(|m| m.keys().copied().collect());
+    let uuids = we::with(|e| e.cui_players());
     for uuid in uuids {
-        let (a, b) = we::with(|e| e.corners_of(uuid));
-        let now: Corners = (a, b);
-        if cui_players(|m| m.get(&uuid).cloned().flatten()) == Some(now) {
-            continue;
-        }
         let Some(player) = player_by_uuid(&*host, uuid) else {
-            cui_players(|m| m.remove(&uuid));
+            we::with(|e| e.cui_forget(uuid));
             continue;
         };
-        let volume: i64 = match (a, b) {
-            (Some(a), Some(b)) => (0..3).map(|i| i64::from((a[i] - b[i]).abs()) + 1).product(),
-            _ => -1,
-        };
-        let mut lines = vec!["s|cuboid".to_owned()];
-        for (index, corner) in [a, b].into_iter().enumerate() {
-            if let Some(p) = corner {
-                lines.push(format!("p|{index}|{}|{}|{}|{volume}", p[0], p[1], p[2]));
-            }
-        }
         let id = PayloadId(CUI_CHANNEL.to_string());
-        for text in lines {
+        for text in we::with(|e| e.cui_update(uuid)) {
             let _ = player.send_payload(&mut *host, &id, PayloadBytes(text.into_bytes()));
         }
-        cui_players(|m| m.insert(uuid, Some(now)));
     }
+}
+
+thread_local! {
+    /// The structure block each player without the CUI mod was last shown: where it stands, and the box it outlines
+    /// (offset, size).
+    static OUTLINES: RefCell<HashMap<u128, ([i32; 3], [i32; 3], [i32; 3])>> = RefCell::new(HashMap::new());
+}
+
+/// The selection outline for players WITHOUT the WorldEditCUI mod (`ServerCUIHandler`): a structure block in save mode,
+/// shown to that player alone (`player_show_block_entity`) 12 blocks in front of them, whose bounding box is the selection.
+/// Cuboid selections up to 48 blocks a side. Sent when the selection or the block's place changes; the block it replaced
+/// is shown as it really is again when the block moves or the outline goes.
+fn send_server_outlines(host: &mut dyn ServerHost, tick_dimension: &str) {
+    for player in host.players().server_players() {
+        let uuid = player.uuid();
+        let entity = player.entity();
+        let Some(level) = entity.level(&*host) else { continue };
+        if level.dimension_id() != tick_dimension {
+            continue;
+        }
+        let Some((min_y, height)) = level.height(&*host) else { continue };
+        let position = entity.position(&*host).unwrap_or_default();
+        let [yaw, pitch] = entity.rotation(&*host).unwrap_or([0.0, 0.0]);
+        let wanted = we::with(|e| e.structure_outline_for(uuid, tick_dimension, position, yaw, pitch, min_y, min_y + height - 1));
+        let key = wanted.as_ref().map(|o| (o.block, o.offset, o.size));
+        let last = OUTLINES.with(|o| o.borrow().get(&uuid).copied());
+        if key == last {
+            continue;
+        }
+        if let Some((old, _, _)) = last {
+            if key.is_none_or(|(block, _, _)| block != old) {
+                if let Some(real) = level.block_state(&*host, old) {
+                    let _ = player.show_block(&mut *host, old, real);
+                }
+            }
+        }
+        let (Some(outline), Some(key)) = (wanted, key) else {
+            OUTLINES.with(|o| o.borrow_mut().remove(&uuid));
+            continue;
+        };
+        let Some(state) = structure_block_state(&*host) else { continue };
+        let name = player.name(&*host).unwrap_or_default();
+        use we::nbt::Tag as T;
+        let [x, y, z] = outline.block;
+        let tag = T::Compound(
+            [
+                ("name", T::String(format!("worldedit:{name}"))),
+                ("author", T::String(name)),
+                ("metadata", T::String(String::new())),
+                ("x", T::Int(x)),
+                ("y", T::Int(y)),
+                ("z", T::Int(z)),
+                ("posX", T::Int(outline.offset[0])),
+                ("posY", T::Int(outline.offset[1])),
+                ("posZ", T::Int(outline.offset[2])),
+                ("sizeX", T::Int(outline.size[0])),
+                ("sizeY", T::Int(outline.size[1])),
+                ("sizeZ", T::Int(outline.size[2])),
+                ("rotation", T::String("NONE".into())),
+                ("mirror", T::String("NONE".into())),
+                ("mode", T::String("SAVE".into())),
+                ("ignoreEntities", T::Byte(1)),
+                ("showboundingbox", T::Byte(1)),
+                ("id", T::String("minecraft:structure_block".into())),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect(),
+        );
+        let HostTag::Compound(data) = to_host_tag(&tag) else { continue };
+        if player.show_block_entity(&mut *host, outline.block, state, data).is_ok() {
+            OUTLINES.with(|o| o.borrow_mut().insert(uuid, key));
+        }
+    }
+    OUTLINES.with(|o| o.borrow_mut().retain(|uuid, _| player_by_uuid(&*host, *uuid).is_some()));
+}
+
+fn structure_block_state(host: &dyn ServerHost) -> Option<HostState> {
+    let meta = host.block_states();
+    let block = host.block_state_id("minecraft:structure_block")?.block();
+    HostState::of(&meta, block, &[]).ok()
 }
 
 /// Whether the engine accepts command words that start with `/` (the `//set` forms). It does not yet
@@ -260,7 +318,7 @@ fn usage_words() -> &'static Vec<Vec<String>> {
 }
 
 /// Roots another mod or the game also answers to: never hidden, never completed here.
-const SHARED_ROOTS: &[&str] = &["j", "info", "none", "ex", "ext", "l"];
+const SHARED_ROOTS: &[&str] = &["j", "info", "none", "ex", "ext", "l", "stack"];
 
 /// The command roots this mod registers (with their leading `/` when typed with two slashes).
 fn we_roots() -> &'static BTreeSet<String> {
@@ -395,6 +453,38 @@ fn complete_line(host: &dyn ServerHost, command: &str) -> Option<Vec<(usize, Str
     Some(out)
 }
 
+/// Words WorldEdit completes that the usages do not list: (root, words) for the first argument, or the second word of a
+/// group (`/schem share`).
+fn extra_words(root: &str, command: &str) -> Vec<String> {
+    // Only the word right after the root.
+    if command.matches(' ').count() != 1 {
+        return Vec::new();
+    }
+    let typed = command.rsplit(' ').next().unwrap_or("").to_ascii_lowercase();
+    let list: &[&str] = match root {
+        "," => &["off", "on"],
+        ";" => &["convex", "cuboid", "cyl", "ellipsoid", "extend", "list", "poly", "polyextend", "sphere"],
+        "rem" | "rement" | "remove" => &["all", "boats", "itemframes", "items", "minecarts", "paintings", "projectiles", "tnt", "xp"],
+        "schem" | "schematic" | "/schem" | "/schematic" => &["share"],
+        _ => &[],
+    };
+    list.iter().filter(|w| w.starts_with(&typed)).map(|w| (*w).to_owned()).collect()
+}
+
+/// The spellings the mod's usages carry that WorldEdit does not complete: the second word of a group command.
+fn hidden_words(root: &str, command: &str) -> Vec<&'static str> {
+    if command.matches(' ').count() != 1 {
+        return Vec::new();
+    }
+    match root {
+        "brush" | "br" => vec!["copy", "ex", "unbind"],
+        "tool" => vec!["flood", "unbind"],
+        "we" | "worldedit" => vec!["ver"],
+        "pickaxe" | "sp" | "superpickaxe" => vec!["recur"],
+        _ => Vec::new(),
+    }
+}
+
 // --- the level in place ------------------------------------------------------------------------
 
 /// The level the editor edits, as the core's `World`. Built per call from the host, since the host
@@ -506,6 +596,186 @@ impl we::World for GameWorld<'_> {
             out.push(we::EntityInfo { id: u64::from(e.id()), kind: kind.id(&*self.host).to_string(), pos, living, named, tamed });
         }
         out
+    }
+
+    fn name(&self) -> String {
+        // The open world's folder (`level-name`): what `/snapshot` looks its backups up by.
+        self.host.world_dir().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "world".to_owned())
+    }
+
+    fn entities_data(&mut self, min: [f64; 3], max: [f64; 3]) -> Vec<we::EntityData> {
+        let mut out = Vec::new();
+        for e in self.level.entities_in(&*self.host, min, max).unwrap_or_default() {
+            let (Some(kind), Some(pos)) = (e.kind(&*self.host), e.position(&*self.host)) else { continue };
+            let kind = kind.id(&*self.host).to_string();
+            // WorldEdit copies no player: a player has no saved state it could make again.
+            if kind == "minecraft:player" {
+                continue;
+            }
+            let Some(nbt) = e.nbt(&mut *self.host) else { continue };
+            out.push(we::EntityData { id: u64::from(e.id()), kind, pos, nbt: from_host_tag(&HostTag::Compound(nbt)) });
+        }
+        out
+    }
+
+    fn spawn_entity(&mut self, kind: &str, pos: [f64; 3], nbt: &we::nbt::Tag) -> Option<u64> {
+        let HostTag::Compound(data) = to_host_tag(nbt) else { return None };
+        self.host.summon(&self.dimension, kind, pos, data).map(u64::from)
+    }
+
+    fn biome_at(&self, p: we::Pos) -> Option<String> {
+        self.level.biome_at(&*self.host, p)
+    }
+
+    fn set_biome(&mut self, p: we::Pos, biome: &str) -> bool {
+        self.level.set_biome(&mut *self.host, p, biome)
+    }
+
+    fn biome_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.host.registry_entries("minecraft:worldgen/biome").unwrap_or_default().iter().map(|id| id.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    fn fill_biome(&mut self, min: we::Pos, max: we::Pos, biome: &str) -> Result<u32, String> {
+        use mod_api::BiomeFillRefusal as Refusal;
+        // The corners are inclusive here, the box call's maximum is not.
+        let end = [max[0] + 1, max[1] + 1, max[2] + 1];
+        self.level.fill_biome(&mut *self.host, min, end, biome).map_err(|e| match e {
+            Refusal::NotLoaded => "a column of the selection is not loaded, or it leaves the build height".to_owned(),
+            Refusal::UnknownBiome => format!("biome '{biome}' is not known to this world"),
+            Refusal::NotInPlace => "this level is not the one the server is ticking".to_owned(),
+            Refusal::TooManyCells { asked, max } => format!("{asked} biome cells in one call; at most {max}"),
+            other => format!("{other:?}"),
+        })
+    }
+
+    fn level_names(&self) -> Vec<String> {
+        self.host.levels().list_levels().iter().map(|l| l.dimension_id().to_string()).collect()
+    }
+
+    fn regenerate_chunks(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
+        use mod_api::RegenRefusal as Refusal;
+        self.level.regenerate_chunks(&mut *self.host, chunks).map_err(|e| match e {
+            Refusal::NotLoaded => "a chunk of the selection is not loaded".to_owned(),
+            Refusal::NoGenerator => "this level has no generator of the game's own to regenerate from".to_owned(),
+            Refusal::NotInPlace => "this level is not the one the server is ticking".to_owned(),
+            Refusal::TooManyChunks { asked, max } => format!("{asked} chunks in one call; at most {max}"),
+            other => format!("{other:?}"),
+        })
+    }
+
+    fn delete_chunks(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
+        let list: Vec<(i32, i32)> = chunks.iter().map(|c| (c[0], c[1])).collect();
+        self.level.delete_chunks(&mut *self.host, &list).map(|n| n as u32).ok_or_else(|| "the level is not the one in place, or the list is too long".to_owned())
+    }
+
+    fn delete_chunks_with_backup(&mut self, chunks: &[[i32; 2]]) -> Result<u32, String> {
+        let list: Vec<(i32, i32)> = chunks.iter().map(|c| (c[0], c[1])).collect();
+        // The region files that hold the chunks are copied first (at most 32 regions a call), so ask in pieces of whole regions.
+        let mut erased = 0;
+        for part in list.chunks(256) {
+            erased += self
+                .level
+                .delete_chunks_with_backup(&mut *self.host, part)
+                .map(|n| n as u32)
+                .ok_or_else(|| "the backup of the region files failed, or the level is not the one in place, or the chunks reach more than 32 regions".to_owned())?;
+        }
+        Ok(erased)
+    }
+
+    fn saved_chunk_modified(&self, chunk: [i32; 2]) -> Option<i64> {
+        self.level.saved_chunk_modified(&*self.host, chunk)
+    }
+
+    fn generate_region(&mut self, min: we::Pos, max: we::Pos, seed: Option<i64>, biomes: bool) -> Result<we::Generated, String> {
+        use mod_api::GenerateRefusal as Refusal;
+        let mut out = we::Generated::default();
+        for cx in (min[0] >> 4)..=(max[0] >> 4) {
+            for cz in (min[2] >> 4)..=(max[2] >> 4) {
+                let sections = self.level.generate_chunk(&*self.host, [cx, cz], seed).map_err(|e| match e {
+                    Refusal::NotInPlace => "this level is not the one the server is ticking".to_owned(),
+                    Refusal::NoGenerator => "this level has no generator of the game's own".to_owned(),
+                    Refusal::SeedUnsupported => "this level's generator cannot be built again under another seed".to_owned(),
+                    other => format!("the generator refused: {other:?}"),
+                })?;
+                for section in sections {
+                    let base_y = section.section_y * 16;
+                    if base_y > max[1] || base_y + 15 < min[1] {
+                        continue;
+                    }
+                    for y in min[1].max(base_y)..=max[1].min(base_y + 15) {
+                        for z in min[2].max(cz * 16)..=max[2].min(cz * 16 + 15) {
+                            for x in min[0].max(cx * 16)..=max[0].min(cx * 16 + 15) {
+                                let index = (((y - base_y) as usize) << 8) | (((z & 15) as usize) << 4) | (x & 15) as usize;
+                                if let Some(state) = section.blocks.get(index) {
+                                    out.blocks.push(([x, y, z], intern(state.clone())));
+                                }
+                            }
+                        }
+                    }
+                    if biomes {
+                        for (index, biome) in section.biomes.iter().enumerate() {
+                            let cell = [cx * 16 + ((index & 3) as i32) * 4, base_y + ((index >> 4) as i32) * 4, cz * 16 + (((index >> 2) & 3) as i32) * 4];
+                            if (0..3).all(|a| cell[a] + 3 >= min[a] && cell[a] <= max[a]) {
+                                out.biomes.insert(cell, biome.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn generate_tree(&mut self, p: we::Pos, feature: &str) -> bool {
+        self.level.generate_tree(&mut *self.host, p, feature).unwrap_or(false)
+    }
+
+    fn block_in_tag(&self, state: we::StateId, tag: &str) -> Option<bool> {
+        let block = host_state(state)?.block();
+        let tag = if tag.contains(':') { tag.to_owned() } else { format!("minecraft:{tag}") };
+        self.host.block_in_tag(block, &tag)
+    }
+
+    fn state_outline(&self, state: we::StateId) -> Option<Vec<[f64; 6]>> {
+        self.host.state_outline(host_state(state)?)
+    }
+
+    fn use_item(&mut self, p: we::Pos, item: &str, _face: [i32; 3]) -> bool {
+        // Bone meal is the one item the host can use without a player (as a dispenser does); other items need a use-on-block call.
+        item == "minecraft:bone_meal" && self.level.bone_meal(&mut *self.host, p)
+    }
+
+    fn apply_side_effects(&mut self, positions: &[we::Pos], lighting: bool, neighbors: bool, update: bool) -> usize {
+        let mut visited = 0;
+        for &p in positions {
+            let Some(state) = self.level.block_state(&*self.host, p) else { continue };
+            if update {
+                if let Some(next) = self.level.update_from_neighbour_shapes(&mut *self.host, p) {
+                    if next != state {
+                        we::World::write(self, &[(p, intern(next))]);
+                    }
+                }
+            }
+            if neighbors {
+                let _ = self.level.update_neighbors(&mut *self.host, p, state, mod_api::NeighbourUpdate::Neighbours);
+            }
+            if lighting {
+                self.level.check_light(&mut *self.host, p);
+            }
+            visited += 1;
+        }
+        visited
+    }
+
+    fn break_block(&mut self, p: we::Pos, drop: bool) -> bool {
+        // `Level.destroyBlock` with no tool in hand: the drops (when asked) are spawned as the game does.
+        matches!(self.level.destroy_block(&mut *self.host, p, drop, None, false), Ok(Some(_)))
+    }
+
+    fn block_light(&self, p: we::Pos) -> i32 {
+        self.level.brightness(&*self.host, mod_api::LightLayer::Block, p).unwrap_or(0)
     }
 
     fn remove_entities(&mut self, ids: &[u64]) -> usize {
@@ -654,18 +924,58 @@ fn actor_of(host: &mut dyn ServerHost, player: PlayerRef) -> we::Actor {
         .map(|n| n.to_string())
         .collect();
     let [yaw, pitch] = entity.rotation(host).unwrap_or([0.0, 0.0]);
+    let game_mode = game_mode_id(player.game_mode(host));
+    // `use-inventory`: what the player carries, when their edits take their blocks from it.
+    let inventory = we::with(|e| e.wants_inventory(&granted, permission, game_mode)).then(|| {
+        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+        for (_, stack) in player.inventory_slots(&*host).unwrap_or_default() {
+            *counts.entry(stack.item().id(&*host)).or_insert(0) += stack.count();
+        }
+        counts
+    });
     we::Actor {
         uuid: player.uuid(),
         name: player.name(host).unwrap_or_default(),
         permission,
-        dimension: entity.level(host).map(|l| l.dimension_id().to_string()).unwrap_or_default(),
+        // `//world` sends the player's commands to another level.
+        dimension: we::world_override(player.uuid()).unwrap_or_else(|| entity.level(host).map(|l| l.dimension_id().to_string()).unwrap_or_default()),
         position: entity.position(host).unwrap_or_default(),
         yaw,
         pitch,
-        game_mode: game_mode_id(player.game_mode(host)),
+        game_mode,
         held: held_item(host, player),
+        offhand: player.inventory_slots(&*host).unwrap_or_default().into_iter().find(|(slot, _)| *slot == 40).map(|(_, s)| s.item().id(&*host).to_string()).filter(|i| i.as_str() != "minecraft:air"),
         granted,
+        inventory,
     }
+}
+
+/// `use-inventory`: puts the inventory change of the last edit into effect (blocks placed are taken, blocks broken given) and
+/// returns the report of the blocks that were missing.
+fn settle_bag(host: &mut dyn ServerHost, player: PlayerRef, uuid: u128) -> Vec<String> {
+    let (delta, notes) = we::with(|e| e.take_bag(uuid));
+    for (item, n) in delta {
+        let Some(key) = Identifier::parse(&item).ok().and_then(|id| host.item_key(&id)) else { continue };
+        if n > 0 {
+            if let Some(stack) = ItemStack::new(key, n as u32) {
+                let _ = player.give_stack(host, stack);
+            }
+            continue;
+        }
+        let mut left = n.unsigned_abs() as u32;
+        for (slot, stack) in player.inventory_slots(&*host).unwrap_or_default() {
+            if left == 0 {
+                break;
+            }
+            if stack.item().id(&*host) != item {
+                continue;
+            }
+            let take = left.min(stack.count());
+            left -= take;
+            let _ = player.set_inventory_slot(host, slot, stack.shrink(take));
+        }
+    }
+    notes
 }
 
 fn line(l: &we::Line) -> Text {
@@ -703,7 +1013,10 @@ fn env(data_version: i32) -> we::Env {
 /// Runs a typed line for `actor` against the level it stands in.
 fn execute(host: &mut dyn ServerHost, actor: &we::Actor, command: &str) -> we::Reply {
     let env = env(host.server_data_version());
-    let Some(mut world) = GameWorld::new(host, &actor.dimension) else { return we::Reply::default() };
+    let Some(mut world) = GameWorld::new(host, &actor.dimension) else {
+        // `//world` named a level that has been unloaded since.
+        return we::Reply { lines: vec![we::Line { text: "The world was unloaded already.".to_owned(), error: true }], ..we::Reply::default() };
+    };
     we::with(|e| e.command(&mut world, actor, command, &env))
 }
 
@@ -720,6 +1033,9 @@ fn finish(host: &mut dyn ServerHost, player: PlayerRef, actor: &we::Actor, reply
     }
     for l in &reply.lines {
         let _ = player.tell(&mut *host, line(l));
+    }
+    for note in settle_bag(&mut *host, player, actor.uuid) {
+        let _ = player.tell(&mut *host, Text::literal(note));
     }
     if let Some([x, y, z]) = reply.teleport {
         let _ = player.entity().teleport_to(host, [x, y, z], Some([actor.yaw, actor.pitch]));
@@ -831,13 +1147,46 @@ impl Hooks for Mod {
         ensure_block_ids(&*host);
         let actor = actor_of(&mut *host, player);
         let reply = execute(&mut *host, &actor, event.command);
+        if reply.denied {
+            // A player without the permission is answered as for an unknown command (the commands are hidden from them).
+            event.replies.push(Text::translate("command.unknown.command", vec![]));
+            event.replies.push(Text::literal(event.command.trim_start_matches('/').to_owned()).append(Text::translate("command.context.here", vec![])));
+            return Flow::Cancel;
+        }
         event.replies.extend(reply.lines.iter().map(line));
+        event.replies.extend(settle_bag(&mut *host, player, actor.uuid).into_iter().map(Text::literal));
         if let Some(to) = reply.teleport {
             TELEPORTS.with(|t| t.borrow_mut().push((actor.uuid, to, [actor.yaw, actor.pitch])));
         }
         // The lines are answered through `replies` above (no player is swapped in here); the items are given now.
         for item in &reply.give {
             host.commands().run_command(&format!("give {} {} 1", actor.name, item));
+        }
+        Flow::Cancel
+    }
+
+    // The server console and RCON run WorldEdit commands too (`//pos x,y,z`, `//world`): they have no position and need a level
+    // by `//world` first, as in WorldEdit. Replies go to the server log. A command block's command is not heard here.
+    fn console_command(&self, host: &mut dyn ServerHost, event: &mut ConsoleCommandEvent<'_>) -> Flow {
+        let double = event.line.starts_with('/');
+        if !we::is_command(event.line) || !we::form_allows(event.line, double) {
+            return Flow::Continue;
+        }
+        event.cancelled = true;
+        ensure_block_ids(&*host);
+        let name = if event.source == "rcon" { "Rcon" } else { "Console" };
+        let dimension = we::world_override(CONSOLE_UUID).unwrap_or_default();
+        let first = event.line.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if dimension.is_empty() && !matches!(first.as_str(), "world" | "we" | "worldedit" | "help") {
+            log("You need to provide a world (Try //world)");
+            return Flow::Cancel;
+        }
+        // The commands that need no level run in the overworld, where the console is bound.
+        let dimension = if dimension.is_empty() { "minecraft:overworld".to_owned() } else { dimension };
+        let actor = we::Actor { uuid: CONSOLE_UUID, name: name.to_owned(), permission: 4, dimension, game_mode: 1, ..we::Actor::default() };
+        let reply = execute(&mut *host, &actor, event.line);
+        for l in &reply.lines {
+            log(&l.text);
         }
         Flow::Cancel
     }
@@ -862,7 +1211,9 @@ impl Hooks for Mod {
             }
             return;
         };
-        if !we_roots().contains(&command[..first_space].to_ascii_lowercase()) {
+        let root = command[..first_space].trim_start_matches('/').to_ascii_lowercase();
+        let extra = extra_words(&root, command);
+        if !we_roots().contains(&command[..first_space].to_ascii_lowercase()) && extra.is_empty() {
             return;
         }
         // Nothing of WorldEdit (not even a schematic name) for a player who may not use it.
@@ -870,15 +1221,28 @@ impl Hooks for Mod {
             event.suggestions.clear();
             return;
         }
-        let Some(words) = complete_line(&*host, command) else { return };
         let (from, to) = (event.range[0], event.range[1]);
-        for (start, word) in words {
-            // The engine's range may begin before the word (it took the rest of the line for one argument).
-            let text = if start >= from { format!("{}{}", &command[from..start], word) } else { word };
-            if !event.suggestions.iter().any(|s| s.text == text) {
-                event.suggestions.push(Suggestion::new((from, to), text));
+        if let Some(words) = complete_line(&*host, command) {
+            for (start, word) in words {
+                // The engine's range may begin before the word (it took the rest of the line for one argument).
+                let text = if start >= from { format!("{}{}", &command[from..start], word) } else { word };
+                if !event.suggestions.iter().any(|s| s.text == text) {
+                    event.suggestions.push(Suggestion::new((from, to), text));
+                }
             }
         }
+        for word in extra {
+            if !event.suggestions.iter().any(|s| s.text == word) {
+                event.suggestions.push(Suggestion::new((from, to), word));
+            }
+        }
+        // WorldEdit lists no flags and none of this mod's extra spellings.
+        let typing_flag = command.rsplit(' ').next().is_some_and(|w| w.starts_with('-'));
+        let hidden = hidden_words(&root, command);
+        event.suggestions.retain(|s| {
+            let last = s.text.rsplit(' ').next().unwrap_or("");
+            (typing_flag || !last.starts_with('-')) && !hidden.contains(&last)
+        });
     }
 
     fn left_click_block(&self, host: &mut dyn ServerHost, event: &mut LeftClickBlockEvent) -> Flow {
@@ -889,7 +1253,11 @@ impl Hooks for Mod {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
             we::with(|e| match e.wand_click(&world, &actor, true, pos, now_ms()) {
                 Some(r) => Some(r),
-                None => e.tool_click(&mut world, &actor, true, pos, now_ms()),
+                None => match e.tool_click(&mut world, &actor, true, pos, now_ms()) {
+                    Some(r) => Some(r),
+                    // The navigation wand's left click passes through the wall in front of the player.
+                    None => e.nav_left_click(&world, &actor, false, now_ms()),
+                },
             })
         };
         if let Some(reply) = reply {
@@ -897,6 +1265,32 @@ impl Hooks for Mod {
             return Flow::Cancel;
         }
         Flow::Continue
+    }
+
+    // A left click in the air sends no click event to the server, only the arm swing every click sends; the swing that
+    // follows a click `nav_left_click` or `nav_right_click` already handled is ignored there.
+    fn player_arm_swing(&self, host: &mut dyn ServerHost, event: &mut PlayerArmSwingEvent<'_>) {
+        if event.hand != "mainhand" {
+            return;
+        }
+        let Some(player) = player_by_uuid(&*host, event.player) else { return };
+        // Every swing comes here: only the navigation wand's holder is worth building an actor for.
+        let held = held_item(&*host, player);
+        if !we::with(|e| e.holds_nav(event.player, held.as_deref()) || e.holds_trace_tool(event.player, held.as_deref())) {
+            return;
+        }
+        let actor = actor_of(&mut *host, player);
+        let reply = {
+            let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return };
+            // The far wand and the long-range build tool answer a left click in the air; the navigation wand has its own.
+            we::with(|e| match e.swing_click(&mut world, &actor, now_ms()) {
+                Some(r) => Some(r),
+                None => e.nav_left_click(&world, &actor, true, now_ms()),
+            })
+        };
+        if let Some(reply) = reply {
+            finish(host, player, &actor, &reply);
+        }
     }
 
     fn right_click_block(&self, host: HostSide, event: &mut RightClickBlockEvent) -> Flow {
@@ -909,15 +1303,17 @@ impl Hooks for Mod {
         let mut actor = actor_of(&mut *host, player);
         actor.held = event.click.stack.map(|s| s.item().id(&*host)).filter(|i| i != "minecraft:air");
         let pos = event.click.pos;
+        // The side that was clicked (`[0, 1, 0]` the top): the stack tool goes that way.
+        let face = event.click.hit.face;
         let reply = {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
             we::with(|e| match e.wand_click(&world, &actor, false, pos, now_ms()) {
                 Some(r) => Some(r),
-                None => match e.tool_click(&mut world, &actor, false, pos, now_ms()) {
+                None => match e.tool_click_face(&mut world, &actor, false, pos, Some(face), now_ms()) {
                     Some(r) => Some(r),
                     None => match e.brush_use(&mut world, &actor, Some(pos), now_ms()) {
                         Some(r) => Some(r),
-                        None => e.nav_use(&world, &actor, now_ms()),
+                        None => e.nav_right_click(&world, &actor, now_ms()),
                     },
                 },
             })
@@ -941,11 +1337,11 @@ impl Hooks for Mod {
         actor.held = Some(event.click.stack.item().id(&*host));
         let reply = {
             let Some(mut world) = GameWorld::new(&mut *host, &actor.dimension) else { return Flow::Continue };
-            we::with(|e| match e.far_wand_air(&world, &actor, now_ms()) {
+            we::with(|e| match e.far_wand_air(&mut world, &actor, now_ms()) {
                 Some(r) => Some(r),
                 None => match e.brush_use(&mut world, &actor, None, now_ms()) {
                     Some(r) => Some(r),
-                    None => e.nav_use(&world, &actor, now_ms()),
+                    None => e.nav_right_click(&world, &actor, now_ms()),
                 },
             })
         };
@@ -961,6 +1357,7 @@ impl Hooks for Mod {
         let HostSide::Server(host) = host else { return };
         ensure_block_ids(&*host);
         send_outlines(&mut *host);
+        send_server_outlines(&mut *host, &event.level.dimension_id().to_string());
         let moves: Vec<_> = TELEPORTS.with(|t| t.borrow_mut().drain(..).collect());
         for (uuid, to, [yaw, pitch]) in moves {
             if let Some(player) = player_by_uuid(&*host, uuid) {
@@ -981,8 +1378,6 @@ impl Hooks for Mod {
 
     fn server_stopped(&self, _: &mut dyn ServerHost, _: &mut ServerStoppedEvent) {
         // Selections, clipboards, history and queued writes go with the world.
-        // TODO(arismoko-api: player_show_blocks): the selection outline (WorldEdit's CUI structure block, only the
-        // player sees it) is not drawn, and nothing is cleared from it here.
         we::with(|e| e.closed());
     }
 }
